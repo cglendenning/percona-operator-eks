@@ -63,6 +63,25 @@ async function createClusterWithStdin(yaml: string) {
   await subprocess;
 }
 
+async function upgradeAddons(clusterName: string, region: string) {
+  logInfo('Upgrading all EKS addons to latest versions...');
+  try {
+    // Get list of installed addons
+    const { execa } = await import('execa');
+    const result = await execa('aws', ['eks', 'list-addons', '--cluster-name', clusterName, '--region', region], { stdio: 'pipe' });
+    const addons = JSON.parse(result.stdout).addons || [];
+    
+    // Upgrade each addon
+    for (const addonName of addons) {
+      logInfo(`Upgrading addon: ${addonName}`);
+      await run('aws', ['eks', 'update-addon', '--cluster-name', clusterName, '--addon-name', addonName, '--region', region, '--resolve-conflicts', 'OVERWRITE']);
+    }
+    logSuccess('All addons upgraded to latest versions');
+  } catch (err) {
+    logWarn('Failed to upgrade some addons, but cluster is still functional');
+  }
+}
+
 async function deleteCluster(args: EksArgs) {
   await ensurePrereqs();
   logWarnAboutResiduals();
@@ -104,7 +123,9 @@ async function main() {
     if (parsed.action === 'create') {
       const yaml = buildClusterYaml(parsed);
       await createClusterWithStdin(yaml);
-      logSuccess('EKS cluster created. Updating kubeconfig...');
+      logSuccess('EKS cluster created. Upgrading addons...');
+      await upgradeAddons(parsed.name, parsed.region);
+      logSuccess('Updating kubeconfig...');
       await run('aws', ['eks', 'update-kubeconfig', '--name', parsed.name, '--region', parsed.region]);
     } else {
       await deleteCluster(parsed);
