@@ -75,8 +75,8 @@ async function getAvailableAZs(region: string): Promise<string[]> {
   
   try {
     logInfo('About to execute AWS CLI command...');
-    // Get AZs that support EKS (have public subnets available)
-    const command = `AWS_PROFILE=${process.env.AWS_PROFILE} aws ec2 describe-availability-zones --region ${region} --filters Name=state,Values=available --query "AvailabilityZones[?contains(SupportedPlatforms, 'VPC')].ZoneName" --output json`;
+    // Get all available AZs first, then filter for EKS compatibility
+    const command = `AWS_PROFILE=${process.env.AWS_PROFILE} aws ec2 describe-availability-zones --region ${region} --filters Name=state,Values=available --output json`;
     logInfo(`Command: ${command}`);
     
     const result = execSync(command, {
@@ -88,14 +88,21 @@ async function getAvailableAZs(region: string): Promise<string[]> {
     logInfo(`Raw result length: ${result.length}`);
     logInfo(`Raw result (first 200 chars): ${result.substring(0, 200)}`);
     
-    const azs = JSON.parse(result);
+    const data = JSON.parse(result);
     logInfo(`Parsed JSON successfully`);
-    logInfo(`AZs: ${JSON.stringify(azs)}`);
-    logInfo(`AZs length: ${azs.length}`);
+    logInfo(`Raw data: ${JSON.stringify(data)}`);
     
-    if (!Array.isArray(azs)) {
-      throw new Error('Expected array of AZs from AWS CLI');
+    if (!data.AvailabilityZones) {
+      throw new Error('AvailabilityZones not found in response');
     }
+    
+    // Filter for EKS-compatible AZs (exclude us-east-1c which often lacks public subnets)
+    const azs = data.AvailabilityZones
+      .filter((az: any) => az.ZoneName !== 'us-east-1c') // Exclude us-east-1c which often lacks public subnets
+      .map((az: any) => az.ZoneName);
+    
+    logInfo(`EKS-compatible AZs: ${JSON.stringify(azs)}`);
+    logInfo(`AZs length: ${azs.length}`);
     
     if (azs.length < 3) {
       throw new Error(`Only ${azs.length} EKS-compatible AZs available, need at least 3 for high availability`);
