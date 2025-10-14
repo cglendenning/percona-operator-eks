@@ -4,7 +4,7 @@ import yargs from 'yargs';
 import { hideBin } from 'yargs/helpers';
 
 const EksArgs = z.object({
-  action: z.enum(['create', 'delete']),
+  action: z.enum(['create', 'delete', 'upgrade-addons']),
   name: z.string().default('percona-eks'),
   region: z.string().default('us-east-1'),
   version: z.string().default('1.34'),
@@ -73,8 +73,45 @@ async function upgradeAddons(clusterName: string, region: string) {
     
     // Upgrade each addon
     for (const addonName of addons) {
-      logInfo(`Upgrading addon: ${addonName}`);
-      await run('aws', ['eks', 'update-addon', '--cluster-name', clusterName, '--addon-name', addonName, '--region', region, '--resolve-conflicts', 'OVERWRITE']);
+      logInfo(`Checking addon: ${addonName}`);
+      
+      // Get current addon info
+      const currentResult = await execa('aws', ['eks', 'describe-addon', '--cluster-name', clusterName, '--addon-name', addonName, '--region', region], { stdio: 'pipe' });
+      const currentInfo = JSON.parse(currentResult.stdout).addon;
+      const currentVersion = currentInfo.addonVersion;
+      
+      // Get available versions
+      const versionsResult = await execa('aws', ['eks', 'describe-addon-versions', '--addon-name', addonName, '--region', region], { stdio: 'pipe' });
+      const versionsInfo = JSON.parse(versionsResult.stdout);
+      const availableVersions = versionsInfo.addons[0]?.addonVersions || [];
+      
+      if (availableVersions.length === 0) {
+        logWarn(`No available versions found for ${addonName}, skipping`);
+        continue;
+      }
+      
+      // Find the latest version (sort by version and take the last one)
+      const latestVersion = availableVersions
+        .sort((a: any, b: any) => a.addonVersion.localeCompare(b.addonVersion, undefined, { numeric: true }))
+        .pop()?.addonVersion;
+      
+      if (!latestVersion) {
+        logWarn(`Could not determine latest version for ${addonName}, skipping`);
+        continue;
+      }
+      
+      if (currentVersion === latestVersion) {
+        logInfo(`${addonName} is already at latest version ${latestVersion}`);
+        continue;
+      }
+      
+      logInfo(`Upgrading ${addonName} from ${currentVersion} to ${latestVersion}...`);
+      await run('aws', ['eks', 'update-addon', '--cluster-name', clusterName, '--addon-name', addonName, '--addon-version', latestVersion, '--region', region, '--resolve-conflicts', 'OVERWRITE']);
+      
+      // Wait for addon to be active
+      logInfo(`Waiting for ${addonName} to be active...`);
+      await run('aws', ['eks', 'wait', 'addon-active', '--cluster-name', clusterName, '--addon-name', addonName, '--region', region]);
+      logSuccess(`${addonName} upgraded to ${latestVersion}`);
     }
     logSuccess('All addons upgraded to latest versions');
   } catch (err) {
@@ -97,6 +134,7 @@ async function main() {
   const argv = await yargs(hideBin(process.argv))
     .command('create', 'Create EKS cluster')
     .command('delete', 'Delete EKS cluster')
+    .command('upgrade-addons', 'Upgrade all addons on existing EKS cluster')
     .version(false)
     .option('name', { type: 'string' })
     .option('region', { type: 'string' })
@@ -127,6 +165,9 @@ async function main() {
       await upgradeAddons(parsed.name, parsed.region);
       logSuccess('Updating kubeconfig...');
       await run('aws', ['eks', 'update-kubeconfig', '--name', parsed.name, '--region', parsed.region]);
+    } else if (parsed.action === 'upgrade-addons') {
+      await ensurePrereqs();
+      await upgradeAddons(parsed.name, parsed.region);
     } else {
       await deleteCluster(parsed);
       logSuccess('EKS cluster deletion initiated.');
