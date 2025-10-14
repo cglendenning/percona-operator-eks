@@ -303,8 +303,6 @@ async function getAddonLogs(clusterName: string, addonName: string, region: stri
       'logs', 'describe-log-streams',
       '--log-group-name', logGroupName,
       '--log-stream-name-prefix', logStreamPrefix,
-      '--order-by', 'LastEventTime',
-      '--descending',
       '--max-items', '5',
       '--region', region
     ], { stdio: 'pipe' });
