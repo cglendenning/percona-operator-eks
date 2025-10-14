@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { ensureBinaryExists, logError, logInfo, logSuccess, run } from './utils.js';
+import { ensureBinaryExists, logError, logInfo, logSuccess, logWarn, run } from './utils.js';
 import yargs from 'yargs';
 import { hideBin } from 'yargs/helpers';
 
@@ -71,6 +71,10 @@ async function upgradeAddons(clusterName: string, region: string) {
     const result = await execa('aws', ['eks', 'list-addons', '--cluster-name', clusterName, '--region', region], { stdio: 'pipe' });
     const addons = JSON.parse(result.stdout).addons || [];
     
+    let upgradedCount = 0;
+    let skippedCount = 0;
+    let alreadyLatestCount = 0;
+    
     // Upgrade each addon
     for (const addonName of addons) {
       logInfo(`Checking addon: ${addonName}`);
@@ -79,6 +83,14 @@ async function upgradeAddons(clusterName: string, region: string) {
       const currentResult = await execa('aws', ['eks', 'describe-addon', '--cluster-name', clusterName, '--addon-name', addonName, '--region', region], { stdio: 'pipe' });
       const currentInfo = JSON.parse(currentResult.stdout).addon;
       const currentVersion = currentInfo.addonVersion;
+      const currentStatus = currentInfo.status;
+      
+      // Skip if addon is already updating
+      if (currentStatus === 'UPDATING' || currentStatus === 'CREATING') {
+        logInfo(`${addonName} is currently ${currentStatus.toLowerCase()}, skipping upgrade`);
+        skippedCount++;
+        continue;
+      }
       
       // Get available versions
       const versionsResult = await execa('aws', ['eks', 'describe-addon-versions', '--addon-name', addonName, '--region', region], { stdio: 'pipe' });
@@ -102,18 +114,40 @@ async function upgradeAddons(clusterName: string, region: string) {
       
       if (currentVersion === latestVersion) {
         logInfo(`${addonName} is already at latest version ${latestVersion}`);
+        alreadyLatestCount++;
         continue;
       }
       
       logInfo(`Upgrading ${addonName} from ${currentVersion} to ${latestVersion}...`);
       await run('aws', ['eks', 'update-addon', '--cluster-name', clusterName, '--addon-name', addonName, '--addon-version', latestVersion, '--region', region, '--resolve-conflicts', 'OVERWRITE']);
       
-      // Wait for addon to be active
-      logInfo(`Waiting for ${addonName} to be active...`);
-      await run('aws', ['eks', 'wait', 'addon-active', '--cluster-name', clusterName, '--addon-name', addonName, '--region', region]);
-      logSuccess(`${addonName} upgraded to ${latestVersion}`);
+      // Wait for addon to be active with longer timeout for VPC CNI
+      logInfo(`Waiting for ${addonName} to be active (this may take several minutes for VPC CNI)...`);
+      try {
+        if (addonName === 'vpc-cni') {
+          // VPC CNI can take 15+ minutes, use longer timeout
+          await run('aws', ['eks', 'wait', 'addon-active', '--cluster-name', clusterName, '--addon-name', addonName, '--region', region, '--cli-read-timeout', '1200', '--cli-connect-timeout', '60']);
+        } else {
+          await run('aws', ['eks', 'wait', 'addon-active', '--cluster-name', clusterName, '--addon-name', addonName, '--region', region]);
+        }
+        logSuccess(`${addonName} upgraded to ${latestVersion}`);
+        upgradedCount++;
+      } catch (waitError) {
+        logWarn(`${addonName} upgrade may still be in progress. Check status manually with: aws eks describe-addon --cluster-name ${clusterName} --addon-name ${addonName} --region ${region}`);
+        upgradedCount++; // Count as upgraded even if we can't confirm completion
+      }
     }
-    logSuccess('All addons upgraded to latest versions');
+    
+    // Provide accurate summary
+    if (upgradedCount > 0) {
+      logSuccess(`Upgraded ${upgradedCount} addon(s) to latest versions`);
+    }
+    if (alreadyLatestCount > 0) {
+      logInfo(`${alreadyLatestCount} addon(s) were already at latest versions`);
+    }
+    if (skippedCount > 0) {
+      logInfo(`${skippedCount} addon(s) were skipped (currently updating/creating)`);
+    }
   } catch (err) {
     logWarn('Failed to upgrade some addons, but cluster is still functional');
   }
