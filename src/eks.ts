@@ -75,7 +75,8 @@ async function getAvailableAZs(region: string): Promise<string[]> {
   
   try {
     logInfo('About to execute AWS CLI command...');
-    const command = `AWS_PROFILE=${process.env.AWS_PROFILE} aws ec2 describe-availability-zones --region ${region} --filters Name=state,Values=available --output json`;
+    // Get AZs that support EKS (have public subnets available)
+    const command = `AWS_PROFILE=${process.env.AWS_PROFILE} aws ec2 describe-availability-zones --region ${region} --filters Name=state,Values=available --query "AvailabilityZones[?contains(SupportedPlatforms, 'VPC')].ZoneName" --output json`;
     logInfo(`Command: ${command}`);
     
     const result = execSync(command, {
@@ -87,21 +88,17 @@ async function getAvailableAZs(region: string): Promise<string[]> {
     logInfo(`Raw result length: ${result.length}`);
     logInfo(`Raw result (first 200 chars): ${result.substring(0, 200)}`);
     
-    const data = JSON.parse(result);
+    const azs = JSON.parse(result);
     logInfo(`Parsed JSON successfully`);
-    logInfo(`data.AvailabilityZones exists: ${!!data.AvailabilityZones}`);
-    logInfo(`data.AvailabilityZones length: ${data.AvailabilityZones ? data.AvailabilityZones.length : 'undefined'}`);
-    
-    if (!data.AvailabilityZones) {
-      throw new Error('AvailabilityZones not found in response');
-    }
-    
-    const azs = data.AvailabilityZones.map((az: any) => az.ZoneName);
-    logInfo(`Mapped AZs: ${JSON.stringify(azs)}`);
+    logInfo(`AZs: ${JSON.stringify(azs)}`);
     logInfo(`AZs length: ${azs.length}`);
     
+    if (!Array.isArray(azs)) {
+      throw new Error('Expected array of AZs from AWS CLI');
+    }
+    
     if (azs.length < 3) {
-      throw new Error(`Only ${azs.length} AZs available, need at least 3 for high availability`);
+      throw new Error(`Only ${azs.length} EKS-compatible AZs available, need at least 3 for high availability`);
     }
     
     logInfo(`=== RETURNING FROM getAvailableAZs: ${JSON.stringify(azs)} ===`);
