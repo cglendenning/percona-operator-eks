@@ -32,15 +32,35 @@ metadata:
   version: "${args.version}"
 iam:
   withOIDC: true
+# Create separate node groups for each AZ to ensure proper distribution
 managedNodeGroups:
-  - name: ng-spot
+  - name: ng-spot-1a
     amiFamily: AmazonLinux2023
     instanceTypes: [${JSON.stringify(args.nodeType)}]
-    desiredCapacity: ${args.nodes}
-    minSize: ${args.nodes}
-    maxSize: ${Math.max(args.nodes, args.nodes + 1)}
+    desiredCapacity: 1
+    minSize: 1
+    maxSize: 2
+    availabilityZones: ["us-east-1a"]
 ${spotLine}    volumeSize: 50
-    labels: { workload: percona }
+    labels: { workload: percona, az: us-east-1a }
+  - name: ng-spot-1b
+    amiFamily: AmazonLinux2023
+    instanceTypes: [${JSON.stringify(args.nodeType)}]
+    desiredCapacity: 1
+    minSize: 1
+    maxSize: 2
+    availabilityZones: ["us-east-1b"]
+${spotLine}    volumeSize: 50
+    labels: { workload: percona, az: us-east-1b }
+  - name: ng-spot-1c
+    amiFamily: AmazonLinux2023
+    instanceTypes: [${JSON.stringify(args.nodeType)}]
+    desiredCapacity: 1
+    minSize: 1
+    maxSize: 2
+    availabilityZones: ["us-east-1c"]
+${spotLine}    volumeSize: 50
+    labels: { workload: percona, az: us-east-1c }
 addons:
   - name: aws-ebs-csi-driver
     version: latest

@@ -4,13 +4,14 @@ import yargs from 'yargs';
 import { hideBin } from 'yargs/helpers';
 
 const Args = z.object({
-  action: z.enum(['install', 'uninstall']),
+  action: z.enum(['install', 'uninstall', 'expand']),
   namespace: z.string().default('percona'),
   name: z.string().default('pxc-cluster'),
   helmRepo: z.string().default('https://percona.github.io/percona-helm-charts/'),
   chart: z.string().default('percona/pxc-operator'),
   clusterChart: z.string().default('percona/pxc-db'),
   nodes: z.coerce.number().int().positive().default(3),
+  size: z.string().optional(),
 });
 
 type Args = z.infer<typeof Args>;
@@ -52,6 +53,11 @@ function clusterValues(nodes: number, accountId: string): string {
     limits:
       memory: 2Gi
       cpu: 1
+  persistence:
+    enabled: true
+    size: 20Gi
+    accessMode: ReadWriteOnce
+    storageClass: gp3
 proxyHaproxy:
   enabled: false
 proxyProxysql:
@@ -64,6 +70,11 @@ proxyProxysql:
     limits:
       memory: 512Mi
       cpu: 500m
+  persistence:
+    enabled: true
+    size: 5Gi
+    accessMode: ReadWriteOnce
+    storageClass: gp3
 backup:
   enabled: true
   storages:
@@ -290,6 +301,41 @@ async function waitForClusterReady(ns: string, name: string, nodes: number) {
   throw new Error(`Percona cluster ${name} did not become ready within 30 minutes`);
 }
 
+async function expandVolumes(ns: string, name: string, newSize: string) {
+  logInfo(`Expanding Percona volumes to ${newSize}...`);
+  
+  try {
+    // Get all PVCs for the cluster
+    const { execa } = await import('execa');
+    const pvcResult = await execa('kubectl', ['get', 'pvc', '-n', ns, '-l', `app.kubernetes.io/instance=${name}`, '--no-headers', '-o', 'custom-columns=NAME:.metadata.name'], { stdio: 'pipe' });
+    const pvcs = pvcResult.stdout.trim().split('\n').filter(name => name.trim());
+    
+    if (pvcs.length === 0) {
+      logWarn('No PVCs found for the cluster');
+      return;
+    }
+    
+    // Expand each PVC
+    for (const pvcName of pvcs) {
+      logInfo(`Expanding PVC: ${pvcName}`);
+      await run('kubectl', ['patch', 'pvc', pvcName, '-n', ns, '-p', `{"spec":{"resources":{"requests":{"storage":"${newSize}"}}}}`]);
+    }
+    
+    // Wait for expansion to complete
+    logInfo('Waiting for volume expansion to complete...');
+    await run('kubectl', ['wait', '--for=condition=FileSystemResizePending', 'pvc', '--all', '-n', ns, '--timeout=300s']);
+    
+    // Restart the cluster to pick up the new size
+    logInfo('Restarting Percona cluster to apply volume expansion...');
+    await run('kubectl', ['rollout', 'restart', 'statefulset', `${name}-pxc-db-pxc`, '-n', ns]);
+    
+    logSuccess(`Volumes expanded to ${newSize} successfully`);
+  } catch (error) {
+    logError(`Failed to expand volumes: ${error}`);
+    throw error;
+  }
+}
+
 async function uninstall(ns: string, name: string) {
   await run('helm', ['uninstall', name, '-n', ns]);
   await run('helm', ['uninstall', 'percona-operator', '-n', ns]);
@@ -301,12 +347,14 @@ async function main() {
   const argv = await yargs(hideBin(process.argv))
     .command('install', 'Install Percona operator and 3-node cluster')
     .command('uninstall', 'Uninstall Percona cluster and operator')
+    .command('expand', 'Expand Percona cluster volumes')
     .option('namespace', { type: 'string' })
     .option('name', { type: 'string' })
     .option('helmRepo', { type: 'string' })
     .option('chart', { type: 'string' })
     .option('clusterChart', { type: 'string' })
     .option('nodes', { type: 'number' })
+    .option('size', { type: 'string', description: 'New volume size (e.g., 50Gi, 100Gi)' })
     .demandCommand(1)
     .strict()
     .parse();
@@ -320,6 +368,7 @@ async function main() {
     chart: argv.chart,
     clusterChart: argv.clusterChart,
     nodes: argv.nodes,
+    size: argv.size,
   });
 
   try {
@@ -350,6 +399,15 @@ async function main() {
       await waitForClusterReady(parsed.namespace, parsed.name, parsed.nodes);
       
       logSuccess('Percona operator and cluster installed and ready.');
+    } else if (parsed.action === 'expand') {
+      if (!parsed.size) {
+        logError('Size parameter is required for expand command');
+        process.exitCode = 1;
+        return;
+      }
+      logInfo(`Expanding Percona cluster volumes to ${parsed.size}...`);
+      await expandVolumes(parsed.namespace, parsed.name, parsed.size);
+      logSuccess('Volume expansion completed.');
     } else {
       logInfo('Uninstalling Percona cluster and operator...');
       await uninstall(parsed.namespace, parsed.name);
