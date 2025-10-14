@@ -2,7 +2,7 @@ import { z } from 'zod';
 import { ensureBinaryExists, logError, logInfo, logSuccess, logWarn, run } from './utils.js';
 import yargs from 'yargs';
 import { hideBin } from 'yargs/helpers';
-import process from 'process';
+// process is a global Node.js object
 
 const EksArgs = z.object({
   action: z.enum(['create', 'delete', 'upgrade-addons']),
@@ -376,7 +376,7 @@ async function getKubernetesLogs(clusterName: string, addonName: string) {
       '-o', 'custom-columns=NAME:.metadata.name'
     ], { stdio: 'pipe' });
     
-    const podNames = podsResult.stdout.trim().split('\n').filter(name => name.trim());
+    const podNames = podsResult.stdout.trim().split('\n').filter((name: string) => name.trim());
     
     if (podNames.length > 0) {
       logInfo(`  Recent ${addonName} pod logs:`);
