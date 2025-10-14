@@ -22,8 +22,23 @@ async function ensurePrereqs() {
   await ensureBinaryExists('eksctl', ['version']);
 }
 
-function buildClusterYaml(args: EksArgs): string {
+function buildClusterYaml(args: EksArgs, availableAZs: string[]): string {
   const spotLine = args.spot ? '    spot: true\n' : '';
+  
+  // Validate availableAZs
+  if (!availableAZs || !Array.isArray(availableAZs)) {
+    throw new Error(`Invalid availableAZs: ${JSON.stringify(availableAZs)}`);
+  }
+  
+  if (availableAZs.length < 3) {
+    throw new Error(`Not enough AZs available: ${availableAZs.length} (need at least 3)`);
+  }
+  
+  // Use the first 3 available AZs
+  const selectedAZs = availableAZs.slice(0, 3);
+  
+  logInfo(`Using AZs: ${selectedAZs.join(', ')}`);
+  
   return `apiVersion: eksctl.io/v1alpha5
 kind: ClusterConfig
 metadata:
@@ -32,18 +47,35 @@ metadata:
   version: "${args.version}"
 iam:
   withOIDC: true
-# Let eksctl automatically select available AZs for high availability
+# Create separate node groups for each AZ to ensure 3 nodes in 3 AZs
 managedNodeGroups:
-  - name: ng-spot
+  - name: ng-spot-${selectedAZs[0].replace('us-east-1', '1')}
     amiFamily: AmazonLinux2023
     instanceTypes: [${JSON.stringify(args.nodeType)}]
-    desiredCapacity: ${args.nodes}
-    minSize: ${args.nodes}
-    maxSize: ${Math.max(args.nodes, args.nodes + 1)}
+    desiredCapacity: 1
+    minSize: 1
+    maxSize: 2
+    availabilityZones: ["${selectedAZs[0]}"]
 ${spotLine}    volumeSize: 50
-    labels: { workload: percona }
-    # Force distribution across multiple AZs
-    availabilityZones: []
+    labels: { workload: percona, az: ${selectedAZs[0]} }
+  - name: ng-spot-${selectedAZs[1].replace('us-east-1', '1')}
+    amiFamily: AmazonLinux2023
+    instanceTypes: [${JSON.stringify(args.nodeType)}]
+    desiredCapacity: 1
+    minSize: 1
+    maxSize: 2
+    availabilityZones: ["${selectedAZs[1]}"]
+${spotLine}    volumeSize: 50
+    labels: { workload: percona, az: ${selectedAZs[1]} }
+  - name: ng-spot-${selectedAZs[2].replace('us-east-1', '1')}
+    amiFamily: AmazonLinux2023
+    instanceTypes: [${JSON.stringify(args.nodeType)}]
+    desiredCapacity: 1
+    minSize: 1
+    maxSize: 2
+    availabilityZones: ["${selectedAZs[2]}"]
+${spotLine}    volumeSize: 50
+    labels: { workload: percona, az: ${selectedAZs[2]} }
 addons:
   - name: aws-ebs-csi-driver
     version: latest
@@ -52,29 +84,97 @@ addons:
 }
 
 async function getAvailableAZs(region: string): Promise<string[]> {
-  logInfo('Checking available availability zones...');
-  const { execa } = await import('execa');
+  logInfo('=== STARTING getAvailableAZs ===');
+  logInfo(`Region: ${region}`);
+  logInfo(`AWS_PROFILE: ${process.env.AWS_PROFILE}`);
+  logInfo(`process.env keys: ${Object.keys(process.env).filter(k => k.includes('AWS')).join(', ')}`);
+  
+  const { execSync } = await import('child_process');
   
   try {
-    const result = await execa('aws', ['ec2', 'describe-availability-zones', '--region', region, '--filters', 'Name=state,Values=available', '--query', 'AvailabilityZones[].ZoneName', '--output', 'text'], { stdio: 'pipe' });
-    const azs = result.stdout.trim().split('\t').filter(az => az.trim());
-    logInfo(`Available AZs: ${azs.join(', ')}`);
+    logInfo('About to execute AWS CLI command...');
+    const command = `AWS_PROFILE=${process.env.AWS_PROFILE} aws ec2 describe-availability-zones --region ${region} --filters Name=state,Values=available --output json`;
+    logInfo(`Command: ${command}`);
+    
+    const result = execSync(command, {
+      encoding: 'utf8',
+      stdio: 'pipe'
+    });
+    
+    logInfo('AWS CLI command executed successfully');
+    logInfo(`Raw result length: ${result.length}`);
+    logInfo(`Raw result (first 200 chars): ${result.substring(0, 200)}`);
+    
+    const data = JSON.parse(result);
+    logInfo(`Parsed JSON successfully`);
+    logInfo(`data.AvailabilityZones exists: ${!!data.AvailabilityZones}`);
+    logInfo(`data.AvailabilityZones length: ${data.AvailabilityZones ? data.AvailabilityZones.length : 'undefined'}`);
+    
+    if (!data.AvailabilityZones) {
+      throw new Error('AvailabilityZones not found in response');
+    }
+    
+    const azs = data.AvailabilityZones.map((az: any) => az.ZoneName);
+    logInfo(`Mapped AZs: ${JSON.stringify(azs)}`);
+    logInfo(`AZs length: ${azs.length}`);
+    
+    if (azs.length < 3) {
+      throw new Error(`Only ${azs.length} AZs available, need at least 3 for high availability`);
+    }
+    
+    logInfo(`=== RETURNING FROM getAvailableAZs: ${JSON.stringify(azs)} ===`);
     return azs;
   } catch (error) {
-    logWarn(`Could not determine available AZs: ${error}`);
-    return ['us-east-1a', 'us-east-1b']; // Fallback to common AZs
+    logError(`=== ERROR IN getAvailableAZs ===`);
+    logError(`Error type: ${typeof error}`);
+    logError(`Error message: ${error.message}`);
+    logError(`Error stack: ${error.stack}`);
+    logError(`Full error: ${JSON.stringify(error)}`);
+    throw new Error(`Cannot determine available AZs for region ${region}: ${error.message}`);
   }
 }
 
 async function createCluster(args: EksArgs) {
+  logInfo('=== STARTING createCluster ===');
+  logInfo(`Args: ${JSON.stringify(args)}`);
+  
   await ensurePrereqs();
+  logInfo('Prerequisites checked');
   
-  // Check available AZs and create appropriate configuration
-  const availableAZs = await getAvailableAZs(args.region);
-  const yaml = buildClusterYaml(args);
-  
-  logInfo('Creating EKS cluster via eksctl...');
-  await createClusterWithStdin(yaml);
+  try {
+    // Query AWS for actual available AZs - no fallbacks
+    logInfo('Querying AWS for availability zones...');
+    logInfo('About to call getAvailableAZs...');
+    logInfo(`Function exists: ${typeof getAvailableAZs}`);
+    
+    let availableAZs;
+    try {
+      logInfo('Calling getAvailableAZs now...');
+      availableAZs = await getAvailableAZs(args.region);
+      logInfo('getAvailableAZs completed successfully');
+    } catch (azError) {
+      logError('getAvailableAZs threw an error:', azError);
+      throw azError;
+    }
+    
+    logInfo(`getAvailableAZs returned: ${JSON.stringify(availableAZs)}`);
+    logInfo(`availableAZs type: ${typeof availableAZs}`);
+    logInfo(`availableAZs is array: ${Array.isArray(availableAZs)}`);
+    
+    if (!availableAZs) {
+      throw new Error('getAvailableAZs returned undefined');
+    }
+    
+    logInfo(`Successfully retrieved ${availableAZs.length} available AZs: ${availableAZs.join(', ')}`);
+    
+    const yaml = buildClusterYaml(args, availableAZs);
+    
+    logInfo('Creating EKS cluster via eksctl...');
+    await createClusterWithStdin(yaml);
+  } catch (error) {
+    logError('Failed to create cluster:', error);
+    throw error;
+  }
   
   logSuccess(`EKS cluster ${args.name} created successfully`);
   
@@ -647,8 +747,7 @@ async function main() {
 
   try {
     if (parsed.action === 'create') {
-      const yaml = buildClusterYaml(parsed);
-      await createClusterWithStdin(yaml);
+      await createCluster(parsed);
       logSuccess('EKS cluster created. Upgrading addons...');
       await upgradeAddons(parsed.name, parsed.region);
       logSuccess('Updating kubeconfig...');
