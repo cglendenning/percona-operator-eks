@@ -47,35 +47,17 @@ metadata:
   version: "${args.version}"
 iam:
   withOIDC: true
-# Create separate node groups for each AZ to ensure 3 nodes in 3 AZs
+# Single node group with 3 nodes distributed across AZs
 managedNodeGroups:
-  - name: ng-spot-${selectedAZs[0].replace('us-east-1', '1')}
+  - name: ng-percona
     amiFamily: AmazonLinux2023
     instanceTypes: [${JSON.stringify(args.nodeType)}]
-    desiredCapacity: 1
-    minSize: 1
-    maxSize: 2
-    availabilityZones: ["${selectedAZs[0]}"]
+    desiredCapacity: 3
+    minSize: 3
+    maxSize: 6
+    availabilityZones: ["${selectedAZs[0]}", "${selectedAZs[1]}", "${selectedAZs[2]}"]
 ${spotLine}    volumeSize: 50
-    labels: { workload: percona, az: ${selectedAZs[0]} }
-  - name: ng-spot-${selectedAZs[1].replace('us-east-1', '1')}
-    amiFamily: AmazonLinux2023
-    instanceTypes: [${JSON.stringify(args.nodeType)}]
-    desiredCapacity: 1
-    minSize: 1
-    maxSize: 2
-    availabilityZones: ["${selectedAZs[1]}"]
-${spotLine}    volumeSize: 50
-    labels: { workload: percona, az: ${selectedAZs[1]} }
-  - name: ng-spot-${selectedAZs[2].replace('us-east-1', '1')}
-    amiFamily: AmazonLinux2023
-    instanceTypes: [${JSON.stringify(args.nodeType)}]
-    desiredCapacity: 1
-    minSize: 1
-    maxSize: 2
-    availabilityZones: ["${selectedAZs[2]}"]
-${spotLine}    volumeSize: 50
-    labels: { workload: percona, az: ${selectedAZs[2]} }
+    labels: { workload: percona }
 addons:
   - name: aws-ebs-csi-driver
     version: latest
