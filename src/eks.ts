@@ -32,35 +32,18 @@ metadata:
   version: "${args.version}"
 iam:
   withOIDC: true
-# Create separate node groups for each AZ to ensure proper distribution
+# Let eksctl automatically select available AZs for high availability
 managedNodeGroups:
-  - name: ng-spot-1a
+  - name: ng-spot
     amiFamily: AmazonLinux2023
     instanceTypes: [${JSON.stringify(args.nodeType)}]
-    desiredCapacity: 1
-    minSize: 1
-    maxSize: 2
-    availabilityZones: ["us-east-1a"]
+    desiredCapacity: ${args.nodes}
+    minSize: ${args.nodes}
+    maxSize: ${Math.max(args.nodes, args.nodes + 1)}
 ${spotLine}    volumeSize: 50
-    labels: { workload: percona, az: us-east-1a }
-  - name: ng-spot-1b
-    amiFamily: AmazonLinux2023
-    instanceTypes: [${JSON.stringify(args.nodeType)}]
-    desiredCapacity: 1
-    minSize: 1
-    maxSize: 2
-    availabilityZones: ["us-east-1b"]
-${spotLine}    volumeSize: 50
-    labels: { workload: percona, az: us-east-1b }
-  - name: ng-spot-1c
-    amiFamily: AmazonLinux2023
-    instanceTypes: [${JSON.stringify(args.nodeType)}]
-    desiredCapacity: 1
-    minSize: 1
-    maxSize: 2
-    availabilityZones: ["us-east-1c"]
-${spotLine}    volumeSize: 50
-    labels: { workload: percona, az: us-east-1c }
+    labels: { workload: percona }
+    # Force distribution across multiple AZs
+    availabilityZones: []
 addons:
   - name: aws-ebs-csi-driver
     version: latest
@@ -68,9 +51,28 @@ addons:
 `; 
 }
 
+async function getAvailableAZs(region: string): Promise<string[]> {
+  logInfo('Checking available availability zones...');
+  const { execa } = await import('execa');
+  
+  try {
+    const result = await execa('aws', ['ec2', 'describe-availability-zones', '--region', region, '--filters', 'Name=state,Values=available', '--query', 'AvailabilityZones[].ZoneName', '--output', 'text'], { stdio: 'pipe' });
+    const azs = result.stdout.trim().split('\t').filter(az => az.trim());
+    logInfo(`Available AZs: ${azs.join(', ')}`);
+    return azs;
+  } catch (error) {
+    logWarn(`Could not determine available AZs: ${error}`);
+    return ['us-east-1a', 'us-east-1b']; // Fallback to common AZs
+  }
+}
+
 async function createCluster(args: EksArgs) {
   await ensurePrereqs();
+  
+  // Check available AZs and create appropriate configuration
+  const availableAZs = await getAvailableAZs(args.region);
   const yaml = buildClusterYaml(args);
+  
   logInfo('Creating EKS cluster via eksctl...');
   await createClusterWithStdin(yaml);
   
