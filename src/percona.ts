@@ -53,7 +53,17 @@ function clusterValues(nodes: number): string {
       memory: 2Gi
       cpu: 1
 proxyHaproxy:
+  enabled: false
+proxyProxysql:
   enabled: true
+  size: 3
+  resources:
+    requests:
+      memory: 256Mi
+      cpu: 100m
+    limits:
+      memory: 512Mi
+      cpu: 500m
 `;}
 
 async function createStorageClass() {
@@ -111,11 +121,11 @@ async function waitForClusterReady(ns: string, name: string, nodes: number) {
       const pxc = JSON.parse(pxcResult.stdout);
       
       const pxcCount = pxc.status?.pxc || 0;
-      const haproxyCount = pxc.status?.haproxy || 0;
+      const proxysqlCount = pxc.status?.proxysql || 0;
       const status = pxc.status?.status || 'unknown';
       
       const elapsed = Math.round((Date.now() - startTime) / 1000);
-      logInfo(`Cluster status: ${status}, PXC: ${pxcCount}/${nodes}, HAProxy: ${haproxyCount} (${elapsed}s elapsed)`);
+      logInfo(`Cluster status: ${status}, PXC: ${pxcCount}/${nodes}, ProxySQL: ${proxysqlCount} (${elapsed}s elapsed)`);
       
       // Check if all PXC pods are ready
       const podsResult = await execa('kubectl', ['get', 'pods', '-n', ns, '-l', 'app.kubernetes.io/name=percona-xtradb-cluster', '--no-headers'], { stdio: 'pipe' });
