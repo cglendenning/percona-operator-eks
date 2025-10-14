@@ -1,0 +1,23 @@
+{
+  "name": "percona-eks-automation",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "eks": "tsx src/eks.ts",
+    "percona": "tsx src/percona.ts"
+  },
+  "dependencies": {
+    "chalk": "^5.3.0",
+    "execa": "^9.3.0",
+    "yargs": "^17.7.2",
+    "zod": "^3.23.8"
+  },
+  "devDependencies": {
+    "tsx": "^4.19.2",
+    "typescript": "^5.6.3"
+  }
+}
+
+
