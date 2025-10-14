@@ -63,20 +63,227 @@ async function createClusterWithStdin(yaml: string) {
   await subprocess;
 }
 
-async function upgradeAddons(clusterName: string, region: string) {
-  logInfo('Upgrading all EKS addons to latest versions...');
+async function getAddonLogs(clusterName: string, addonName: string, region: string, startTime?: Date) {
+  const { execa } = await import('execa');
+  
   try {
-    // Get list of installed addons
+    // Get CloudWatch logs for the addon
+    const logGroupName = `/aws/eks/${clusterName}/cluster`;
+    const logStreamPrefix = addonName === 'vpc-cni' ? 'vpc-cni' : addonName;
+    
+    // Get recent log streams
+    const streamsResult = await execa('aws', [
+      'logs', 'describe-log-streams',
+      '--log-group-name', logGroupName,
+      '--log-stream-name-prefix', logStreamPrefix,
+      '--order-by', 'LastEventTime',
+      '--descending',
+      '--max-items', '5',
+      '--region', region
+    ], { stdio: 'pipe' });
+    
+    const streams = JSON.parse(streamsResult.stdout).logStreams || [];
+    
+    if (streams.length === 0) {
+      logInfo(`  No CloudWatch logs found for ${addonName}`);
+      return;
+    }
+    
+    // Get logs from the most recent stream
+    const latestStream = streams[0];
+    const logStreamName = latestStream.logStreamName;
+    
+    // Build time filter if startTime provided
+    const timeFilter = startTime ? [
+      '--start-time', Math.floor(startTime.getTime() / 1000).toString()
+    ] : [
+      '--start-time', Math.floor((Date.now() - 300000) / 1000).toString() // Last 5 minutes
+    ];
+    
+    // Get recent log events
+    const logsResult = await execa('aws', [
+      'logs', 'get-log-events',
+      '--log-group-name', logGroupName,
+      '--log-stream-name', logStreamName,
+      '--region', region,
+      '--limit', '20',
+      ...timeFilter
+    ], { stdio: 'pipe' });
+    
+    const logEvents = JSON.parse(logsResult.stdout).events || [];
+    
+    if (logEvents.length > 0) {
+      logInfo(`  Recent ${addonName} logs:`);
+      logEvents.slice(-5).forEach((event: any) => {
+        const timestamp = new Date(event.timestamp).toISOString();
+        const message = event.message.trim();
+        if (message) {
+          logInfo(`    [${timestamp}] ${message}`);
+        }
+      });
+    } else {
+      logInfo(`  No recent log events found for ${addonName}`);
+    }
+    
+  } catch (error) {
+    logWarn(`  Could not retrieve logs for ${addonName}: ${error}`);
+  }
+}
+
+async function getKubernetesLogs(clusterName: string, addonName: string) {
+  try {
+    // Get kubectl context
+    await run('kubectl', ['config', 'current-context']);
+    
+    // Get logs from addon pods
+    const namespace = addonName === 'vpc-cni' ? 'kube-system' : 'kube-system';
+    const podSelector = addonName === 'vpc-cni' ? 'app=vpc-cni' : `app=${addonName}`;
+    
+    // Get pod names
+    const { execa } = await import('execa');
+    const podsResult = await execa('kubectl', [
+      'get', 'pods',
+      '-n', namespace,
+      '-l', podSelector,
+      '--no-headers',
+      '-o', 'custom-columns=NAME:.metadata.name'
+    ], { stdio: 'pipe' });
+    
+    const podNames = podsResult.stdout.trim().split('\n').filter(name => name.trim());
+    
+    if (podNames.length > 0) {
+      logInfo(`  Recent ${addonName} pod logs:`);
+      for (const podName of podNames.slice(0, 2)) { // Limit to 2 pods
+        try {
+          const logsResult = await execa('kubectl', [
+            'logs', podName,
+            '-n', namespace,
+            '--tail', '10',
+            '--since', '2m'
+          ], { stdio: 'pipe' });
+          
+          const logs = logsResult.stdout.trim();
+          if (logs) {
+            logInfo(`    Pod ${podName}:`);
+            logs.split('\n').slice(-5).forEach(line => {
+              if (line.trim()) {
+                logInfo(`      ${line}`);
+              }
+            });
+          }
+        } catch (podError) {
+          logWarn(`    Could not get logs from pod ${podName}: ${podError}`);
+        }
+      }
+    } else {
+      logInfo(`  No ${addonName} pods found`);
+    }
+    
+  } catch (error) {
+    logWarn(`  Could not retrieve Kubernetes logs for ${addonName}: ${error}`);
+  }
+}
+
+async function waitForAddonWithProgress(clusterName: string, addonName: string, region: string, timeoutSeconds: number) {
+  const { execa } = await import('execa');
+  const startTime = Date.now();
+  const timeout = timeoutSeconds * 1000;
+  let lastLogCheck = 0;
+  
+  logInfo(`Monitoring ${addonName} progress (timeout: ${timeoutSeconds}s)...`);
+  
+  while (Date.now() - startTime < timeout) {
+    try {
+      // Get current addon status
+      const result = await execa('aws', ['eks', 'describe-addon', '--cluster-name', clusterName, '--addon-name', addonName, '--region', region], { stdio: 'pipe' });
+      const addonInfo = JSON.parse(result.stdout).addon;
+      const status = addonInfo.status;
+      const health = addonInfo.health;
+      
+      const elapsed = Math.round((Date.now() - startTime) / 1000);
+      
+      if (status === 'ACTIVE') {
+        logSuccess(`${addonName} is now ACTIVE (took ${elapsed}s)`);
+        return;
+      }
+      
+      // Log current status with progress info
+      let statusMessage = `${addonName} status: ${status}`;
+      if (health && health.issues && health.issues.length > 0) {
+        statusMessage += ` (${health.issues.length} issue(s))`;
+      }
+      if (addonInfo.addonVersion) {
+        statusMessage += ` - version: ${addonInfo.addonVersion}`;
+      }
+      statusMessage += ` - elapsed: ${elapsed}s`;
+      
+      logInfo(statusMessage);
+      
+      // Show logs every 30 seconds for VPC CNI, every 60 seconds for others
+      const logInterval = addonName === 'vpc-cni' ? 30000 : 60000;
+      if (Date.now() - lastLogCheck > logInterval) {
+        lastLogCheck = Date.now();
+        
+        // Get CloudWatch logs
+        await getAddonLogs(clusterName, addonName, region, new Date(startTime));
+        
+        // Get Kubernetes logs
+        await getKubernetesLogs(clusterName, addonName);
+      }
+      
+      // Wait before next check
+      await new Promise(resolve => setTimeout(resolve, 10000)); // Check every 10 seconds
+      
+    } catch (error) {
+      const elapsed = Math.round((Date.now() - startTime) / 1000);
+      logWarn(`Error checking ${addonName} status (${elapsed}s): ${error}`);
+      await new Promise(resolve => setTimeout(resolve, 10000));
+    }
+  }
+  
+  throw new Error(`${addonName} did not become ACTIVE within ${timeoutSeconds} seconds`);
+}
+
+async function upgradeAddons(clusterName: string, region: string) {
+  logInfo('Ensuring all expected addons are installed and upgraded to latest versions...');
+  try {
+    // Expected addons that should be present
+    const expectedAddons = [
+      'aws-ebs-csi-driver',
+      'vpc-cni', 
+      'coredns',
+      'kube-proxy',
+      'metrics-server'
+    ];
+    
+    // Get list of currently installed addons
     const { execa } = await import('execa');
     const result = await execa('aws', ['eks', 'list-addons', '--cluster-name', clusterName, '--region', region], { stdio: 'pipe' });
-    const addons = JSON.parse(result.stdout).addons || [];
+    const installedAddons = JSON.parse(result.stdout).addons || [];
+    
+    // Install missing addons
+    const missingAddons = expectedAddons.filter(addon => !installedAddons.includes(addon));
+    if (missingAddons.length > 0) {
+      logInfo(`Installing missing addons: ${missingAddons.join(', ')}`);
+      for (const addonName of missingAddons) {
+        logInfo(`Installing ${addonName}...`);
+        await run('aws', ['eks', 'create-addon', '--cluster-name', clusterName, '--addon-name', addonName, '--region', region, '--resolve-conflicts', 'OVERWRITE']);
+        // Wait for addon to be active with progress monitoring
+        logInfo(`Waiting for ${addonName} to be active...`);
+        await waitForAddonWithProgress(clusterName, addonName, region, 300);
+        logSuccess(`${addonName} installed successfully`);
+      }
+    }
+    
+    // Now upgrade all addons (including newly installed ones)
+    const allAddons = [...new Set([...installedAddons, ...missingAddons])];
     
     let upgradedCount = 0;
     let skippedCount = 0;
     let alreadyLatestCount = 0;
     
     // Upgrade each addon
-    for (const addonName of addons) {
+    for (const addonName of allAddons) {
       logInfo(`Checking addon: ${addonName}`);
       
       // Get current addon info
@@ -121,21 +328,21 @@ async function upgradeAddons(clusterName: string, region: string) {
       logInfo(`Upgrading ${addonName} from ${currentVersion} to ${latestVersion}...`);
       await run('aws', ['eks', 'update-addon', '--cluster-name', clusterName, '--addon-name', addonName, '--addon-version', latestVersion, '--region', region, '--resolve-conflicts', 'OVERWRITE']);
       
-      // Wait for addon to be active with longer timeout for VPC CNI
-      logInfo(`Waiting for ${addonName} to be active (this may take several minutes for VPC CNI)...`);
-      try {
-        if (addonName === 'vpc-cni') {
-          // VPC CNI can take 15+ minutes, use longer timeout
-          await run('aws', ['eks', 'wait', 'addon-active', '--cluster-name', clusterName, '--addon-name', addonName, '--region', region, '--cli-read-timeout', '1200', '--cli-connect-timeout', '60']);
-        } else {
-          await run('aws', ['eks', 'wait', 'addon-active', '--cluster-name', clusterName, '--addon-name', addonName, '--region', region]);
-        }
-        logSuccess(`${addonName} upgraded to ${latestVersion}`);
-        upgradedCount++;
-      } catch (waitError) {
-        logWarn(`${addonName} upgrade may still be in progress. Check status manually with: aws eks describe-addon --cluster-name ${clusterName} --addon-name ${addonName} --region ${region}`);
-        upgradedCount++; // Count as upgraded even if we can't confirm completion
-      }
+          // Wait for addon to be active with progress monitoring
+          logInfo(`Waiting for ${addonName} to be active (this may take several minutes for VPC CNI)...`);
+          try {
+            if (addonName === 'vpc-cni') {
+              // VPC CNI can take 15+ minutes, monitor progress
+              await waitForAddonWithProgress(clusterName, addonName, region, 1200);
+            } else {
+              await waitForAddonWithProgress(clusterName, addonName, region, 300);
+            }
+            logSuccess(`${addonName} upgraded to ${latestVersion}`);
+            upgradedCount++;
+          } catch (waitError) {
+            logWarn(`${addonName} upgrade may still be in progress. Check status manually with: aws eks describe-addon --cluster-name ${clusterName} --addon-name ${addonName} --region ${region}`);
+            upgradedCount++; // Count as upgraded even if we can't confirm completion
+          }
     }
     
     // Provide accurate summary
