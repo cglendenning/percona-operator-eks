@@ -29,7 +29,12 @@ async function ensureNamespace(ns: string) {
 }
 
 async function addRepos(repoUrl: string) {
-  await run('helm', ['repo', 'add', 'percona', repoUrl]);
+  try {
+    await run('helm', ['repo', 'add', 'percona', repoUrl]);
+  } catch (err) {
+    // Repo already exists, that's fine
+    logInfo('Percona repo already exists, continuing...');
+  }
   await run('helm', ['repo', 'update']);
 }
 
