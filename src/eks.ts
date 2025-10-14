@@ -7,7 +7,7 @@ const EksArgs = z.object({
   action: z.enum(['create', 'delete']),
   name: z.string().default('percona-eks'),
   region: z.string().default('us-east-1'),
-  version: z.string().default('1.31'),
+  version: z.string().default('1.33'),
   nodeType: z.string().default('m6i.large'),
   nodes: z.coerce.number().int().positive().default(3),
   spot: z.coerce.boolean().default(true),
