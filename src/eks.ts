@@ -2,6 +2,7 @@ import { z } from 'zod';
 import { ensureBinaryExists, logError, logInfo, logSuccess, logWarn, run } from './utils.js';
 import yargs from 'yargs';
 import { hideBin } from 'yargs/helpers';
+import process from 'process';
 
 const EksArgs = z.object({
   action: z.enum(['create', 'delete', 'upgrade-addons']),
@@ -51,8 +52,23 @@ async function createCluster(args: EksArgs) {
   await ensurePrereqs();
   const yaml = buildClusterYaml(args);
   logInfo('Creating EKS cluster via eksctl...');
-  await run('eksctl', ['create', 'cluster', '--config-file=-'], { stdio: 'pipe' });
-  // The above execa call with stdio pipe won't send stdin; use a separate call that writes stdin
+  await createClusterWithStdin(yaml);
+  
+  logSuccess(`EKS cluster ${args.name} created successfully`);
+  
+  // Wait for cluster to be ready
+  await waitForClusterReady(args.name, args.region);
+  
+  // Fix IAM permissions for VPC CNI
+  await fixVpcCniPermissions(args.name, args.region);
+  
+  // Setup EBS CSI driver with proper IAM role
+  await setupEbsCsiDriver(args.name, args.region);
+  
+  // Wait for all addons to be active
+  await waitForAddonsActive(args.name, args.region);
+  
+  logSuccess(`EKS cluster ${args.name} is fully ready with all addons`);
 }
 
 async function createClusterWithStdin(yaml: string) {
@@ -61,6 +77,217 @@ async function createClusterWithStdin(yaml: string) {
   subprocess.stdin?.write(yaml);
   subprocess.stdin?.end();
   await subprocess;
+}
+
+async function waitForClusterReady(clusterName: string, region: string) {
+  logInfo('Waiting for EKS cluster to be ready...');
+  const { execa } = await import('execa');
+  const startTime = Date.now();
+  const timeout = 20 * 60 * 1000; // 20 minutes
+  
+  while (Date.now() - startTime < timeout) {
+    try {
+      const result = await execa('aws', ['eks', 'describe-cluster', '--name', clusterName, '--region', region], { stdio: 'pipe' });
+      const cluster = JSON.parse(result.stdout).cluster;
+      
+      if (cluster.status === 'ACTIVE') {
+        logSuccess(`EKS cluster ${clusterName} is ready`);
+        return;
+      }
+      
+      const elapsed = Math.round((Date.now() - startTime) / 1000);
+      logInfo(`Cluster status: ${cluster.status} (${elapsed}s elapsed)`);
+      
+      await new Promise(resolve => setTimeout(resolve, 30000)); // Wait 30 seconds
+    } catch (error) {
+      const elapsed = Math.round((Date.now() - startTime) / 1000);
+      logWarn(`Error checking cluster status (${elapsed}s): ${error}`);
+      await new Promise(resolve => setTimeout(resolve, 30000));
+    }
+  }
+  
+  throw new Error(`EKS cluster ${clusterName} did not become ready within 20 minutes`);
+}
+
+async function fixVpcCniPermissions(clusterName: string, region: string) {
+  logInfo('Fixing VPC CNI IAM permissions...');
+  const { execa } = await import('execa');
+  
+  try {
+    // Get the node group role name
+    const nodeGroupResult = await execa('aws', ['eks', 'describe-nodegroup', '--cluster-name', clusterName, '--nodegroup-name', 'ng-spot', '--region', region], { stdio: 'pipe' });
+    const nodeGroup = JSON.parse(nodeGroupResult.stdout).nodegroup;
+    const nodeGroupRoleArn = nodeGroup.nodeRole;
+    const nodeGroupRoleName = nodeGroupRoleArn.split('/').pop();
+    
+    if (!nodeGroupRoleName) {
+      throw new Error('Could not extract node group role name');
+    }
+    
+    // Attach VPC CNI policy to node group role
+    logInfo(`Attaching VPC CNI policy to node group role: ${nodeGroupRoleName}`);
+    await run('aws', ['iam', 'attach-role-policy', '--role-name', nodeGroupRoleName, '--policy-arn', 'arn:aws:iam::aws:policy/AmazonEKS_CNI_Policy']);
+    
+    logSuccess('VPC CNI IAM permissions fixed');
+  } catch (error) {
+    logWarn(`Failed to fix VPC CNI permissions: ${error}`);
+    // Continue anyway as this might already be fixed
+  }
+}
+
+async function setupEbsCsiDriver(clusterName: string, region: string) {
+  logInfo('Setting up EBS CSI driver with proper IAM role...');
+  const { execa } = await import('execa');
+  
+  try {
+    // Get cluster OIDC issuer URL
+    const clusterResult = await execa('aws', ['eks', 'describe-cluster', '--name', clusterName, '--region', region], { stdio: 'pipe' });
+    const cluster = JSON.parse(clusterResult.stdout).cluster;
+    const oidcIssuer = cluster.identity.oidc.issuer;
+    const oidcId = oidcIssuer.split('/').pop();
+    
+    if (!oidcId) {
+      throw new Error('Could not extract OIDC ID');
+    }
+    
+    const accountId = await getAccountId();
+    const roleName = 'AmazonEKS_EBS_CSI_DriverRole';
+    const roleArn = `arn:aws:iam::${accountId}:role/${roleName}`;
+    
+    // Create IAM role for EBS CSI driver
+    logInfo('Creating IAM role for EBS CSI driver...');
+    try {
+      await run('aws', ['iam', 'create-role', '--role-name', roleName, '--assume-role-policy-document', JSON.stringify({
+        Version: '2012-10-17',
+        Statement: [{
+          Effect: 'Allow',
+          Principal: {
+            Federated: `arn:aws:iam::${accountId}:oidc-provider/oidc.eks.${region}.amazonaws.com/id/${oidcId}`
+          },
+          Action: 'sts:AssumeRoleWithWebIdentity',
+          Condition: {
+            StringEquals: {
+              [`oidc.eks.${region}.amazonaws.com/id/${oidcId}:sub`]: 'system:serviceaccount:kube-system:ebs-csi-controller-sa',
+              [`oidc.eks.${region}.amazonaws.com/id/${oidcId}:aud`]: 'sts.amazonaws.com'
+            }
+          }
+        }]
+      })]);
+    } catch (error) {
+      if (error instanceof Error && error.toString().includes('EntityAlreadyExists')) {
+        logInfo('EBS CSI driver IAM role already exists');
+      } else {
+        throw error;
+      }
+    }
+    
+    // Attach EBS CSI driver policy
+    await run('aws', ['iam', 'attach-role-policy', '--role-name', roleName, '--policy-arn', 'arn:aws:iam::aws:policy/service-role/AmazonEBSCSIDriverPolicy']);
+    
+    // Update service account annotation
+    logInfo('Updating EBS CSI driver service account...');
+    await run('kubectl', ['annotate', 'serviceaccount', 'ebs-csi-controller-sa', '-n', 'kube-system', `eks.amazonaws.com/role-arn=${roleArn}`, '--overwrite']);
+    
+    // Restart EBS CSI controller
+    logInfo('Restarting EBS CSI controller...');
+    await run('kubectl', ['rollout', 'restart', 'deployment/ebs-csi-controller', '-n', 'kube-system']);
+    
+    // Wait for EBS CSI controller to be ready
+    await waitForEbsCsiController();
+    
+    logSuccess('EBS CSI driver setup complete');
+  } catch (error) {
+    logWarn(`Failed to setup EBS CSI driver: ${error}`);
+    // Continue anyway as this might already be working
+  }
+}
+
+async function getAccountId(): Promise<string> {
+  const { execa } = await import('execa');
+  const result = await execa('aws', ['sts', 'get-caller-identity'], { stdio: 'pipe' });
+  const identity = JSON.parse(result.stdout);
+  return identity.Account;
+}
+
+async function waitForEbsCsiController() {
+  logInfo('Waiting for EBS CSI controller to be ready...');
+  const { execa } = await import('execa');
+  const startTime = Date.now();
+  const timeout = 10 * 60 * 1000; // 10 minutes
+  
+  while (Date.now() - startTime < timeout) {
+    try {
+      const result = await execa('kubectl', ['get', 'pods', '-n', 'kube-system', '-l', 'app=ebs-csi-controller'], { stdio: 'pipe' });
+      const lines = result.stdout.trim().split('\n').slice(1); // Skip header
+      
+      if (lines.length > 0) {
+        const allReady = lines.every((line: string) => {
+          const parts = line.split(/\s+/);
+          const ready = parts[1];
+          return ready.includes('/') && ready.split('/')[0] === ready.split('/')[1];
+        });
+        
+        if (allReady) {
+          logSuccess('EBS CSI controller is ready');
+          return;
+        }
+      }
+      
+      const elapsed = Math.round((Date.now() - startTime) / 1000);
+      logInfo(`EBS CSI controller not ready yet (${elapsed}s elapsed)`);
+      
+      await new Promise(resolve => setTimeout(resolve, 30000)); // Wait 30 seconds
+    } catch (error) {
+      const elapsed = Math.round((Date.now() - startTime) / 1000);
+      logWarn(`Error checking EBS CSI controller (${elapsed}s): ${error}`);
+      await new Promise(resolve => setTimeout(resolve, 30000));
+    }
+  }
+  
+  throw new Error('EBS CSI controller did not become ready within 10 minutes');
+}
+
+async function waitForAddonsActive(clusterName: string, region: string) {
+  logInfo('Waiting for all EKS addons to be active...');
+  const { execa } = await import('execa');
+  const startTime = Date.now();
+  const timeout = 30 * 60 * 1000; // 30 minutes
+  
+  const expectedAddons = ['vpc-cni', 'aws-ebs-csi-driver', 'coredns', 'kube-proxy', 'metrics-server'];
+  
+  while (Date.now() - startTime < timeout) {
+    try {
+      const result = await execa('aws', ['eks', 'list-addons', '--cluster-name', clusterName, '--region', region], { stdio: 'pipe' });
+      const addons = JSON.parse(result.stdout).addons || [];
+      
+      let allActive = true;
+      for (const addonName of expectedAddons) {
+        if (addons.includes(addonName)) {
+          const addonResult = await execa('aws', ['eks', 'describe-addon', '--cluster-name', clusterName, '--addon-name', addonName, '--region', region], { stdio: 'pipe' });
+          const addon = JSON.parse(addonResult.stdout).addon;
+          
+          if (addon.status !== 'ACTIVE') {
+            allActive = false;
+            const elapsed = Math.round((Date.now() - startTime) / 1000);
+            logInfo(`${addonName} status: ${addon.status} (${elapsed}s elapsed)`);
+          }
+        }
+      }
+      
+      if (allActive) {
+        logSuccess('All EKS addons are active');
+        return;
+      }
+      
+      await new Promise(resolve => setTimeout(resolve, 60000)); // Wait 1 minute
+    } catch (error) {
+      const elapsed = Math.round((Date.now() - startTime) / 1000);
+      logWarn(`Error checking addon status (${elapsed}s): ${error}`);
+      await new Promise(resolve => setTimeout(resolve, 60000));
+    }
+  }
+  
+  throw new Error('Not all EKS addons became active within 30 minutes');
 }
 
 async function getAddonLogs(clusterName: string, addonName: string, region: string, startTime?: Date) {
@@ -114,7 +341,7 @@ async function getAddonLogs(clusterName: string, addonName: string, region: stri
     
     if (logEvents.length > 0) {
       logInfo(`  Recent ${addonName} logs:`);
-      logEvents.slice(-5).forEach((event: any) => {
+      logEvents.slice(-5).forEach((event: { timestamp: number; message: string }) => {
         const timestamp = new Date(event.timestamp).toISOString();
         const message = event.message.trim();
         if (message) {
@@ -165,7 +392,7 @@ async function getKubernetesLogs(clusterName: string, addonName: string) {
           const logs = logsResult.stdout.trim();
           if (logs) {
             logInfo(`    Pod ${podName}:`);
-            logs.split('\n').slice(-5).forEach(line => {
+            logs.split('\n').slice(-5).forEach((line: string) => {
               if (line.trim()) {
                 logInfo(`      ${line}`);
               }

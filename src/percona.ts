@@ -56,6 +56,39 @@ proxyHaproxy:
   enabled: true
 `;}
 
+async function createStorageClass() {
+  logInfo('Creating gp3 storage class...');
+  const storageClassYaml = `apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: gp3
+  annotations:
+    storageclass.kubernetes.io/is-default-class: "true"
+provisioner: ebs.csi.aws.com
+allowVolumeExpansion: true
+parameters:
+  type: gp3
+  fsType: xfs
+  encrypted: "true"
+reclaimPolicy: Delete
+volumeBindingMode: WaitForFirstConsumer`;
+
+  const { execa } = await import('execa');
+  const proc = execa('kubectl', ['apply', '-f', '-'], { stdio: ['pipe', 'inherit', 'inherit'] });
+  proc.stdin?.write(storageClassYaml);
+  proc.stdin?.end();
+  await proc;
+
+  // Remove default from gp2
+  try {
+    await run('kubectl', ['patch', 'storageclass', 'gp2', '-p', '{"metadata":{"annotations":{"storageclass.kubernetes.io/is-default-class":"false"}}}']);
+  } catch (error) {
+    logInfo('gp2 storage class not found or already not default');
+  }
+
+  logSuccess('Storage class created');
+}
+
 async function installCluster(ns: string, name: string, nodes: number) {
   const values = clusterValues(nodes);
   const { execa } = await import('execa');
@@ -63,6 +96,53 @@ async function installCluster(ns: string, name: string, nodes: number) {
   proc.stdin?.write(values);
   proc.stdin?.end();
   await proc;
+}
+
+async function waitForClusterReady(ns: string, name: string, nodes: number) {
+  logInfo(`Waiting for Percona cluster ${name} to be ready...`);
+  const { execa } = await import('execa');
+  const startTime = Date.now();
+  const timeout = 30 * 60 * 1000; // 30 minutes
+  
+  while (Date.now() - startTime < timeout) {
+    try {
+      // Check PXC custom resource status
+      const pxcResult = await execa('kubectl', ['get', 'pxc', name, '-n', ns, '-o', 'json'], { stdio: 'pipe' });
+      const pxc = JSON.parse(pxcResult.stdout);
+      
+      const pxcCount = pxc.status?.pxc || 0;
+      const haproxyCount = pxc.status?.haproxy || 0;
+      const status = pxc.status?.status || 'unknown';
+      
+      const elapsed = Math.round((Date.now() - startTime) / 1000);
+      logInfo(`Cluster status: ${status}, PXC: ${pxcCount}/${nodes}, HAProxy: ${haproxyCount} (${elapsed}s elapsed)`);
+      
+      // Check if all PXC pods are ready
+      const podsResult = await execa('kubectl', ['get', 'pods', '-n', ns, '-l', 'app.kubernetes.io/name=percona-xtradb-cluster', '--no-headers'], { stdio: 'pipe' });
+      const podLines = podsResult.stdout.trim().split('\n').filter(line => line.includes('pxc-cluster-pxc-db-pxc-'));
+      
+      if (podLines.length >= nodes) {
+        const allReady = podLines.every(line => {
+          const parts = line.split(/\s+/);
+          const ready = parts[1];
+          return ready.includes('/') && ready.split('/')[0] === ready.split('/')[1];
+        });
+        
+        if (allReady && pxcCount >= nodes && status === 'ready') {
+          logSuccess(`Percona cluster ${name} is ready with ${nodes} nodes`);
+          return;
+        }
+      }
+      
+      await new Promise(resolve => setTimeout(resolve, 30000)); // Wait 30 seconds
+    } catch (error) {
+      const elapsed = Math.round((Date.now() - startTime) / 1000);
+      logWarn(`Error checking cluster status (${elapsed}s): ${error}`);
+      await new Promise(resolve => setTimeout(resolve, 30000));
+    }
+  }
+  
+  throw new Error(`Percona cluster ${name} did not become ready within 30 minutes`);
 }
 
 async function uninstall(ns: string, name: string) {
@@ -102,11 +182,20 @@ async function main() {
     if (parsed.action === 'install') {
       await ensureNamespace(parsed.namespace);
       await addRepos(parsed.helmRepo);
+      
+      // Create storage class first
+      await createStorageClass();
+      
       logInfo('Installing Percona operator...');
       await installOperator(parsed.namespace);
+      
       logInfo('Installing Percona cluster...');
       await installCluster(parsed.namespace, parsed.name, parsed.nodes);
-      logSuccess('Percona operator and cluster installed.');
+      
+      // Wait for cluster to be fully ready
+      await waitForClusterReady(parsed.namespace, parsed.name, parsed.nodes);
+      
+      logSuccess('Percona operator and cluster installed and ready.');
     } else {
       logInfo('Uninstalling Percona cluster and operator...');
       await uninstall(parsed.namespace, parsed.name);
