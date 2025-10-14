@@ -42,7 +42,7 @@ async function installOperator(ns: string) {
   await run('helm', ['upgrade', '--install', 'percona-operator', 'percona/pxc-operator', '-n', ns]);
 }
 
-function clusterValues(nodes: number): string {
+function clusterValues(nodes: number, accountId: string): string {
   return `pxc:
   size: ${nodes}
   resources:
@@ -64,6 +64,30 @@ proxyProxysql:
     limits:
       memory: 512Mi
       cpu: 500m
+backup:
+  enabled: true
+  storages:
+    s3-backup:
+      type: s3
+      s3:
+        bucket: percona-backups-${accountId}
+        region: us-east-1
+        credentialsSecret: percona-backup-s3-credentials
+  schedule:
+    - name: "daily-backup"
+      schedule: "0 2 * * *"
+      retention:
+        type: "count"
+        count: 7
+        deleteFromStorage: true
+      storageName: s3-backup
+    - name: "weekly-backup"
+      schedule: "0 1 * * 0"
+      retention:
+        type: "count"
+        count: 4
+        deleteFromStorage: true
+      storageName: s3-backup
 `;}
 
 async function createStorageClass() {
@@ -99,8 +123,119 @@ volumeBindingMode: WaitForFirstConsumer`;
   logSuccess('Storage class created');
 }
 
-async function installCluster(ns: string, name: string, nodes: number) {
-  const values = clusterValues(nodes);
+async function createS3BackupBucket(region: string) {
+  logInfo('Creating S3 backup bucket...');
+  const { execa } = await import('execa');
+  
+  try {
+    // Get AWS account ID
+    const accountResult = await execa('aws', ['sts', 'get-caller-identity', '--query', 'Account', '--output', 'text'], { stdio: 'pipe' });
+    const accountId = accountResult.stdout.trim();
+    
+    const bucketName = `percona-backups-${accountId}`;
+    
+    // Create S3 bucket
+    await run('aws', ['s3', 'mb', `s3://${bucketName}`, '--region', region]);
+    
+    // Enable versioning
+    await run('aws', ['s3api', 'put-bucket-versioning', '--bucket', bucketName, '--versioning-configuration', 'Status=Enabled', '--region', region]);
+    
+    // Enable server-side encryption
+    await run('aws', ['s3api', 'put-bucket-encryption', '--bucket', bucketName, '--server-side-encryption-configuration', JSON.stringify({
+      Rules: [{
+        ApplyServerSideEncryptionByDefault: {
+          SSEAlgorithm: 'AES256'
+        }
+      }]
+    }), '--region', region]);
+    
+    // Enable MFA delete protection (optional but recommended for production)
+    try {
+      await run('aws', ['s3api', 'put-bucket-versioning', '--bucket', bucketName, '--versioning-configuration', 'Status=Enabled,MfaDelete=Disabled', '--region', region]);
+    } catch (error) {
+      logInfo('MFA delete configuration skipped (requires MFA device)');
+    }
+    
+    // Set lifecycle policy for cost optimization
+    const lifecyclePolicy = {
+      Rules: [{
+        ID: 'BackupLifecycle',
+        Status: 'Enabled',
+        Transitions: [
+          {
+            Days: 30,
+            StorageClass: 'STANDARD_IA'
+          },
+          {
+            Days: 90,
+            StorageClass: 'GLACIER'
+          },
+          {
+            Days: 365,
+            StorageClass: 'DEEP_ARCHIVE'
+          }
+        ],
+        Expiration: {
+          Days: 2555  // 7 years retention
+        }
+      }]
+    };
+    
+    await run('aws', ['s3api', 'put-bucket-lifecycle-configuration', '--bucket', bucketName, '--lifecycle-configuration', JSON.stringify(lifecyclePolicy), '--region', region]);
+    
+    // Enable public access blocking for security
+    await run('aws', ['s3api', 'put-public-access-block', '--bucket', bucketName, '--public-access-block-configuration', JSON.stringify({
+      BlockPublicAcls: true,
+      IgnorePublicAcls: true,
+      BlockPublicPolicy: true,
+      RestrictPublicBuckets: true
+    }), '--region', region]);
+    
+    logSuccess(`S3 backup bucket created: ${bucketName}`);
+    return bucketName;
+  } catch (error) {
+    logWarn(`Failed to create S3 bucket: ${error}`);
+    throw error;
+  }
+}
+
+async function createS3CredentialsSecret(ns: string, region: string) {
+  logInfo('Creating S3 credentials secret...');
+  const { execa } = await import('execa');
+  
+  try {
+    // Get AWS credentials
+    const accessKeyResult = await execa('aws', ['configure', 'get', 'aws_access_key_id'], { stdio: 'pipe' });
+    const secretKeyResult = await execa('aws', ['configure', 'get', 'aws_secret_access_key'], { stdio: 'pipe' });
+    
+    const accessKey = accessKeyResult.stdout.trim();
+    const secretKey = secretKeyResult.stdout.trim();
+    
+    // Create Kubernetes secret
+    const secretYaml = `apiVersion: v1
+kind: Secret
+metadata:
+  name: percona-backup-s3-credentials
+  namespace: ${ns}
+type: Opaque
+data:
+  AWS_ACCESS_KEY_ID: ${Buffer.from(accessKey).toString('base64')}
+  AWS_SECRET_ACCESS_KEY: ${Buffer.from(secretKey).toString('base64')}`;
+
+    const proc = execa('kubectl', ['apply', '-f', '-'], { stdio: ['pipe', 'inherit', 'inherit'] });
+    proc.stdin?.write(secretYaml);
+    proc.stdin?.end();
+    await proc;
+
+    logSuccess('S3 credentials secret created');
+  } catch (error) {
+    logWarn(`Failed to create S3 credentials secret: ${error}`);
+    throw error;
+  }
+}
+
+async function installCluster(ns: string, name: string, nodes: number, accountId: string) {
+  const values = clusterValues(nodes, accountId);
   const { execa } = await import('execa');
   const proc = execa('helm', ['upgrade', '--install', name, 'percona/pxc-db', '-n', ns, '-f', '-'], { stdio: ['pipe', 'inherit', 'inherit'] });
   proc.stdin?.write(values);
@@ -196,11 +331,20 @@ async function main() {
       // Create storage class first
       await createStorageClass();
       
+      // Get AWS account ID
+      const { execa } = await import('execa');
+      const accountResult = await execa('aws', ['sts', 'get-caller-identity', '--query', 'Account', '--output', 'text'], { stdio: 'pipe' });
+      const accountId = accountResult.stdout.trim();
+      
+      // Create S3 backup bucket and credentials
+      await createS3BackupBucket('us-east-1');
+      await createS3CredentialsSecret(parsed.namespace, 'us-east-1');
+      
       logInfo('Installing Percona operator...');
       await installOperator(parsed.namespace);
       
       logInfo('Installing Percona cluster...');
-      await installCluster(parsed.namespace, parsed.name, parsed.nodes);
+      await installCluster(parsed.namespace, parsed.name, parsed.nodes, accountId);
       
       // Wait for cluster to be fully ready
       await waitForClusterReady(parsed.namespace, parsed.name, parsed.nodes);
