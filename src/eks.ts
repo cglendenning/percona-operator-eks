@@ -40,6 +40,10 @@ managedNodeGroups:
     maxSize: ${Math.max(args.nodes, args.nodes + 1)}
 ${spotLine}    volumeSize: 50
     labels: { workload: percona }
+addons:
+  - name: aws-ebs-csi-driver
+    version: latest
+    resolveConflicts: overwrite
 `; 
 }
 
