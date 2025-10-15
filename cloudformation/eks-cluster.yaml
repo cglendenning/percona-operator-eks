@@ -310,7 +310,7 @@ Resources:
         - IpProtocol: tcp
           FromPort: 0
           ToPort: 65535
-          Self: true
+          SourceSecurityGroupId: !Ref NodeSecurityGroup
           Description: All traffic from self
       Tags:
         - Key: Name
@@ -383,9 +383,6 @@ Resources:
         - !Ref NodeInstanceType
       AmiType: AL2023_x86_64
       CapacityType: !If [UseSpot, SPOT, ON_DEMAND]
-      RemoteAccess:
-        SourceSecurityGroups:
-          - !Ref NodeSecurityGroup
       ScalingConfig:
         DesiredSize: !Ref NodeGroupDesiredSize
         MinSize: !Ref NodeGroupMinSize
