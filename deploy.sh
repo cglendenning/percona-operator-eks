@@ -83,6 +83,81 @@ show_progress() {
     log_verbose "$message (this may take $duration)"
 }
 
+# Monitor CloudFormation stack events in real-time
+monitor_stack_events() {
+    local last_event_time=""
+    local event_count=0
+    
+    log_verbose "Monitoring CloudFormation stack events..."
+    
+    while true; do
+        # Get all events and sort by timestamp
+        local events=$(aws cloudformation describe-stack-events \
+            --stack-name "$STACK_NAME" \
+            --region "$REGION" \
+            --query 'StackEvents[].[Timestamp,LogicalResourceId,ResourceStatus,ResourceStatusReason]' \
+            --output text 2>/dev/null | sort -k1)
+        
+        if [ -n "$events" ]; then
+            local current_count=$(echo "$events" | wc -l)
+            
+            # Only show new events
+            if [ "$current_count" -gt "$event_count" ]; then
+                echo "$events" | tail -n +$((event_count + 1)) | while IFS=$'\t' read -r timestamp resource_id status reason; do
+                    if [ -n "$timestamp" ] && [ -n "$resource_id" ] && [ -n "$status" ]; then
+                        # Format the timestamp for display (handle both GNU and BSD date)
+                        local display_time=""
+                        if command -v gdate >/dev/null 2>&1; then
+                            display_time=$(gdate -d "$timestamp" "+%H:%M:%S" 2>/dev/null || echo "$timestamp")
+                        else
+                            display_time=$(date -j -f "%Y-%m-%dT%H:%M:%S.%3NZ" "$timestamp" "+%H:%M:%S" 2>/dev/null || echo "$timestamp")
+                        fi
+                        
+                        # Color code the status
+                        local status_color=""
+                        case "$status" in
+                            *CREATE_COMPLETE*|*UPDATE_COMPLETE*)
+                                status_color="${GREEN}"
+                                ;;
+                            *CREATE_IN_PROGRESS*|*UPDATE_IN_PROGRESS*)
+                                status_color="${YELLOW}"
+                                ;;
+                            *CREATE_FAILED*|*UPDATE_FAILED*|*DELETE_FAILED*)
+                                status_color="${RED}"
+                                ;;
+                            *ROLLBACK*)
+                                status_color="${RED}"
+                                ;;
+                            *)
+                                status_color="${CYAN}"
+                                ;;
+                        esac
+                        
+                        # Display the event
+                        echo -e "${BLUE}[${display_time}]${NC} ${status_color}${resource_id}${NC}: ${status_color}${status}${NC}"
+                        if [ -n "$reason" ] && [ "$reason" != "None" ] && [ "$reason" != "null" ]; then
+                            echo -e "  ${CYAN}Reason:${NC} $reason"
+                        fi
+                    fi
+                done
+                event_count=$current_count
+            fi
+        fi
+        
+        # Check if stack is in a terminal state
+        local stack_status=$(aws cloudformation describe-stacks --stack-name "$STACK_NAME" --region "$REGION" --query 'Stacks[0].StackStatus' --output text 2>/dev/null)
+        case "$stack_status" in
+            CREATE_COMPLETE|UPDATE_COMPLETE|CREATE_FAILED|UPDATE_FAILED|ROLLBACK_COMPLETE|ROLLBACK_FAILED|DELETE_COMPLETE)
+                log_verbose "Stack reached terminal state: $stack_status"
+                break
+                ;;
+        esac
+        
+        # Wait before next check
+        sleep 3
+    done
+}
+
 # Check if command exists
 command_exists() {
     command -v "$1" >/dev/null 2>&1
@@ -225,11 +300,37 @@ deploy_stack() {
     log_command "$deploy_cmd"
     
     if [ "$VERBOSE" -ge 2 ]; then
-        eval "$deploy_cmd"
-    else
+        # For very verbose mode, show real-time CloudFormation events
+        log_verbose "Starting CloudFormation deployment with real-time event monitoring..."
+        
+        # Start the deployment in the background
+        eval "$deploy_cmd" &
+        local deploy_pid=$!
+        
+        # Monitor stack events in the background
+        monitor_stack_events &
+        local monitor_pid=$!
+        
+        # Wait for deployment to complete
+        wait $deploy_pid
+        local deploy_result=$?
+        
+        # Stop monitoring
+        kill $monitor_pid 2>/dev/null || true
+        
+        if [ $deploy_result -ne 0 ]; then
+            log_error "CloudFormation deployment failed"
+            exit 1
+        fi
+    elif [ "$VERBOSE" -ge 1 ]; then
+        # For normal verbose mode, show basic progress
+        log_verbose "Starting CloudFormation deployment..."
         eval "$deploy_cmd" 2>&1 | while IFS= read -r line; do
             log_verbose "$line"
         done
+    else
+        # For minimal output, just run the command
+        eval "$deploy_cmd" >/dev/null 2>&1
     fi
     
     # Check deployment status
@@ -484,6 +585,11 @@ show_usage() {
     echo "  -d, --debug       Enable debug output"
     echo "  -h, --help        Show this help message"
     echo ""
+    echo "Verbosity Levels:"
+    echo "  0 (default)       Minimal output - only errors and final status"
+    echo "  1 (-v)            Normal verbosity - shows progress and basic info"
+    echo "  2 (-vv)           Very verbose - shows real-time CloudFormation events"
+    echo ""
     echo "Environment Variables:"
     echo "  VERBOSE           Set verbosity level (0-2, default: 1)"
     echo "  DEBUG             Enable debug output (0-1, default: 0)"
@@ -492,7 +598,7 @@ show_usage() {
     echo "Examples:"
     echo "  $0                           # Deploy with normal verbosity"
     echo "  $0 -v                        # Deploy with verbose output"
-    echo "  $0 -vv                       # Deploy with very verbose output"
+    echo "  $0 -vv                       # Deploy with very verbose output (real-time events)"
     echo "  $0 -d                        # Deploy with debug output"
     echo "  VERBOSE=2 DEBUG=1 $0         # Deploy with maximum verbosity"
     echo ""
@@ -503,6 +609,12 @@ parse_args() {
     while [[ $# -gt 0 ]]; do
         case $1 in
             -v|--verbose)
+                ((VERBOSE++))
+                shift
+                ;;
+            -vv)
+                # Handle -vv as two verbose flags
+                ((VERBOSE++))
                 ((VERBOSE++))
                 shift
                 ;;

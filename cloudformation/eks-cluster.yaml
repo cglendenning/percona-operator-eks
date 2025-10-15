@@ -307,11 +307,6 @@ Resources:
           ToPort: 65535
           SourceSecurityGroupId: !Ref ClusterSecurityGroup
           Description: All traffic from cluster
-        - IpProtocol: tcp
-          FromPort: 0
-          ToPort: 65535
-          SourceSecurityGroupId: !Ref NodeSecurityGroup
-          Description: All traffic from self
       Tags:
         - Key: Name
           Value: !Sub '${ClusterName}-node-sg'
