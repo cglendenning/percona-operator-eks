@@ -9,7 +9,7 @@ Parameters:
   
   NodeInstanceType:
     Type: String
-    Default: m6i.large
+    Default: m5.large
     AllowedValues: [m5.large, m5.xlarge, m6i.large, m6i.xlarge, c5.large, c5.xlarge]
     Description: EC2 instance type for the worker nodes
   
@@ -69,12 +69,12 @@ Resources:
       InternetGatewayId: !Ref InternetGateway
       VpcId: !Ref VPC
 
-  # Subnets - Use AZs that support EKS
+  # Subnets - Use AZs that support EKS (us-east-1a, us-east-1c, us-east-1d)
   PublicSubnet1:
     Type: AWS::EC2::Subnet
     Properties:
       VpcId: !Ref VPC
-      AvailabilityZone: !Select [0, !GetAZs '']
+      AvailabilityZone: us-east-1a
       CidrBlock: 10.0.1.0/24
       MapPublicIpOnLaunch: true
       Tags:
@@ -87,7 +87,7 @@ Resources:
     Type: AWS::EC2::Subnet
     Properties:
       VpcId: !Ref VPC
-      AvailabilityZone: !Select [1, !GetAZs '']
+      AvailabilityZone: us-east-1c
       CidrBlock: 10.0.2.0/24
       MapPublicIpOnLaunch: true
       Tags:
@@ -100,7 +100,7 @@ Resources:
     Type: AWS::EC2::Subnet
     Properties:
       VpcId: !Ref VPC
-      AvailabilityZone: !Select [2, !GetAZs '']
+      AvailabilityZone: us-east-1d
       CidrBlock: 10.0.3.0/24
       MapPublicIpOnLaunch: true
       Tags:
@@ -113,7 +113,7 @@ Resources:
     Type: AWS::EC2::Subnet
     Properties:
       VpcId: !Ref VPC
-      AvailabilityZone: !Select [0, !GetAZs '']
+      AvailabilityZone: us-east-1a
       CidrBlock: 10.0.11.0/24
       Tags:
         - Key: Name
@@ -125,7 +125,7 @@ Resources:
     Type: AWS::EC2::Subnet
     Properties:
       VpcId: !Ref VPC
-      AvailabilityZone: !Select [1, !GetAZs '']
+      AvailabilityZone: us-east-1c
       CidrBlock: 10.0.12.0/24
       Tags:
         - Key: Name
@@ -137,7 +137,7 @@ Resources:
     Type: AWS::EC2::Subnet
     Properties:
       VpcId: !Ref VPC
-      AvailabilityZone: !Select [2, !GetAZs '']
+      AvailabilityZone: us-east-1d
       CidrBlock: 10.0.13.0/24
       Tags:
         - Key: Name
@@ -420,7 +420,6 @@ Resources:
     Properties:
       ClusterName: !Ref EKSCluster
       AddonName: vpc-cni
-      AddonVersion: latest
       ResolveConflicts: OVERWRITE
 
   CoreDnsAddon:
@@ -429,7 +428,6 @@ Resources:
     Properties:
       ClusterName: !Ref EKSCluster
       AddonName: coredns
-      AddonVersion: latest
       ResolveConflicts: OVERWRITE
 
   KubeProxyAddon:
@@ -438,7 +436,6 @@ Resources:
     Properties:
       ClusterName: !Ref EKSCluster
       AddonName: kube-proxy
-      AddonVersion: latest
       ResolveConflicts: OVERWRITE
 
   EbsCsiAddon:
@@ -447,7 +444,6 @@ Resources:
     Properties:
       ClusterName: !Ref EKSCluster
       AddonName: aws-ebs-csi-driver
-      AddonVersion: latest
       ServiceAccountRoleArn: !GetAtt EBSCSIDriverRole.Arn
       ResolveConflicts: OVERWRITE
 
@@ -457,7 +453,6 @@ Resources:
     Properties:
       ClusterName: !Ref EKSCluster
       AddonName: metrics-server
-      AddonVersion: latest
       ResolveConflicts: OVERWRITE
 
 Outputs:

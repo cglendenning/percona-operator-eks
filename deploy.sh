@@ -418,84 +418,177 @@ update_kubeconfig() {
 }
 
 
+# Upgrade EKS add-ons to latest versions
+upgrade_addons() {
+    log_step "Upgrading EKS add-ons to latest versions..."
+    
+    # Expected add-ons that should be present
+    local expected_addons=("aws-ebs-csi-driver" "vpc-cni" "coredns" "kube-proxy" "metrics-server")
+    
+    # Get list of currently installed add-ons
+    log_verbose "Checking currently installed add-ons..."
+    local installed_addons=$(aws eks list-addons --cluster-name "$CLUSTER_NAME" --region "$REGION" --query 'addons' --output json 2>/dev/null)
+    local installed_count=$(echo "$installed_addons" | jq '. | length')
+    log_verbose "Found $installed_count installed add-ons"
+    
+    if [ "$installed_count" -eq 0 ]; then
+        log_warn "No add-ons found to upgrade"
+        return 0
+    fi
+    
+    # Upgrade each add-on
+    local upgraded_count=0
+    local already_latest_count=0
+    local skipped_count=0
+    
+    for addon_name in "${expected_addons[@]}"; do
+        # Check if addon is installed
+        if echo "$installed_addons" | jq -e --arg addon "$addon_name" '.[] | select(. == $addon)' >/dev/null 2>&1; then
+            log_verbose "Checking addon: $addon_name"
+            
+            # Get current addon info
+            local current_info=$(aws eks describe-addon --cluster-name "$CLUSTER_NAME" --addon-name "$addon_name" --region "$REGION" --output json 2>/dev/null)
+            local current_version=$(echo "$current_info" | jq -r '.addon.addonVersion')
+            local current_status=$(echo "$current_info" | jq -r '.addon.status')
+            
+            # Skip if addon is currently updating
+            if [ "$current_status" = "UPDATING" ] || [ "$current_status" = "CREATING" ]; then
+                log_verbose "$addon_name is currently $current_status, skipping upgrade"
+                skipped_count=$((skipped_count + 1))
+                continue
+            fi
+            
+            # Get available versions
+            local versions_info=$(aws eks describe-addon-versions --addon-name "$addon_name" --kubernetes-version "1.34" --region "$REGION" --output json 2>/dev/null)
+            local latest_version=$(echo "$versions_info" | jq -r '.addons[0].addonVersions | sort_by(.addonVersion) | reverse | .[0].addonVersion')
+            
+            if [ "$latest_version" = "null" ] || [ -z "$latest_version" ]; then
+                log_warn "Could not determine latest version for $addon_name, skipping"
+                continue
+            fi
+            
+            if [ "$current_version" = "$latest_version" ]; then
+                log_verbose "$addon_name is already at latest version $latest_version"
+                already_latest_count=$((already_latest_count + 1))
+                continue
+            fi
+            
+            log_verbose "Upgrading $addon_name from $current_version to $latest_version..."
+            local upgrade_cmd="aws eks update-addon --cluster-name \"$CLUSTER_NAME\" --addon-name \"$addon_name\" --addon-version \"$latest_version\" --region \"$REGION\" --resolve-conflicts OVERWRITE"
+            log_command "$upgrade_cmd"
+            
+            if eval "$upgrade_cmd" >/dev/null 2>&1; then
+                log_verbose "$addon_name upgrade initiated"
+                upgraded_count=$((upgraded_count + 1))
+            else
+                log_warn "Failed to upgrade $addon_name"
+            fi
+        else
+            log_verbose "$addon_name is not installed, skipping"
+        fi
+    done
+    
+    # Wait for upgrades to complete if any were initiated
+    if [ "$upgraded_count" -gt 0 ]; then
+        log_verbose "Waiting for add-on upgrades to complete (this may take several minutes)..."
+        show_progress "Waiting for add-on upgrades" "5-10 minutes"
+        
+        # Wait for all add-ons to be ACTIVE
+        local max_wait=600  # 10 minutes
+        local wait_time=0
+        local check_interval=30
+        
+        while [ $wait_time -lt $max_wait ]; do
+            local all_active=true
+            for addon_name in "${expected_addons[@]}"; do
+                if echo "$installed_addons" | jq -e --arg addon "$addon_name" '.[] | select(. == $addon)' >/dev/null 2>&1; then
+                    local status=$(aws eks describe-addon --cluster-name "$CLUSTER_NAME" --addon-name "$addon_name" --region "$REGION" --query 'addon.status' --output text 2>/dev/null)
+                    if [ "$status" != "ACTIVE" ]; then
+                        all_active=false
+                        break
+                    fi
+                fi
+            done
+            
+            if [ "$all_active" = true ]; then
+                log_verbose "All add-ons are now ACTIVE"
+                break
+            fi
+            
+            sleep $check_interval
+            wait_time=$((wait_time + check_interval))
+        done
+    fi
+    
+    # Provide summary
+    if [ "$upgraded_count" -gt 0 ]; then
+        log_info "Upgraded $upgraded_count add-on(s) to latest versions"
+    fi
+    if [ "$already_latest_count" -gt 0 ]; then
+        log_verbose "$already_latest_count add-on(s) were already at latest versions"
+    fi
+    if [ "$skipped_count" -gt 0 ]; then
+        log_verbose "$skipped_count add-on(s) were skipped (currently updating/creating)"
+    fi
+}
+
 # Verify deployment
 verify_deployment() {
-    log_step "Verifying deployment..."
+    log_step "Verifying EKS cluster state..."
     
     # Check cluster status
-    log_verbose "Checking EKS cluster status..."
     local cluster_status=$(aws eks describe-cluster --name "$CLUSTER_NAME" --region "$REGION" --query 'cluster.status' --output text)
-    log_verbose "Cluster status: $cluster_status"
-    
     if [ "$cluster_status" != "ACTIVE" ]; then
         log_error "Cluster is not in ACTIVE state: $cluster_status"
         exit 1
     fi
     
     # Check node groups
-    log_verbose "Checking node groups..."
     local nodegroups=$(aws eks list-nodegroups --cluster-name "$CLUSTER_NAME" --region "$REGION" --query 'nodegroups' --output json)
     local nodegroup_count=$(echo "$nodegroups" | jq '. | length')
-    log_verbose "Number of node groups: $nodegroup_count"
-    
     if [ "$nodegroup_count" -eq 0 ]; then
         log_error "No node groups found in cluster"
         exit 1
     fi
     
-    # Check each node group
+    # Check each node group status
     echo "$nodegroups" | jq -r '.[]' | while read -r nodegroup_name; do
-        log_verbose "Checking node group: $nodegroup_name"
-        local nodegroup_status=$(aws eks describe-nodegroup \
-            --cluster-name "$CLUSTER_NAME" \
-            --nodegroup-name "$nodegroup_name" \
-            --region "$REGION" \
-            --query 'nodegroup.status' \
-            --output text)
-        log_verbose "Node group $nodegroup_name status: $nodegroup_status"
-        
+        local nodegroup_status=$(aws eks describe-nodegroup --cluster-name "$CLUSTER_NAME" --nodegroup-name "$nodegroup_name" --region "$REGION" --query 'nodegroup.status' --output text)
         if [ "$nodegroup_status" != "ACTIVE" ]; then
-            log_warn "Node group $nodegroup_name is not in ACTIVE state: $nodegroup_status"
+            log_error "Node group $nodegroup_name is not in ACTIVE state: $nodegroup_status"
+            exit 1
         fi
     done
     
-    # Check nodes
-    log_verbose "Checking Kubernetes nodes..."
+    # Check Kubernetes nodes and verify they're in different AZs
     local node_count=$(kubectl get nodes --no-headers 2>/dev/null | wc -l)
-    log_verbose "Number of nodes: $node_count"
-    
     if [ "$node_count" -eq 0 ]; then
         log_error "No nodes found in cluster"
         exit 1
     fi
     
-    # Display node information
-    log_verbose "Node details:"
-    kubectl get nodes -o wide | while IFS= read -r line; do
-        log_verbose "  $line"
-    done
+    # Get node AZs
+    local node_azs=$(kubectl get nodes -o jsonpath='{.items[*].metadata.labels.topology\.kubernetes\.io/zone}' 2>/dev/null | tr ' ' '\n' | sort -u)
+    local unique_az_count=$(echo "$node_azs" | wc -l)
     
-    # Check EKS add-ons
-    log_verbose "Checking EKS add-ons status..."
-    local addons=$(aws eks list-addons --cluster-name "$CLUSTER_NAME" --region "$REGION" --query 'addons' --output json 2>/dev/null)
-    local addon_count=$(echo "$addons" | jq '. | length')
-    log_verbose "Number of EKS add-ons: $addon_count"
-    
-    if [ "$addon_count" -gt 0 ]; then
-        log_verbose "Installed add-ons:"
-        echo "$addons" | jq -r '.[]' | while read -r addon; do
-            log_verbose "  - $addon"
-        done
-    else
-        log_warn "No EKS add-ons found"
+    if [ "$unique_az_count" -lt 3 ]; then
+        log_error "Nodes are not distributed across 3 AZs. Found $unique_az_count AZs: $(echo "$node_azs" | tr '\n' ' ')"
+        exit 1
     fi
     
-    # Check system pods
-    log_verbose "Checking system pods..."
-    local system_pods=$(kubectl get pods -n kube-system --no-headers 2>/dev/null | wc -l)
-    log_verbose "System pods: $system_pods"
+    # Check EKS add-ons
+    local addons=$(aws eks list-addons --cluster-name "$CLUSTER_NAME" --region "$REGION" --query 'addons' --output json 2>/dev/null)
+    local addon_count=$(echo "$addons" | jq '. | length')
     
-    log_info "Deployment verification completed successfully"
+    if [ "$addon_count" -lt 5 ]; then
+        log_warn "Expected 5 EKS add-ons, found $addon_count"
+    fi
+    
+    log_success "EKS cluster is in desired state:"
+    log_success "  ✓ Cluster: ACTIVE"
+    log_success "  ✓ Node groups: ACTIVE"
+    log_success "  ✓ Nodes: $node_count across $unique_az_count AZs"
+    log_success "  ✓ Add-ons: $addon_count installed"
 }
 
 # Show usage information
@@ -585,6 +678,7 @@ main() {
     deploy_stack
     wait_for_cluster
     update_kubeconfig
+    upgrade_addons
     verify_deployment
     
     # Calculate deployment time
@@ -594,20 +688,13 @@ main() {
     local seconds=$((duration % 60))
     
     # Success message
-    log_info "EKS cluster deployment completed successfully!"
-    log_info "Cluster name: $CLUSTER_NAME"
-    log_info "Region: $REGION"
-    log_info "Deployment time: ${minutes}m ${seconds}s"
-    log_info ""
-    log_info "Next steps:"
-    log_info "  1. Verify cluster access: kubectl get nodes"
-    log_info "  2. Deploy Percona XtraDB Cluster"
-    log_info "  3. Check EKS add-ons: aws eks list-addons --cluster-name $CLUSTER_NAME --region $REGION"
-    log_info ""
-    log_info "Useful commands:"
-    log_info "  kubectl get nodes                    # List cluster nodes"
-    log_info "  kubectl get pods -A                  # List all pods"
-    log_info "  aws eks describe-cluster --name $CLUSTER_NAME --region $REGION  # Cluster details"
+    log_success "EKS cluster deployment completed successfully!"
+    log_success "Cluster name: $CLUSTER_NAME"
+    log_success "Region: $REGION"
+    log_success "Deployment time: ${minutes}m ${seconds}s"
+    log_success ""
+    log_success "Now run:"
+    log_success "  AWS_PROFILE=\$AWS_PROFILE npm run percona -- install --namespace percona --name pxc-cluster --nodes 3"
 }
 
 # Run main function
