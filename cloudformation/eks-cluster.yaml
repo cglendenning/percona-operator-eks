@@ -376,7 +376,7 @@ Resources:
         - !Ref PrivateSubnet3
       InstanceTypes:
         - !Ref NodeInstanceType
-      AmiType: AL2023_x86_64
+      AmiType: AL2023_x86_64_STANDARD
       CapacityType: !If [UseSpot, SPOT, ON_DEMAND]
       ScalingConfig:
         DesiredSize: !Ref NodeGroupDesiredSize
