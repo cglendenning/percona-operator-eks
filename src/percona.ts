@@ -219,9 +219,9 @@ async function validateEksCluster(ns: string) {
               if (nodeZones.size >= 2) {
                 logSuccess(`✓ Multi-AZ deployment detected: ${nodeZones.size} availability zones (${Array.from(nodeZones).join(', ')})`);
               } else if (nodeZones.size === 1) {
-                validationWarnings.push(`Single AZ deployment detected (${Array.from(nodeZones)[0]}). For high availability, consider deploying across multiple AZs.`);
+                validationErrors.push(`❌ FATAL: Single AZ deployment detected (${Array.from(nodeZones)[0]}). Percona requires multi-AZ deployment for high availability. Please recreate your EKS cluster with nodes across multiple availability zones.`);
               } else {
-                validationWarnings.push('Could not determine availability zones for nodes');
+                validationErrors.push('❌ FATAL: Could not determine availability zones for nodes. Multi-AZ deployment is required for high availability.');
               }
             }
           } catch (error) {
@@ -1013,8 +1013,8 @@ async function waitForClusterReady(ns: string, name: string, nodes: number) {
       
       // Check PXC pods
       const podsResult = await execa('kubectl', ['get', 'pods', '-n', ns, '-l', 'app.kubernetes.io/name=percona-xtradb-cluster', '--no-headers'], { stdio: 'pipe' });
-      const pxcPodLines = podsResult.stdout.trim().split('\n').filter(line => line.includes(`${pxcResourceName}-pxc-`));
-      logInfo(`🔍 PXC pods found: ${pxcPodLines.length}/${nodes}`);
+      const podLines = podsResult.stdout.trim().split('\n').filter(line => line.includes(`${pxcResourceName}-pxc-`));
+      logInfo(`🔍 PXC pods found: ${podLines.length}/${nodes}`);
       
       // Check ProxySQL pods with multiple label selectors
       try {
@@ -1054,11 +1054,22 @@ async function waitForClusterReady(ns: string, name: string, nodes: number) {
             const proxysqlPods = JSON.parse(proxysqlPodsResult.stdout);
             const zones = new Set();
             
-            proxysqlPods.items.forEach((pod: any) => {
-              const zone = pod.metadata.labels?.['topology.kubernetes.io/zone'] || 
-                          pod.spec.nodeName ? 'Unknown' : 'Pending';
-              zones.add(zone);
-            });
+            for (const pod of proxysqlPods.items) {
+              if (pod.spec.nodeName) {
+                try {
+                  const nodeResult = await execa('kubectl', ['get', 'node', pod.spec.nodeName, '-o', 'json'], { stdio: 'pipe' });
+                  const node = JSON.parse(nodeResult.stdout);
+                  const zone = node.metadata.labels?.['topology.kubernetes.io/zone'] || 
+                              node.metadata.labels?.['failure-domain.beta.kubernetes.io/zone'] || 
+                              'Unknown';
+                  zones.add(zone);
+                } catch (nodeError) {
+                  zones.add('Unknown');
+                }
+              } else {
+                zones.add('Pending');
+              }
+            }
             
             if (zones.size >= 2) {
               logSuccess(`✓ ProxySQL pods distributed across ${zones.size} availability zones: ${Array.from(zones).join(', ')}`);
