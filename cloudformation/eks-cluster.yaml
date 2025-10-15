@@ -364,30 +364,83 @@ Resources:
         - arn:aws:iam::aws:policy/AmazonEKS_CNI_Policy
         - arn:aws:iam::aws:policy/AmazonEC2ContainerRegistryReadOnly
 
-  # EKS Node Group
-  EKSNodeGroup:
+  # EKS Node Group - AZ 1 (us-east-1a)
+  EKSNodeGroup1:
     Type: AWS::EKS::Nodegroup
     Properties:
       ClusterName: !Ref EKSCluster
+      NodegroupName: !Sub '${ClusterName}-ng-az1'
       NodeRole: !GetAtt EKSNodeGroupRole.Arn
       Subnets:
         - !Ref PrivateSubnet1
+      InstanceTypes:
+        - !Ref NodeInstanceType
+      AmiType: AL2023_x86_64_STANDARD
+      CapacityType: !If [UseSpot, SPOT, ON_DEMAND]
+      ScalingConfig:
+        DesiredSize: 1
+        MinSize: 1
+        MaxSize: 2
+      UpdateConfig:
+        MaxUnavailablePercentage: 25
+      Labels:
+        workload: percona
+        topology.kubernetes.io/zone: !Select [0, !GetAZs '']
+      Tags:
+        Name: !Sub '${ClusterName}-nodes-az1'
+        AvailabilityZone: !Select [0, !GetAZs '']
+
+  # EKS Node Group - AZ 2 (us-east-1b)
+  EKSNodeGroup2:
+    Type: AWS::EKS::Nodegroup
+    Properties:
+      ClusterName: !Ref EKSCluster
+      NodegroupName: !Sub '${ClusterName}-ng-az2'
+      NodeRole: !GetAtt EKSNodeGroupRole.Arn
+      Subnets:
         - !Ref PrivateSubnet2
+      InstanceTypes:
+        - !Ref NodeInstanceType
+      AmiType: AL2023_x86_64_STANDARD
+      CapacityType: !If [UseSpot, SPOT, ON_DEMAND]
+      ScalingConfig:
+        DesiredSize: 1
+        MinSize: 1
+        MaxSize: 2
+      UpdateConfig:
+        MaxUnavailablePercentage: 25
+      Labels:
+        workload: percona
+        topology.kubernetes.io/zone: !Select [1, !GetAZs '']
+      Tags:
+        Name: !Sub '${ClusterName}-nodes-az2'
+        AvailabilityZone: !Select [1, !GetAZs '']
+
+  # EKS Node Group - AZ 3 (us-east-1c)
+  EKSNodeGroup3:
+    Type: AWS::EKS::Nodegroup
+    Properties:
+      ClusterName: !Ref EKSCluster
+      NodegroupName: !Sub '${ClusterName}-ng-az3'
+      NodeRole: !GetAtt EKSNodeGroupRole.Arn
+      Subnets:
         - !Ref PrivateSubnet3
       InstanceTypes:
         - !Ref NodeInstanceType
       AmiType: AL2023_x86_64_STANDARD
       CapacityType: !If [UseSpot, SPOT, ON_DEMAND]
       ScalingConfig:
-        DesiredSize: !Ref NodeGroupDesiredSize
-        MinSize: !Ref NodeGroupMinSize
-        MaxSize: !Ref NodeGroupMaxSize
+        DesiredSize: 1
+        MinSize: 1
+        MaxSize: 2
       UpdateConfig:
         MaxUnavailablePercentage: 25
       Labels:
         workload: percona
+        topology.kubernetes.io/zone: !Select [2, !GetAZs '']
       Tags:
-        Name: !Sub '${ClusterName}-nodes'
+        Name: !Sub '${ClusterName}-nodes-az3'
+        AvailabilityZone: !Select [2, !GetAZs '']
 
   # OIDC Provider
   OIDCProvider:
