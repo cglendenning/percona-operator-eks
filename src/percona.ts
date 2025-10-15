@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { ensureBinaryExists, logError, logInfo, logSuccess, run } from './utils.js';
+import { ensureBinaryExists, logError, logInfo, logSuccess, logWarn, run } from './utils.js';
 import yargs from 'yargs';
 import { hideBin } from 'yargs/helpers';
 
@@ -63,6 +63,7 @@ proxyHaproxy:
 proxyProxysql:
   enabled: true
   size: 3
+  image: percona/proxysql:2.5.5
   resources:
     requests:
       memory: 256Mi
@@ -70,11 +71,14 @@ proxyProxysql:
     limits:
       memory: 512Mi
       cpu: 500m
-  persistence:
-    enabled: true
-    size: 5Gi
-    accessMode: ReadWriteOnce
-    storageClass: gp3
+  volumeSpec:
+    persistentVolumeClaim:
+      accessModes:
+        - ReadWriteOnce
+      resources:
+        requests:
+          storage: 5Gi
+      storageClassName: gp3
 backup:
   enabled: true
   storages:
@@ -162,28 +166,23 @@ async function createS3BackupBucket(region: string) {
     
     // Enable MFA delete protection (optional but recommended for production)
     try {
-      await run('aws', ['s3api', 'put-bucket-versioning', '--bucket', bucketName, '--versioning-configuration', 'Status=Enabled,MfaDelete=Disabled', '--region', region]);
+      await run('aws', ['s3api', 'put-bucket-versioning', '--bucket', bucketName, '--versioning-configuration', 'Status=Enabled,MFADelete=Disabled', '--region', region]);
     } catch (error) {
       logInfo('MFA delete configuration skipped (requires MFA device)');
     }
     
-    // Set lifecycle policy for cost optimization
+    // Set basic lifecycle policy for cost optimization
     const lifecyclePolicy = {
       Rules: [{
         ID: 'BackupLifecycle',
         Status: 'Enabled',
+        Filter: {
+          Prefix: ''
+        },
         Transitions: [
           {
             Days: 30,
             StorageClass: 'STANDARD_IA'
-          },
-          {
-            Days: 90,
-            StorageClass: 'GLACIER'
-          },
-          {
-            Days: 365,
-            StorageClass: 'DEEP_ARCHIVE'
           }
         ],
         Expiration: {
@@ -192,7 +191,24 @@ async function createS3BackupBucket(region: string) {
       }]
     };
     
-    await run('aws', ['s3api', 'put-bucket-lifecycle-configuration', '--bucket', bucketName, '--lifecycle-configuration', JSON.stringify(lifecyclePolicy), '--region', region]);
+    // Write lifecycle policy to temporary file
+    const { writeFileSync, unlinkSync } = await import('fs');
+    const lifecycleFile = '/tmp/lifecycle-policy.json';
+    writeFileSync(lifecycleFile, JSON.stringify(lifecyclePolicy, null, 2));
+    
+    try {
+      await run('aws', ['s3api', 'put-bucket-lifecycle-configuration', '--bucket', bucketName, '--lifecycle-configuration', `file://${lifecycleFile}`, '--region', region]);
+    } catch (lifecycleError) {
+      logWarn(`Failed to set lifecycle policy: ${lifecycleError}`);
+      logInfo('Continuing without lifecycle policy...');
+    } finally {
+      // Clean up temporary file
+      try {
+        unlinkSync(lifecycleFile);
+      } catch (cleanupError) {
+        // Ignore cleanup errors
+      }
+    }
     
     // Enable public access blocking for security
     await run('aws', ['s3api', 'put-public-access-block', '--bucket', bucketName, '--public-access-block-configuration', JSON.stringify({
@@ -215,12 +231,62 @@ async function createS3CredentialsSecret(ns: string, region: string) {
   const { execa } = await import('execa');
   
   try {
-    // Get AWS credentials
-    const accessKeyResult = await execa('aws', ['configure', 'get', 'aws_access_key_id'], { stdio: 'pipe' });
-    const secretKeyResult = await execa('aws', ['configure', 'get', 'aws_secret_access_key'], { stdio: 'pipe' });
+    // Get AWS account ID
+    const accountResult = await execa('aws', ['sts', 'get-caller-identity', '--query', 'Account', '--output', 'text'], { stdio: 'pipe' });
+    const accountId = accountResult.stdout.trim();
     
-    const accessKey = accessKeyResult.stdout.trim();
-    const secretKey = secretKeyResult.stdout.trim();
+    const userName = 'percona-backup-user';
+    const policyName = 'PerconaBackupPolicy';
+    
+    // Create IAM user for Percona backups
+    try {
+      await run('aws', ['iam', 'create-user', '--user-name', userName]);
+      logInfo(`Created IAM user: ${userName}`);
+    } catch (error) {
+      if (error.toString().includes('EntityAlreadyExists')) {
+        logInfo(`IAM user ${userName} already exists`);
+      } else {
+        throw error;
+      }
+    }
+    
+    // Create IAM policy for S3 backup access
+    const policyDocument = {
+      Version: '2012-10-17',
+      Statement: [{
+        Effect: 'Allow',
+        Action: [
+          's3:GetObject',
+          's3:PutObject',
+          's3:DeleteObject',
+          's3:ListBucket'
+        ],
+        Resource: [
+          `arn:aws:s3:::percona-backups-${accountId}`,
+          `arn:aws:s3:::percona-backups-${accountId}/*`
+        ]
+      }]
+    };
+    
+    try {
+      await run('aws', ['iam', 'create-policy', '--policy-name', policyName, '--policy-document', JSON.stringify(policyDocument)]);
+      logInfo(`Created IAM policy: ${policyName}`);
+    } catch (error) {
+      if (error.toString().includes('EntityAlreadyExists')) {
+        logInfo(`IAM policy ${policyName} already exists`);
+      } else {
+        throw error;
+      }
+    }
+    
+    // Attach policy to user
+    await run('aws', ['iam', 'attach-user-policy', '--user-name', userName, '--policy-arn', `arn:aws:iam::${accountId}:policy/${policyName}`]);
+    
+    // Create access key for the user
+    const keyResult = await execa('aws', ['iam', 'create-access-key', '--user-name', userName], { stdio: 'pipe' });
+    const keyData = JSON.parse(keyResult.stdout);
+    const accessKey = keyData.AccessKey.AccessKeyId;
+    const secretKey = keyData.AccessKey.SecretAccessKey;
     
     // Create Kubernetes secret
     const secretYaml = `apiVersion: v1
