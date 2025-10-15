@@ -21,6 +21,286 @@ async function ensurePrereqs() {
   await ensureBinaryExists('helm', ['version']);
 }
 
+async function validateEksCluster(ns: string) {
+  logInfo('=== Validating EKS cluster state for Percona installation ===');
+  const { execa } = await import('execa');
+  
+  let validationErrors: string[] = [];
+  let validationWarnings: string[] = [];
+  
+  try {
+    // 1. Check kubectl connectivity
+    logInfo('Checking kubectl connectivity...');
+    await run('kubectl', ['cluster-info'], { stdio: 'pipe' });
+    logSuccess('✓ kubectl connectivity verified');
+  } catch (error) {
+    validationErrors.push('Cannot connect to Kubernetes cluster via kubectl');
+  }
+  
+  try {
+    // 2. Check cluster version and compatibility
+    logInfo('Checking Kubernetes version...');
+    const versionResult = await execa('kubectl', ['version', '--short', '--client=false'], { stdio: 'pipe' });
+    const versionMatch = versionResult.stdout.match(/Server Version: v(\d+\.\d+)/);
+    if (versionMatch) {
+      const majorMinor = versionMatch[1];
+      const [major, minor] = majorMinor.split('.').map(Number);
+      
+      // Percona Operator requires Kubernetes 1.24+ (based on compatibility matrix)
+      if (major < 1 || (major === 1 && minor < 24)) {
+        validationErrors.push(`Kubernetes version ${majorMinor} is too old. Percona Operator requires 1.24+`);
+      } else {
+        logSuccess(`✓ Kubernetes version ${majorMinor} is compatible`);
+      }
+    } else {
+      validationWarnings.push('Could not determine Kubernetes version');
+    }
+  } catch (error) {
+    validationWarnings.push('Could not check Kubernetes version');
+  }
+  
+  try {
+    // 3. Check available nodes and resources
+    logInfo('Checking cluster nodes and resources...');
+    const nodesResult = await execa('kubectl', ['get', 'nodes', '-o', 'json'], { stdio: 'pipe' });
+    const nodesData = JSON.parse(nodesResult.stdout);
+    
+    if (!nodesData.items || nodesData.items.length === 0) {
+      validationErrors.push('No nodes found in the cluster');
+    } else {
+      const readyNodes = nodesData.items.filter((node: any) => 
+        node.status.conditions?.some((c: any) => c.type === 'Ready' && c.status === 'True')
+      );
+      
+      logInfo(`Found ${readyNodes.length}/${nodesData.items.length} ready nodes`);
+      
+      if (readyNodes.length < 3) {
+        validationWarnings.push(`Only ${readyNodes.length} ready nodes found. Percona recommends at least 3 nodes for high availability`);
+      }
+      
+      // Check node resources
+      let totalCpu = 0;
+      let totalMemory = 0;
+      
+      readyNodes.forEach((node: any) => {
+        const cpu = node.status.allocatable?.['cpu'] || '0';
+        const memory = node.status.allocatable?.['memory'] || '0';
+        
+        // Convert CPU (e.g., "2" or "2000m" to millicores)
+        const cpuMillicores = cpu.endsWith('m') ? parseInt(cpu) : parseInt(cpu) * 1000;
+        totalCpu += cpuMillicores;
+        
+        // Convert memory (e.g., "8Gi" to bytes)
+        const memoryBytes = memory.endsWith('Gi') ? parseInt(memory) * 1024 * 1024 * 1024 :
+                           memory.endsWith('Mi') ? parseInt(memory) * 1024 * 1024 :
+                           parseInt(memory);
+        totalMemory += memoryBytes;
+      });
+      
+      // Percona needs at least 3 CPU cores and 6GB RAM total
+      const minCpu = 3000; // 3 cores in millicores
+      const minMemory = 6 * 1024 * 1024 * 1024; // 6GB in bytes
+      
+      if (totalCpu < minCpu) {
+        validationWarnings.push(`Total CPU capacity (${Math.round(totalCpu/1000)} cores) may be insufficient for 3-node Percona cluster`);
+      }
+      
+      if (totalMemory < minMemory) {
+        validationWarnings.push(`Total memory capacity (${Math.round(totalMemory/1024/1024/1024)}GB) may be insufficient for 3-node Percona cluster`);
+      }
+      
+      logSuccess(`✓ Cluster has ${readyNodes.length} nodes with ${Math.round(totalCpu/1000)} CPU cores and ${Math.round(totalMemory/1024/1024/1024)}GB memory`);
+    }
+  } catch (error) {
+    validationErrors.push(`Failed to check cluster nodes: ${error}`);
+  }
+  
+  try {
+    // 4. Check storage classes
+    logInfo('Checking storage classes...');
+    const scResult = await execa('kubectl', ['get', 'storageclass', '-o', 'json'], { stdio: 'pipe' });
+    const scData = JSON.parse(scResult.stdout);
+    
+    const ebsCsiSc = scData.items?.find((sc: any) => 
+      sc.provisioner === 'ebs.csi.aws.com' && sc.metadata.name === 'gp3'
+    );
+    
+    if (!ebsCsiSc) {
+      validationWarnings.push('gp3 storage class with EBS CSI driver not found. Will create one during installation.');
+    } else {
+      logSuccess('✓ gp3 storage class with EBS CSI driver found');
+    }
+    
+    // Check if EBS CSI driver is running
+    try {
+      const ebsCsiResult = await execa('kubectl', ['get', 'pods', '-n', 'kube-system', '-l', 'app=ebs-csi-controller', '--no-headers'], { stdio: 'pipe' });
+      const ebsCsiPods = ebsCsiResult.stdout.trim().split('\n').filter(line => line.trim());
+      
+      if (ebsCsiPods.length === 0) {
+        validationWarnings.push('EBS CSI driver pods not found. Storage provisioning may fail.');
+      } else {
+        const readyPods = ebsCsiPods.filter(line => line.includes('Running'));
+        if (readyPods.length === 0) {
+          validationWarnings.push('EBS CSI driver pods are not running. Storage provisioning may fail.');
+        } else {
+          logSuccess('✓ EBS CSI driver is running');
+        }
+      }
+    } catch (error) {
+      validationWarnings.push('Could not check EBS CSI driver status');
+    }
+  } catch (error) {
+    validationWarnings.push(`Failed to check storage classes: ${error}`);
+  }
+  
+  try {
+    // 5. Check networking and DNS
+    logInfo('Checking DNS resolution...');
+    const dnsTestPod = `apiVersion: v1
+kind: Pod
+metadata:
+  name: dns-test
+  namespace: ${ns}
+spec:
+  containers:
+  - name: dns-test
+    image: busybox:1.35
+    command: ['nslookup', 'kubernetes.default.svc.cluster.local']
+  restartPolicy: Never`;
+    
+    const proc = execa('kubectl', ['apply', '-f', '-'], { stdio: ['pipe', 'pipe', 'pipe'] });
+    proc.stdin?.write(dnsTestPod);
+    proc.stdin?.end();
+    await proc;
+    
+    // Wait for pod to complete
+    await new Promise(resolve => setTimeout(resolve, 10000));
+    
+    try {
+      const dnsResult = await execa('kubectl', ['logs', 'dns-test', '-n', ns], { stdio: 'pipe' });
+      if (dnsResult.stdout.includes('kubernetes.default.svc.cluster.local')) {
+        logSuccess('✓ DNS resolution working');
+      } else {
+        validationWarnings.push('DNS resolution may have issues');
+      }
+    } catch (error) {
+      validationWarnings.push('Could not verify DNS resolution');
+    } finally {
+      // Clean up test pod
+      try {
+        await run('kubectl', ['delete', 'pod', 'dns-test', '-n', ns], { stdio: 'pipe' });
+      } catch (error) {
+        // Ignore cleanup errors
+      }
+    }
+  } catch (error) {
+    validationWarnings.push(`Failed to test DNS resolution: ${error}`);
+  }
+  
+  try {
+    // 6. Check IAM roles and permissions
+    logInfo('Checking IAM roles and permissions...');
+    
+    // Check if we can create secrets (needed for S3 credentials)
+    try {
+      const testSecret = `apiVersion: v1
+kind: Secret
+metadata:
+  name: test-secret
+  namespace: ${ns}
+type: Opaque
+data:
+  test: dGVzdA==`;
+      
+      const proc = execa('kubectl', ['apply', '-f', '-'], { stdio: ['pipe', 'pipe', 'pipe'] });
+      proc.stdin?.write(testSecret);
+      proc.stdin?.end();
+      await proc;
+      
+      await run('kubectl', ['delete', 'secret', 'test-secret', '-n', ns], { stdio: 'pipe' });
+      logSuccess('✓ Can create secrets in namespace');
+    } catch (error) {
+      validationErrors.push('Cannot create secrets in namespace - check IAM permissions');
+    }
+    
+    // Check if we can create StatefulSets (needed for Percona)
+    try {
+      const testSts = `apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: test-sts
+  namespace: ${ns}
+spec:
+  serviceName: test-service
+  replicas: 0
+  selector:
+    matchLabels:
+      app: test
+  template:
+    metadata:
+      labels:
+        app: test
+    spec:
+      containers:
+      - name: test
+        image: busybox:1.35
+        command: ['sleep', '3600']`;
+        
+      const proc = execa('kubectl', ['apply', '-f', '-'], { stdio: ['pipe', 'pipe', 'pipe'] });
+      proc.stdin?.write(testSts);
+      proc.stdin?.end();
+      await proc;
+      
+      await run('kubectl', ['delete', 'statefulset', 'test-sts', '-n', ns], { stdio: 'pipe' });
+      logSuccess('✓ Can create StatefulSets in namespace');
+    } catch (error) {
+      validationErrors.push('Cannot create StatefulSets in namespace - check IAM permissions');
+    }
+  } catch (error) {
+    validationWarnings.push(`Failed to check IAM permissions: ${error}`);
+  }
+  
+  try {
+    // 7. Check for existing Percona resources
+    logInfo('Checking for existing Percona resources...');
+    
+    const existingPxc = await execa('kubectl', ['get', 'pxc', '-n', ns, '--no-headers'], { stdio: 'pipe' });
+    if (existingPxc.stdout.trim()) {
+      validationWarnings.push('Existing PXC resources found in namespace. Installation may conflict.');
+    }
+    
+    const existingSts = await execa('kubectl', ['get', 'statefulset', '-n', ns, '--no-headers'], { stdio: 'pipe' });
+    if (existingSts.stdout.trim()) {
+      validationWarnings.push('Existing StatefulSets found in namespace. Installation may conflict.');
+    }
+    
+    logSuccess('✓ No conflicting Percona resources found');
+  } catch (error) {
+    // This is expected if no resources exist
+    logSuccess('✓ No existing Percona resources found');
+  }
+  
+  // 8. Summary
+  logInfo('=== Validation Summary ===');
+  
+  if (validationErrors.length > 0) {
+    logError('❌ Validation failed with errors:');
+    validationErrors.forEach(error => logError(`  - ${error}`));
+    throw new Error(`EKS cluster validation failed: ${validationErrors.join(', ')}`);
+  }
+  
+  if (validationWarnings.length > 0) {
+    logWarn('⚠️  Validation completed with warnings:');
+    validationWarnings.forEach(warning => logWarn(`  - ${warning}`));
+  }
+  
+  if (validationErrors.length === 0 && validationWarnings.length === 0) {
+    logSuccess('✅ EKS cluster validation passed - ready for Percona installation');
+  } else if (validationErrors.length === 0) {
+    logSuccess('✅ EKS cluster validation passed with warnings - proceeding with installation');
+  }
+}
+
 async function ensureNamespace(ns: string) {
   try {
     await run('kubectl', ['get', 'ns', ns], { stdio: 'pipe' });
@@ -413,6 +693,45 @@ async function checkProxySQLIssues(ns: string, name: string) {
   }
 }
 
+async function waitForOperatorReady(ns: string) {
+  logInfo('Waiting for Percona operator to be ready...');
+  const { execa } = await import('execa');
+  const startTime = Date.now();
+  const timeout = 5 * 60 * 1000; // 5 minutes
+  
+  while (Date.now() - startTime < timeout) {
+    try {
+      const operatorPodsResult = await execa('kubectl', ['get', 'pods', '-n', ns, '-l', 'app.kubernetes.io/name=percona-xtradb-cluster-operator', '--no-headers'], { stdio: 'pipe' });
+      const operatorPods = operatorPodsResult.stdout.trim().split('\n').filter(line => line.trim());
+      
+      if (operatorPods.length === 0) {
+        logInfo('Percona operator pods not found yet...');
+      } else {
+        const readyPods = operatorPods.filter(line => {
+          const parts = line.split(/\s+/);
+          const ready = parts[1];
+          return ready.includes('/') && ready.split('/')[0] === ready.split('/')[1];
+        });
+        
+        if (readyPods.length > 0) {
+          logSuccess('Percona operator is ready');
+          return;
+        } else {
+          logInfo(`Percona operator pods starting: ${operatorPods.length} found, ${readyPods.length} ready`);
+        }
+      }
+      
+      await new Promise(resolve => setTimeout(resolve, 10000)); // Wait 10 seconds
+    } catch (error) {
+      const elapsed = Math.round((Date.now() - startTime) / 1000);
+      logWarn(`Error checking operator status (${elapsed}s): ${error}`);
+      await new Promise(resolve => setTimeout(resolve, 10000));
+    }
+  }
+  
+  throw new Error('Percona operator did not become ready within 5 minutes');
+}
+
 async function waitForClusterReady(ns: string, name: string, nodes: number) {
   const pxcResourceName = `${name}-pxc-db`;
   logInfo(`Waiting for Percona cluster ${pxcResourceName} to be ready...`);
@@ -422,6 +741,44 @@ async function waitForClusterReady(ns: string, name: string, nodes: number) {
   
   while (Date.now() - startTime < timeout) {
     try {
+      // First check if PXC custom resource exists
+      let pxcExists = false;
+      try {
+        await execa('kubectl', ['get', 'pxc', pxcResourceName, '-n', ns], { stdio: 'pipe' });
+        pxcExists = true;
+      } catch (error) {
+        if (error.toString().includes('NotFound')) {
+          logInfo(`PXC resource ${pxcResourceName} not found yet, waiting for operator to create it...`);
+        } else {
+          logWarn(`Error checking PXC resource existence: ${error}`);
+        }
+      }
+      
+      if (!pxcExists) {
+        // Check if the operator is running
+        try {
+          const operatorPodsResult = await execa('kubectl', ['get', 'pods', '-n', ns, '-l', 'app.kubernetes.io/name=percona-xtradb-cluster-operator', '--no-headers'], { stdio: 'pipe' });
+          const operatorPods = operatorPodsResult.stdout.trim().split('\n').filter(line => line.trim());
+          
+          if (operatorPods.length === 0) {
+            logWarn('Percona operator not found, waiting for installation...');
+          } else {
+            const readyOperators = operatorPods.filter(line => line.includes('Running'));
+            if (readyOperators.length === 0) {
+              logWarn('Percona operator pods not ready yet...');
+            } else {
+              logInfo('Percona operator is running, waiting for PXC resource creation...');
+            }
+          }
+        } catch (error) {
+          logWarn(`Error checking operator status: ${error}`);
+        }
+        
+        // Wait and continue
+        await new Promise(resolve => setTimeout(resolve, 30000));
+        continue;
+      }
+      
       // Check PXC custom resource status
       const pxcResult = await execa('kubectl', ['get', 'pxc', pxcResourceName, '-n', ns, '-o', 'json'], { stdio: 'pipe' });
       const pxc = JSON.parse(pxcResult.stdout);
@@ -678,6 +1035,9 @@ async function main() {
   try {
     await ensurePrereqs();
     if (parsed.action === 'install') {
+      // Validate EKS cluster state before installation
+      await validateEksCluster(parsed.namespace);
+      
       await ensureNamespace(parsed.namespace);
       await addRepos(parsed.helmRepo);
       
@@ -695,6 +1055,10 @@ async function main() {
       
       logInfo('Installing Percona operator...');
       await installOperator(parsed.namespace);
+      
+      // Wait for operator to be ready before installing cluster
+      logInfo('Waiting for Percona operator to be ready...');
+      await waitForOperatorReady(parsed.namespace);
       
       logInfo('Installing Percona cluster...');
       await installCluster(parsed.namespace, parsed.name, parsed.nodes, accountId);
