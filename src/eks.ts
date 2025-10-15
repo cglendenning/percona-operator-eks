@@ -257,14 +257,54 @@ async function fixVpcCniPermissions(clusterName: string, region: string) {
   const { execa } = await import('execa');
   
   try {
-    // Get the node group role name
-    const nodeGroupResult = await execa('aws', ['eks', 'describe-nodegroup', '--cluster-name', clusterName, '--nodegroup-name', 'ng-spot', '--region', region], { stdio: 'pipe' });
+    // Check if OIDC provider is already associated
+    logInfo('Checking OIDC provider status...');
+    try {
+      const clusterResult = await execa('aws', ['eks', 'describe-cluster', '--name', clusterName, '--region', region], { stdio: 'pipe' });
+      const cluster = JSON.parse(clusterResult.stdout).cluster;
+      
+      if (cluster.identity && cluster.identity.oidc && cluster.identity.oidc.issuer) {
+        logInfo('OIDC provider is already configured');
+      } else {
+        logWarn('OIDC provider not configured, but continuing with node group role permissions');
+      }
+    } catch (error) {
+      logWarn('Could not check OIDC status, continuing with node group role permissions');
+    }
+    
+    // Get the actual node group name by listing node groups
+    logInfo('Finding node group name...');
+    const listResult = await execa('aws', ['eks', 'list-nodegroups', '--cluster-name', clusterName, '--region', region], { stdio: 'pipe' });
+    const nodeGroups = JSON.parse(listResult.stdout).nodegroups;
+    
+    if (!nodeGroups || nodeGroups.length === 0) {
+      logError('No node groups found in cluster. The cluster exists but has no worker nodes.');
+      logError('This usually means the node group creation failed during cluster setup.');
+      logError('You may need to delete and recreate the cluster:');
+      logError(`  eksctl delete cluster --name ${clusterName} --region ${region}`);
+      throw new Error('No node groups found in cluster - cluster is incomplete');
+    }
+    
+    const nodeGroupName = nodeGroups[0];
+    logInfo(`Using node group: ${nodeGroupName}`);
+    
+    const nodeGroupResult = await execa('aws', ['eks', 'describe-nodegroup', '--cluster-name', clusterName, '--nodegroup-name', nodeGroupName, '--region', region], { stdio: 'pipe' });
+    
     const nodeGroup = JSON.parse(nodeGroupResult.stdout).nodegroup;
     const nodeGroupRoleArn = nodeGroup.nodeRole;
     const nodeGroupRoleName = nodeGroupRoleArn.split('/').pop();
     
     if (!nodeGroupRoleName) {
       throw new Error('Could not extract node group role name');
+    }
+    
+    // Check if policy is already attached
+    try {
+      await execa('aws', ['iam', 'get-role-policy', '--role-name', nodeGroupRoleName, '--policy-name', 'AmazonEKS_CNI_Policy'], { stdio: 'pipe' });
+      logInfo('VPC CNI policy already attached, skipping');
+      return;
+    } catch (error) {
+      // Policy not attached, continue with attachment
     }
     
     // Attach VPC CNI policy to node group role
