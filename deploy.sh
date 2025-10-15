@@ -676,11 +676,11 @@ verify_deployment() {
         log_warn "Expected 5 EKS add-ons, found $addon_count"
     fi
     
-    log_success "EKS cluster is in desired state:"
-    log_success "  ✓ Cluster: ACTIVE"
-    log_success "  ✓ Node groups: ACTIVE"
-    log_success "  ✓ Nodes: $node_count across $unique_az_count AZs"
-    log_success "  ✓ Add-ons: $addon_count installed"
+    log_info "EKS cluster is in desired state:"
+    log_info "  ✓ Cluster: ACTIVE"
+    log_info "  ✓ Node groups: ACTIVE"
+    log_info "  ✓ Nodes: $node_count across $unique_az_count AZs"
+    log_info "  ✓ Add-ons: $addon_count installed"
 }
 
 # Show usage information
@@ -781,13 +781,13 @@ main() {
     local seconds=$((duration % 60))
     
     # Success message
-    log_success "EKS cluster deployment completed successfully!"
-    log_success "Cluster name: $CLUSTER_NAME"
-    log_success "Region: $REGION"
-    log_success "Deployment time: ${minutes}m ${seconds}s"
-    log_success ""
-    log_success "Now run:"
-    log_success "  AWS_PROFILE=\$AWS_PROFILE npm run percona -- install --namespace percona --name pxc-cluster --nodes 3"
+    log_info "EKS cluster deployment completed successfully!"
+    log_info "Cluster name: $CLUSTER_NAME"
+    log_info "Region: $REGION"
+    log_info "Deployment time: ${minutes}m ${seconds}s"
+    log_info ""
+    log_info "Now run:"
+    log_info "  AWS_PROFILE=\$AWS_PROFILE npm run percona -- install --namespace percona --name pxc-cluster --nodes 3"
 }
 
 # Run main function
