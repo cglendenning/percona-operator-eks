@@ -207,14 +207,28 @@ async function validateEksCluster(ns: string) {
               
               // Check for multi-AZ deployment
               const nodeZones = new Set();
-              readyNodes.forEach((node: any) => {
+              logInfo('=== AZ Detection Debug ===');
+              logInfo(`Checking ${readyNodes.length} ready nodes for availability zone distribution...`);
+              
+              readyNodes.forEach((node: any, index: number) => {
                 const zone = node.metadata.labels?.['topology.kubernetes.io/zone'] || 
                             node.metadata.labels?.['failure-domain.beta.kubernetes.io/zone'];
+                logInfo(`Node ${index + 1}: ${node.metadata.name}`);
+                logInfo(`  - topology.kubernetes.io/zone: ${node.metadata.labels?.['topology.kubernetes.io/zone'] || 'not found'}`);
+                logInfo(`  - failure-domain.beta.kubernetes.io/zone: ${node.metadata.labels?.['failure-domain.beta.kubernetes.io/zone'] || 'not found'}`);
+                logInfo(`  - Detected zone: ${zone || 'none'}`);
+                
                 if (zone) {
                   nodeZones.add(zone);
-                  logInfo(`Node ${node.metadata.name} is in zone: ${zone}`);
+                  logInfo(`  ✓ Added to zones set: ${zone}`);
+                } else {
+                  logInfo(`  ⚠️  No zone label found for this node`);
                 }
               });
+              
+              logInfo(`=== AZ Detection Results ===`);
+              logInfo(`Total unique zones detected: ${nodeZones.size}`);
+              logInfo(`Zones found: [${Array.from(nodeZones).join(', ')}]`);
               
               if (nodeZones.size >= 2) {
                 logSuccess(`✓ Multi-AZ deployment detected: ${nodeZones.size} availability zones (${Array.from(nodeZones).join(', ')})`);
@@ -1209,9 +1223,6 @@ async function expandVolumes(ns: string, name: string, newSize: string) {
 
 async function uninstall(ns: string, name: string) {
   logInfo('Uninstalling Percona cluster and operator...');
-  
-  // CRITICAL: PXC resource deletion - this MUST succeed or script fails
-  logInfo('🔴 CRITICAL: Deleting PXC custom resource (this must succeed)...');
   
   const { execa } = await import('execa');
   let pxcDeleted = false;
