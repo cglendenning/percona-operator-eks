@@ -86,15 +86,34 @@ async function validateEksCluster(ns: string) {
         const cpu = node.status.allocatable?.['cpu'] || '0';
         const memory = node.status.allocatable?.['memory'] || '0';
         
+        // Debug: log the actual values
+        logInfo(`Node ${node.metadata.name}: CPU=${cpu}, Memory=${memory}`);
+        
         // Convert CPU (e.g., "2" or "2000m" to millicores)
         const cpuMillicores = cpu.endsWith('m') ? parseInt(cpu) : parseInt(cpu) * 1000;
         totalCpu += cpuMillicores;
         
-        // Convert memory (e.g., "8Gi" to bytes)
-        const memoryBytes = memory.endsWith('Gi') ? parseInt(memory) * 1024 * 1024 * 1024 :
-                           memory.endsWith('Mi') ? parseInt(memory) * 1024 * 1024 :
-                           parseInt(memory);
+        // Convert memory (e.g., "8Gi" to bytes) - handle more formats
+        let memoryBytes = 0;
+        if (memory.endsWith('Gi')) {
+          memoryBytes = parseInt(memory) * 1024 * 1024 * 1024;
+        } else if (memory.endsWith('Mi')) {
+          memoryBytes = parseInt(memory) * 1024 * 1024;
+        } else if (memory.endsWith('Ki')) {
+          memoryBytes = parseInt(memory) * 1024;
+        } else if (memory.endsWith('G')) {
+          memoryBytes = parseInt(memory) * 1000 * 1000 * 1000;
+        } else if (memory.endsWith('M')) {
+          memoryBytes = parseInt(memory) * 1000 * 1000;
+        } else if (memory.endsWith('K')) {
+          memoryBytes = parseInt(memory) * 1000;
+        } else {
+          // Try to parse as raw bytes
+          memoryBytes = parseInt(memory) || 0;
+        }
+        
         totalMemory += memoryBytes;
+        logInfo(`  Converted: CPU=${cpuMillicores}mc, Memory=${memoryBytes} bytes (${Math.round(memoryBytes/1024/1024/1024)}GB)`);
       });
       
       // Percona needs at least 3 CPU cores and 6GB RAM total
@@ -937,9 +956,14 @@ async function uninstall(ns: string, name: string) {
   // First, try to delete the PXC custom resource gracefully
   try {
     logInfo('Deleting PXC custom resource...');
-    await run('kubectl', ['delete', 'pxc', name, '-n', ns, '--timeout=60s']);
+    await run('kubectl', ['delete', 'pxc', name, '-n', ns, '--timeout=60s'], { stdio: 'pipe' });
+    logSuccess('PXC custom resource deleted successfully');
   } catch (error) {
-    logWarn('PXC resource deletion timed out or failed, forcing cleanup...');
+    if (error.toString().includes('NotFound')) {
+      logInfo('PXC custom resource not found - already deleted or never existed');
+    } else {
+      logWarn('PXC resource deletion timed out or failed, forcing cleanup...');
+    }
   }
   
   // Force delete PXC resource if it still exists (remove finalizers)
@@ -950,55 +974,109 @@ async function uninstall(ns: string, name: string) {
       logInfo('Removing finalizers from PXC resource...');
       await run('kubectl', ['patch', 'pxc', name, '-n', ns, '-p', '{"metadata":{"finalizers":[]}}', '--type=merge']);
       await run('kubectl', ['delete', 'pxc', name, '-n', ns]);
+      logSuccess('PXC resource force deleted successfully');
     }
   } catch (error) {
-    logInfo('PXC resource already deleted or not found');
+    if (error.toString().includes('NotFound')) {
+      logInfo('PXC resource not found - no force deletion needed');
+    } else {
+      logInfo('PXC resource already deleted or not found');
+    }
   }
   
   // Delete StatefulSets manually to ensure they're removed
   try {
     logInfo('Deleting StatefulSets...');
     await run('kubectl', ['delete', 'statefulset', '--all', '-n', ns]);
+    logSuccess('StatefulSets deleted successfully');
   } catch (error) {
-    logInfo('No StatefulSets found or already deleted');
+    if (error.toString().includes('NotFound') || error.toString().includes('no resources found')) {
+      logInfo('No StatefulSets found or already deleted');
+    } else {
+      logWarn(`Error deleting StatefulSets: ${error}`);
+    }
   }
   
   // Delete Services
   try {
     logInfo('Deleting Services...');
     await run('kubectl', ['delete', 'service', '--all', '-n', ns]);
+    logSuccess('Services deleted successfully');
   } catch (error) {
-    logInfo('No Services found or already deleted');
+    if (error.toString().includes('NotFound') || error.toString().includes('no resources found')) {
+      logInfo('No Services found or already deleted');
+    } else {
+      logWarn(`Error deleting Services: ${error}`);
+    }
   }
   
   // Delete PVCs to avoid orphaned volumes
   try {
     logInfo('Deleting PVCs...');
     await run('kubectl', ['delete', 'pvc', '--all', '-n', ns]);
+    logSuccess('PVCs deleted successfully');
   } catch (error) {
-    logInfo('No PVCs found or already deleted');
+    if (error.toString().includes('NotFound') || error.toString().includes('no resources found')) {
+      logInfo('No PVCs found or already deleted');
+    } else {
+      logWarn(`Error deleting PVCs: ${error}`);
+    }
   }
   
   // Uninstall Helm releases
-  try {
-    logInfo('Uninstalling Helm releases...');
-    await run('helm', ['uninstall', name, '-n', ns]);
-  } catch (error) {
-    logInfo(`Helm release ${name} not found or already deleted`);
-  }
+  logInfo('Uninstalling Helm releases...');
   
+  // Check if Helm releases exist before trying to uninstall
   try {
-    await run('helm', ['uninstall', 'percona-operator', '-n', ns]);
+    const { execa } = await import('execa');
+    const listResult = await execa('helm', ['list', '-n', ns, '--output', 'json'], { stdio: 'pipe' });
+    const releases = JSON.parse(listResult.stdout);
+    
+    const clusterRelease = releases.find((r: any) => r.name === name);
+    const operatorRelease = releases.find((r: any) => r.name === 'percona-operator');
+    
+    if (clusterRelease) {
+      await run('helm', ['uninstall', name, '-n', ns]);
+      logSuccess(`Helm release ${name} uninstalled successfully`);
+    } else {
+      logInfo(`Helm release ${name} not found or already deleted`);
+    }
+    
+    if (operatorRelease) {
+      await run('helm', ['uninstall', 'percona-operator', '-n', ns]);
+      logSuccess('Percona operator Helm release uninstalled successfully');
+    } else {
+      logInfo('Percona operator Helm release not found or already deleted');
+    }
   } catch (error) {
-    logInfo('Percona operator Helm release not found or already deleted');
+    logWarn(`Error checking Helm releases: ${error}`);
+    // Fallback to trying to uninstall anyway
+    try {
+      await run('helm', ['uninstall', name, '-n', ns]);
+      logSuccess(`Helm release ${name} uninstalled successfully`);
+    } catch (uninstallError) {
+      logInfo(`Helm release ${name} not found or already deleted`);
+    }
+    
+    try {
+      await run('helm', ['uninstall', 'percona-operator', '-n', ns]);
+      logSuccess('Percona operator Helm release uninstalled successfully');
+    } catch (uninstallError) {
+      logInfo('Percona operator Helm release not found or already deleted');
+    }
   }
   
   // Clean up any remaining pods
   try {
     logInfo('Cleaning up remaining pods...');
     await run('kubectl', ['delete', 'pods', '--all', '-n', ns]);
+    logSuccess('Remaining pods cleaned up successfully');
   } catch (error) {
-    logInfo('No remaining pods to clean up');
+    if (error.toString().includes('NotFound') || error.toString().includes('no resources found')) {
+      logInfo('No remaining pods to clean up');
+    } else {
+      logWarn(`Error cleaning up pods: ${error}`);
+    }
   }
   
   logSuccess('Percona cluster and operator uninstalled successfully');
@@ -1077,7 +1155,6 @@ async function main() {
       await expandVolumes(parsed.namespace, parsed.name, parsed.size);
       logSuccess('Volume expansion completed.');
     } else {
-      logInfo('Uninstalling Percona cluster and operator...');
       await uninstall(parsed.namespace, parsed.name);
       logSuccess('Uninstall completed.');
     }
