@@ -41,10 +41,26 @@ async function validateEksCluster(ns: string) {
     // 2. Check cluster version and compatibility
     logInfo('Checking Kubernetes version...');
     const versionResult = await execa('kubectl', ['version', '--short', '--client=false'], { stdio: 'pipe' });
-    const versionMatch = versionResult.stdout.match(/Server Version: v(\d+\.\d+)/);
+    logInfo(`Kubectl version output: ${versionResult.stdout}`);
+    
+    // Try multiple patterns to match version
+    let versionMatch = versionResult.stdout.match(/Server Version: v(\d+\.\d+)/);
+    if (!versionMatch) {
+      versionMatch = versionResult.stdout.match(/v(\d+\.\d+)/);
+    }
+    if (!versionMatch) {
+      // Try parsing the full version string
+      const fullVersionMatch = versionResult.stdout.match(/Server Version: v(\d+\.\d+\.\d+)/);
+      if (fullVersionMatch) {
+        versionMatch = [fullVersionMatch[0], fullVersionMatch[1].split('.').slice(0, 2).join('.')];
+      }
+    }
+    
     if (versionMatch) {
       const majorMinor = versionMatch[1];
       const [major, minor] = majorMinor.split('.').map(Number);
+      
+      logInfo(`Detected Kubernetes version: ${majorMinor} (major: ${major}, minor: ${minor})`);
       
       // Percona Operator requires Kubernetes 1.24+ (based on compatibility matrix)
       if (major < 1 || (major === 1 && minor < 24)) {
@@ -53,10 +69,38 @@ async function validateEksCluster(ns: string) {
         logSuccess(`✓ Kubernetes version ${majorMinor} is compatible`);
       }
     } else {
-      validationWarnings.push('Could not determine Kubernetes version');
+      logWarn(`Could not parse Kubernetes version from: ${versionResult.stdout}`);
+      
+      // Fallback: try to get version from cluster info
+      try {
+        logInfo('Trying fallback method to get Kubernetes version...');
+        const clusterInfoResult = await execa('kubectl', ['cluster-info'], { stdio: 'pipe' });
+        logInfo(`Cluster info output: ${clusterInfoResult.stdout}`);
+        
+        // Look for version in cluster info
+        const clusterVersionMatch = clusterInfoResult.stdout.match(/v(\d+\.\d+)/);
+        if (clusterVersionMatch) {
+          const majorMinor = clusterVersionMatch[1];
+          const [major, minor] = majorMinor.split('.').map(Number);
+          
+          logInfo(`Detected Kubernetes version (fallback): ${majorMinor} (major: ${major}, minor: ${minor})`);
+          
+          if (major < 1 || (major === 1 && minor < 24)) {
+            validationErrors.push(`Kubernetes version ${majorMinor} is too old. Percona Operator requires 1.24+`);
+          } else {
+            logSuccess(`✓ Kubernetes version ${majorMinor} is compatible (detected via fallback)`);
+          }
+        } else {
+          validationWarnings.push('Could not determine Kubernetes version from kubectl output or cluster info');
+        }
+      } catch (fallbackError) {
+        logWarn(`Fallback version check also failed: ${fallbackError}`);
+        validationWarnings.push('Could not determine Kubernetes version from any method');
+      }
     }
   } catch (error) {
-    validationWarnings.push('Could not check Kubernetes version');
+    logWarn(`Error running kubectl version: ${error}`);
+    validationWarnings.push(`Could not check Kubernetes version: ${error.message || error}`);
   }
   
   try {
@@ -339,7 +383,14 @@ async function addRepos(repoUrl: string) {
 }
 
 async function installOperator(ns: string) {
-  await run('helm', ['upgrade', '--install', 'percona-operator', 'percona/pxc-operator', '-n', ns]);
+  logInfo('Installing Percona operator via Helm...');
+  try {
+    await run('helm', ['upgrade', '--install', 'percona-operator', 'percona/pxc-operator', '-n', ns]);
+    logSuccess('Percona operator Helm chart installed successfully');
+  } catch (error) {
+    logError(`Failed to install Percona operator: ${error}`);
+    throw error;
+  }
 }
 
 function clusterValues(nodes: number, accountId: string): string {
@@ -720,12 +771,58 @@ async function waitForOperatorReady(ns: string) {
   
   while (Date.now() - startTime < timeout) {
     try {
+      const elapsed = Math.round((Date.now() - startTime) / 1000);
+      
+      // Check for any pods in the namespace first
+      const allPodsResult = await execa('kubectl', ['get', 'pods', '-n', ns, '--no-headers'], { stdio: 'pipe' });
+      const allPods = allPodsResult.stdout.trim().split('\n').filter(line => line.trim());
+      logInfo(`Found ${allPods.length} total pods in namespace ${ns}`);
+      
+      if (allPods.length > 0) {
+        logInfo('All pods in namespace:');
+        allPods.forEach((pod, index) => {
+          logInfo(`  ${index + 1}. ${pod}`);
+        });
+      }
+      
+      // Check for operator pods specifically
       const operatorPodsResult = await execa('kubectl', ['get', 'pods', '-n', ns, '-l', 'app.kubernetes.io/name=percona-xtradb-cluster-operator', '--no-headers'], { stdio: 'pipe' });
       const operatorPods = operatorPodsResult.stdout.trim().split('\n').filter(line => line.trim());
       
+      logInfo(`Found ${operatorPods.length} operator pods with label 'app.kubernetes.io/name=percona-xtradb-cluster-operator'`);
+      
       if (operatorPods.length === 0) {
-        logInfo('Percona operator pods not found yet...');
+        // Try alternative labels
+        logInfo('Trying alternative operator pod labels...');
+        const altLabels = [
+          'app.kubernetes.io/name=percona-xtradb-cluster-operator',
+          'app=percona-xtradb-cluster-operator',
+          'name=percona-xtradb-cluster-operator',
+          'app.kubernetes.io/component=operator'
+        ];
+        
+        for (const label of altLabels) {
+          try {
+            const altResult = await execa('kubectl', ['get', 'pods', '-n', ns, '-l', label, '--no-headers'], { stdio: 'pipe' });
+            const altPods = altResult.stdout.trim().split('\n').filter(line => line.trim());
+            if (altPods.length > 0) {
+              logInfo(`Found ${altPods.length} pods with label '${label}':`);
+              altPods.forEach((pod, index) => {
+                logInfo(`  ${index + 1}. ${pod}`);
+              });
+            }
+          } catch (altError) {
+            // Ignore label errors
+          }
+        }
+        
+        logInfo(`Percona operator pods not found yet... (${elapsed}s elapsed)`);
       } else {
+        logInfo(`Operator pods found: ${operatorPods.length}`);
+        operatorPods.forEach((pod, index) => {
+          logInfo(`  ${index + 1}. ${pod}`);
+        });
+        
         const readyPods = operatorPods.filter(line => {
           const parts = line.split(/\s+/);
           const ready = parts[1];
@@ -736,7 +833,7 @@ async function waitForOperatorReady(ns: string) {
           logSuccess('Percona operator is ready');
           return;
         } else {
-          logInfo(`Percona operator pods starting: ${operatorPods.length} found, ${readyPods.length} ready`);
+          logInfo(`Percona operator pods starting: ${operatorPods.length} found, ${readyPods.length} ready (${elapsed}s elapsed)`);
         }
       }
       
