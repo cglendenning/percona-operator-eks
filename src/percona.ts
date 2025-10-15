@@ -1210,41 +1210,114 @@ async function expandVolumes(ns: string, name: string, newSize: string) {
 async function uninstall(ns: string, name: string) {
   logInfo('Uninstalling Percona cluster and operator...');
   
-  // First, try to delete the PXC custom resource gracefully
+  // CRITICAL: PXC resource deletion - this MUST succeed or script fails
+  logInfo('🔴 CRITICAL: Deleting PXC custom resource (this must succeed)...');
+  
+  const { execa } = await import('execa');
+  let pxcDeleted = false;
+  const maxAttempts = 3;
+  
+  // First check if PXC resource exists at all
+  let pxcExists = false;
   try {
-    logInfo('Deleting PXC custom resource...');
-    await run('kubectl', ['delete', 'pxc', name, '-n', ns, '--timeout=60s'], { stdio: 'pipe' });
-    logSuccess('PXC custom resource deleted successfully');
+    const initialCheck = await execa('kubectl', ['get', 'pxc', name, '-n', ns], { stdio: 'pipe' });
+    pxcExists = (initialCheck.exitCode === 0);
   } catch (error) {
-    if (error.toString().includes('NotFound')) {
-      logInfo('PXC custom resource not found - already deleted or never existed');
-    } else {
-      logWarn('PXC resource deletion timed out or failed, forcing cleanup...');
+    pxcExists = false;
+  }
+  
+  if (!pxcExists) {
+    logSuccess('✓ PXC custom resource not found - already deleted');
+    pxcDeleted = true;
+  } else {
+    logInfo(`PXC resource exists, attempting deletion with ${maxAttempts} attempts...`);
+    
+    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+      logInfo(`Attempt ${attempt}/${maxAttempts}: Deleting PXC resource...`);
+      
+      try {
+        if (attempt === 1) {
+          // Normal deletion
+          await run('kubectl', ['delete', 'pxc', name, '-n', ns, '--timeout=30s'], { stdio: 'pipe' });
+          logInfo('Normal deletion command completed');
+        } else if (attempt === 2) {
+          // Force deletion with finalizer removal
+          await run('kubectl', ['patch', 'pxc', name, '-n', ns, '-p', '{"metadata":{"finalizers":[]}}', '--type=merge'], { stdio: 'pipe' });
+          await run('kubectl', ['delete', 'pxc', name, '-n', ns, '--force', '--grace-period=0'], { stdio: 'pipe' });
+          logInfo('Force deletion command completed');
+        } else {
+          // Final attempt: aggressive cleanup
+          logError(`Final attempt ${attempt}: Aggressive PXC cleanup...`);
+          try {
+            // Remove all finalizers multiple times
+            await run('kubectl', ['patch', 'pxc', name, '-n', ns, '-p', '{"metadata":{"finalizers":[]}}', '--type=merge'], { stdio: 'pipe' });
+            await run('kubectl', ['patch', 'pxc', name, '-n', ns, '-p', '{"metadata":{"finalizers":null}}', '--type=merge'], { stdio: 'pipe' });
+            
+            // Try multiple deletion approaches
+            try {
+              await run('kubectl', ['delete', 'pxc', name, '-n', ns, '--force', '--grace-period=0'], { stdio: 'pipe' });
+            } catch (deleteError) {
+              // Try with different flags
+              await run('kubectl', ['delete', 'pxc', name, '-n', ns, '--cascade=orphan'], { stdio: 'pipe' });
+            }
+            
+            logError('Aggressive cleanup completed');
+          } catch (aggressiveError) {
+            logError(`Aggressive cleanup failed: ${aggressiveError}`);
+          }
+        }
+      } catch (error) {
+        logWarn(`Deletion attempt ${attempt} failed: ${error}`);
+      }
+      
+      // Wait for Kubernetes to process the deletion
+      await new Promise(resolve => setTimeout(resolve, 3000));
+      
+      // Verify if deletion was successful
+      try {
+        const verifyResult = await execa('kubectl', ['get', 'pxc', name, '-n', ns], { stdio: 'pipe' });
+        if (verifyResult.exitCode !== 0) {
+          logSuccess(`✓ PXC resource successfully deleted on attempt ${attempt}`);
+          pxcDeleted = true;
+          break;
+        } else {
+          logWarn(`PXC resource still exists after attempt ${attempt}`);
+        }
+      } catch (error) {
+        logSuccess(`✓ PXC resource successfully deleted on attempt ${attempt}`);
+        pxcDeleted = true;
+        break;
+      }
     }
   }
   
-  // Force delete PXC resource if it still exists (remove finalizers)
+  // CRITICAL: If PXC still exists, abort the entire uninstall
+  if (!pxcDeleted) {
+    logError('❌ FATAL: PXC resource could not be deleted after all attempts!');
+    logError('This will prevent namespace deletion. The uninstall cannot continue.');
+    logError('Manual intervention required: kubectl patch pxc <name> -n <ns> -p \'{"metadata":{"finalizers":[]}}\' --type=merge');
+    throw new Error('CRITICAL: PXC resource deletion failed - uninstall aborted');
+  }
+  
+  // Delete resources in correct order (dependent resources first)
+  
+  // 1. Delete Pods first (they depend on StatefulSets)
   try {
-    const { execa } = await import('execa');
-    const result = await execa('kubectl', ['get', 'pxc', name, '-n', ns], { stdio: 'pipe' });
-    if (result.exitCode === 0) {
-      logInfo('Removing finalizers from PXC resource...');
-      await run('kubectl', ['patch', 'pxc', name, '-n', ns, '-p', '{"metadata":{"finalizers":[]}}', '--type=merge'], { stdio: 'pipe' });
-      await run('kubectl', ['delete', 'pxc', name, '-n', ns, '--force', '--grace-period=0'], { stdio: 'pipe' });
-      logSuccess('PXC resource force deleted successfully');
-    }
+    logInfo('Deleting Pods...');
+    await run('kubectl', ['delete', 'pods', '--all', '-n', ns, '--timeout=30s'], { stdio: 'pipe' });
+    logSuccess('Pods deleted successfully');
   } catch (error) {
-    if (error.toString().includes('NotFound')) {
-      logInfo('PXC resource not found - no force deletion needed');
+    if (error.toString().includes('NotFound') || error.toString().includes('no resources found')) {
+      logInfo('No Pods found or already deleted');
     } else {
-      logInfo('PXC resource already deleted or not found');
+      logWarn(`Error deleting Pods: ${error}`);
     }
   }
   
-  // Delete StatefulSets manually to ensure they're removed
+  // 2. Delete StatefulSets (they depend on PVCs)
   try {
     logInfo('Deleting StatefulSets...');
-    await run('kubectl', ['delete', 'statefulset', '--all', '-n', ns]);
+    await run('kubectl', ['delete', 'statefulset', '--all', '-n', ns, '--timeout=30s'], { stdio: 'pipe' });
     logSuccess('StatefulSets deleted successfully');
   } catch (error) {
     if (error.toString().includes('NotFound') || error.toString().includes('no resources found')) {
@@ -1254,10 +1327,10 @@ async function uninstall(ns: string, name: string) {
     }
   }
   
-  // Delete Services
+  // 3. Delete Services
   try {
     logInfo('Deleting Services...');
-    await run('kubectl', ['delete', 'service', '--all', '-n', ns]);
+    await run('kubectl', ['delete', 'service', '--all', '-n', ns], { stdio: 'pipe' });
     logSuccess('Services deleted successfully');
   } catch (error) {
     if (error.toString().includes('NotFound') || error.toString().includes('no resources found')) {
@@ -1267,10 +1340,10 @@ async function uninstall(ns: string, name: string) {
     }
   }
   
-  // Delete PVCs to avoid orphaned volumes
+  // 4. Delete PVCs (they can have finalizers)
   try {
     logInfo('Deleting PVCs...');
-    await run('kubectl', ['delete', 'pvc', '--all', '-n', ns, '--timeout=60s']);
+    await run('kubectl', ['delete', 'pvc', '--all', '-n', ns, '--timeout=60s'], { stdio: 'pipe' });
     logSuccess('PVCs deleted successfully');
   } catch (error) {
     if (error.toString().includes('NotFound') || error.toString().includes('no resources found')) {
@@ -1279,7 +1352,6 @@ async function uninstall(ns: string, name: string) {
       logWarn('PVC deletion timed out, forcing cleanup...');
       try {
         // Force delete PVCs that are stuck
-        const { execa } = await import('execa');
         const pvcResult = await execa('kubectl', ['get', 'pvc', '-n', ns, '--no-headers', '-o', 'custom-columns=NAME:.metadata.name'], { stdio: 'pipe' });
         const pvcNames = pvcResult.stdout.trim().split('\n').filter(name => name.trim());
         
@@ -1412,44 +1484,59 @@ async function uninstall(ns: string, name: string) {
     }
   }
   
-  // Clean up any remaining pods
-  try {
-    logInfo('Cleaning up remaining pods...');
-    await run('kubectl', ['delete', 'pods', '--all', '-n', ns]);
-    logSuccess('Remaining pods cleaned up successfully');
-  } catch (error) {
-    if (error.toString().includes('NotFound') || error.toString().includes('no resources found')) {
-      logInfo('No remaining pods to clean up');
-    } else {
-      logWarn(`Error cleaning up pods: ${error}`);
-    }
-  }
-  
-  // Verify complete cleanup
-  logInfo('=== Verifying complete cleanup ===');
-  await verifyCleanup(ns, name);
-  
   // Delete the namespace itself
+  logInfo('Deleting Percona namespace...');
+  let namespaceDeleted = false;
+  
   try {
-    logInfo('Deleting Percona namespace...');
     await run('kubectl', ['delete', 'namespace', ns, '--timeout=60s'], { stdio: 'pipe' });
-    logSuccess(`Namespace ${ns} deleted successfully`);
+    logInfo('Namespace deletion command completed, verifying...');
   } catch (error) {
     if (error.toString().includes('NotFound')) {
       logInfo(`Namespace ${ns} not found or already deleted`);
+      namespaceDeleted = true;
     } else if (error.toString().includes('timeout')) {
       logWarn(`Namespace deletion timed out, forcing cleanup...`);
-      try {
-        // Force delete namespace by removing finalizers
+    } else {
+      logWarn(`Namespace deletion failed: ${error}`);
+    }
+  }
+  
+  // If namespace deletion failed or timed out, try force deletion
+  if (!namespaceDeleted) {
+    try {
+      // Check if namespace still exists
+      const nsCheck = await execa('kubectl', ['get', 'namespace', ns], { stdio: 'pipe' });
+      if (nsCheck.exitCode === 0) {
+        logWarn('Namespace still exists, removing finalizers and force deleting...');
         await run('kubectl', ['patch', 'namespace', ns, '-p', '{"metadata":{"finalizers":[]}}', '--type=merge'], { stdio: 'pipe' });
         await run('kubectl', ['delete', 'namespace', ns, '--force', '--grace-period=0'], { stdio: 'pipe' });
-        logSuccess(`Namespace ${ns} force deleted successfully`);
-      } catch (forceError) {
-        logWarn(`Error force deleting namespace ${ns}: ${forceError}`);
+        logInfo('Force deletion command completed, verifying...');
+      } else {
+        logInfo('Namespace not found - deletion successful');
+        namespaceDeleted = true;
       }
-    } else {
-      logWarn(`Error deleting namespace ${ns}: ${error}`);
+    } catch (forceError) {
+      logWarn(`Error during force deletion: ${forceError}`);
     }
+  }
+  
+  // Final verification: check if namespace is actually deleted
+  logInfo('=== Final verification ===');
+  try {
+    const finalCheck = await execa('kubectl', ['get', 'namespace', ns], { stdio: 'pipe' });
+    if (finalCheck.exitCode === 0) {
+      logError(`❌ CRITICAL: Namespace ${ns} still exists after all deletion attempts!`);
+      logError('This indicates the uninstall was not completely successful.');
+      throw new Error(`CRITICAL: Namespace ${ns} could not be deleted - uninstall incomplete`);
+    } else {
+      logSuccess(`✓ Namespace ${ns} successfully deleted - uninstall complete`);
+    }
+  } catch (error) {
+    if (error.message.includes('Namespace') && error.message.includes('could not be deleted')) {
+      throw error; // Re-throw critical errors
+    }
+    logSuccess(`✓ Namespace ${ns} successfully deleted - uninstall complete`);
   }
   
   logSuccess('Percona cluster and operator uninstalled successfully');
