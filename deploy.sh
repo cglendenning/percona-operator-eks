@@ -418,6 +418,98 @@ update_kubeconfig() {
 }
 
 
+# Force node distribution across all AZs
+force_node_distribution() {
+    log_step "Ensuring nodes are distributed across all AZs..."
+    
+    # Get current node distribution
+    local node_azs=$(kubectl get nodes -o jsonpath='{.items[*].metadata.labels.topology\.kubernetes\.io/zone}' 2>/dev/null | tr ' ' '\n' | sort -u)
+    local unique_az_count=$(echo "$node_azs" | wc -l)
+    
+    log_verbose "Current node distribution: $unique_az_count AZs - $(echo "$node_azs" | tr '\n' ' ')"
+    
+    if [ "$unique_az_count" -ge 3 ]; then
+        log_verbose "Nodes are already distributed across 3+ AZs"
+        return 0
+    fi
+    
+    # Get node group name
+    local nodegroup_name=$(aws eks list-nodegroups --cluster-name "$CLUSTER_NAME" --region "$REGION" --query 'nodegroups[0]' --output text)
+    if [ -z "$nodegroup_name" ] || [ "$nodegroup_name" = "None" ]; then
+        log_warn "Could not find node group name"
+        return 0
+    fi
+    
+    log_verbose "Found node group: $nodegroup_name"
+    
+    # Get current node group configuration
+    local current_config=$(aws eks describe-nodegroup --cluster-name "$CLUSTER_NAME" --nodegroup-name "$nodegroup_name" --region "$REGION" --output json)
+    local current_desired=$(echo "$current_config" | jq -r '.nodegroup.scalingConfig.desiredSize')
+    local current_min=$(echo "$current_config" | jq -r '.nodegroup.scalingConfig.minSize')
+    local current_max=$(echo "$current_config" | jq -r '.nodegroup.scalingConfig.maxSize')
+    
+    log_verbose "Current scaling: desired=$current_desired, min=$current_min, max=$current_max"
+    
+    # Scale up to force better distribution
+    local new_desired=$((current_desired + 2))
+    if [ "$new_desired" -gt "$current_max" ]; then
+        new_desired=$current_max
+    fi
+    
+    if [ "$new_desired" -gt "$current_desired" ]; then
+        log_verbose "Scaling node group from $current_desired to $new_desired nodes to force better AZ distribution..."
+        
+        local scale_cmd="aws eks update-nodegroup-config --cluster-name \"$CLUSTER_NAME\" --nodegroup-name \"$nodegroup_name\" --region \"$REGION\" --scaling-config desiredSize=$new_desired"
+        log_command "$scale_cmd"
+        
+        if eval "$scale_cmd" >/dev/null 2>&1; then
+            log_verbose "Node group scaling initiated"
+            
+            # Wait for scaling to complete
+            log_verbose "Waiting for node group scaling to complete..."
+            local max_wait=600  # 10 minutes
+            local wait_time=0
+            local check_interval=30
+            
+            while [ $wait_time -lt $max_wait ]; do
+                local status=$(aws eks describe-nodegroup --cluster-name "$CLUSTER_NAME" --nodegroup-name "$nodegroup_name" --region "$REGION" --query 'nodegroup.status' --output text)
+                
+                if [ "$status" = "ACTIVE" ]; then
+                    log_verbose "Node group scaling completed"
+                    break
+                fi
+                
+                log_verbose "Node group status: $status (waiting...)"
+                sleep $check_interval
+                wait_time=$((wait_time + check_interval))
+            done
+            
+            # Wait for new nodes to be ready
+            log_verbose "Waiting for new nodes to be ready..."
+            if kubectl wait --for=condition=ready node --all --timeout=300s >/dev/null 2>&1; then
+                log_verbose "All nodes are ready"
+            else
+                log_warn "Some nodes may not be ready yet"
+            fi
+            
+            # Scale back down to original size
+            log_verbose "Scaling back down to $current_desired nodes..."
+            local scale_back_cmd="aws eks update-nodegroup-config --cluster-name \"$CLUSTER_NAME\" --nodegroup-name \"$nodegroup_name\" --region \"$REGION\" --scaling-config desiredSize=$current_desired"
+            log_command "$scale_back_cmd"
+            
+            if eval "$scale_back_cmd" >/dev/null 2>&1; then
+                log_verbose "Node group scaled back to original size"
+            else
+                log_warn "Failed to scale back node group"
+            fi
+        else
+            log_warn "Failed to scale node group"
+        fi
+    else
+        log_verbose "Node group is already at maximum size, cannot scale up"
+    fi
+}
+
 # Upgrade EKS add-ons to latest versions
 upgrade_addons() {
     log_step "Upgrading EKS add-ons to latest versions..."
@@ -678,6 +770,7 @@ main() {
     deploy_stack
     wait_for_cluster
     update_kubeconfig
+    force_node_distribution
     upgrade_addons
     verify_deployment
     

@@ -69,12 +69,12 @@ Resources:
       InternetGatewayId: !Ref InternetGateway
       VpcId: !Ref VPC
 
-  # Subnets - Use AZs that support EKS (us-east-1a, us-east-1c, us-east-1d)
+  # Subnets - Use AZs that support EKS
   PublicSubnet1:
     Type: AWS::EC2::Subnet
     Properties:
       VpcId: !Ref VPC
-      AvailabilityZone: us-east-1a
+      AvailabilityZone: !Select [0, !GetAZs '']
       CidrBlock: 10.0.1.0/24
       MapPublicIpOnLaunch: true
       Tags:
@@ -87,7 +87,7 @@ Resources:
     Type: AWS::EC2::Subnet
     Properties:
       VpcId: !Ref VPC
-      AvailabilityZone: us-east-1c
+      AvailabilityZone: !Select [1, !GetAZs '']
       CidrBlock: 10.0.2.0/24
       MapPublicIpOnLaunch: true
       Tags:
@@ -100,7 +100,7 @@ Resources:
     Type: AWS::EC2::Subnet
     Properties:
       VpcId: !Ref VPC
-      AvailabilityZone: us-east-1d
+      AvailabilityZone: !Select [2, !GetAZs '']
       CidrBlock: 10.0.3.0/24
       MapPublicIpOnLaunch: true
       Tags:
@@ -113,7 +113,7 @@ Resources:
     Type: AWS::EC2::Subnet
     Properties:
       VpcId: !Ref VPC
-      AvailabilityZone: us-east-1a
+      AvailabilityZone: !Select [0, !GetAZs '']
       CidrBlock: 10.0.11.0/24
       Tags:
         - Key: Name
@@ -125,7 +125,7 @@ Resources:
     Type: AWS::EC2::Subnet
     Properties:
       VpcId: !Ref VPC
-      AvailabilityZone: us-east-1c
+      AvailabilityZone: !Select [1, !GetAZs '']
       CidrBlock: 10.0.12.0/24
       Tags:
         - Key: Name
@@ -137,7 +137,7 @@ Resources:
     Type: AWS::EC2::Subnet
     Properties:
       VpcId: !Ref VPC
-      AvailabilityZone: us-east-1d
+      AvailabilityZone: !Select [2, !GetAZs '']
       CidrBlock: 10.0.13.0/24
       Tags:
         - Key: Name
