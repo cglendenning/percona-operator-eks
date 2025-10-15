@@ -403,10 +403,76 @@ async function expandVolumes(ns: string, name: string, newSize: string) {
 }
 
 async function uninstall(ns: string, name: string) {
-  await run('helm', ['uninstall', name, '-n', ns]);
-  await run('helm', ['uninstall', 'percona-operator', '-n', ns]);
+  logInfo('Uninstalling Percona cluster and operator...');
+  
+  // First, try to delete the PXC custom resource gracefully
+  try {
+    logInfo('Deleting PXC custom resource...');
+    await run('kubectl', ['delete', 'pxc', name, '-n', ns, '--timeout=60s']);
+  } catch (error) {
+    logWarn('PXC resource deletion timed out or failed, forcing cleanup...');
+  }
+  
+  // Force delete PXC resource if it still exists (remove finalizers)
+  try {
+    const { execa } = await import('execa');
+    const result = await execa('kubectl', ['get', 'pxc', name, '-n', ns], { stdio: 'pipe' });
+    if (result.exitCode === 0) {
+      logInfo('Removing finalizers from PXC resource...');
+      await run('kubectl', ['patch', 'pxc', name, '-n', ns, '-p', '{"metadata":{"finalizers":[]}}', '--type=merge']);
+      await run('kubectl', ['delete', 'pxc', name, '-n', ns]);
+    }
+  } catch (error) {
+    logInfo('PXC resource already deleted or not found');
+  }
+  
+  // Delete StatefulSets manually to ensure they're removed
+  try {
+    logInfo('Deleting StatefulSets...');
+    await run('kubectl', ['delete', 'statefulset', '--all', '-n', ns]);
+  } catch (error) {
+    logInfo('No StatefulSets found or already deleted');
+  }
+  
+  // Delete Services
+  try {
+    logInfo('Deleting Services...');
+    await run('kubectl', ['delete', 'service', '--all', '-n', ns]);
+  } catch (error) {
+    logInfo('No Services found or already deleted');
+  }
+  
   // Delete PVCs to avoid orphaned volumes
-  try { await run('kubectl', ['delete', 'pvc', '--all', '-n', ns]); } catch {}
+  try {
+    logInfo('Deleting PVCs...');
+    await run('kubectl', ['delete', 'pvc', '--all', '-n', ns]);
+  } catch (error) {
+    logInfo('No PVCs found or already deleted');
+  }
+  
+  // Uninstall Helm releases
+  try {
+    logInfo('Uninstalling Helm releases...');
+    await run('helm', ['uninstall', name, '-n', ns]);
+  } catch (error) {
+    logInfo(`Helm release ${name} not found or already deleted`);
+  }
+  
+  try {
+    await run('helm', ['uninstall', 'percona-operator', '-n', ns]);
+  } catch (error) {
+    logInfo('Percona operator Helm release not found or already deleted');
+  }
+  
+  // Clean up any remaining pods
+  try {
+    logInfo('Cleaning up remaining pods...');
+    await run('kubectl', ['delete', 'pods', '--all', '-n', ns]);
+  } catch (error) {
+    logInfo('No remaining pods to clean up');
+  }
+  
+  logSuccess('Percona cluster and operator uninstalled successfully');
 }
 
 async function main() {
