@@ -40,19 +40,50 @@ async function validateEksCluster(ns: string) {
   try {
     // 2. Check cluster version and compatibility
     logInfo('Checking Kubernetes version...');
-    const versionResult = await execa('kubectl', ['version', '--short', '--client=false'], { stdio: 'pipe' });
-    logInfo(`Kubectl version output: ${versionResult.stdout}`);
+    
+    // Try different kubectl version command formats
+    let versionResult;
+    let versionOutput = '';
+    
+    try {
+      // Try newer kubectl format first
+      versionResult = await execa('kubectl', ['version', '--output=yaml'], { stdio: 'pipe' });
+      versionOutput = versionResult.stdout;
+      logInfo(`Kubectl version output (yaml): ${versionOutput}`);
+    } catch (yamlError) {
+      try {
+        // Try older format
+        versionResult = await execa('kubectl', ['version', '--short'], { stdio: 'pipe' });
+        versionOutput = versionResult.stdout;
+        logInfo(`Kubectl version output (short): ${versionOutput}`);
+      } catch (shortError) {
+        // Try without any flags
+        versionResult = await execa('kubectl', ['version'], { stdio: 'pipe' });
+        versionOutput = versionResult.stdout;
+        logInfo(`Kubectl version output (default): ${versionOutput}`);
+      }
+    }
     
     // Try multiple patterns to match version
-    let versionMatch = versionResult.stdout.match(/Server Version: v(\d+\.\d+)/);
+    let versionMatch = versionOutput.match(/Server Version: v(\d+\.\d+)/);
     if (!versionMatch) {
-      versionMatch = versionResult.stdout.match(/v(\d+\.\d+)/);
+      versionMatch = versionOutput.match(/serverVersion:\s+gitVersion:\s+v(\d+\.\d+)/);
+    }
+    if (!versionMatch) {
+      versionMatch = versionOutput.match(/v(\d+\.\d+)/);
     }
     if (!versionMatch) {
       // Try parsing the full version string
-      const fullVersionMatch = versionResult.stdout.match(/Server Version: v(\d+\.\d+\.\d+)/);
+      const fullVersionMatch = versionOutput.match(/Server Version: v(\d+\.\d+\.\d+)/);
       if (fullVersionMatch) {
         versionMatch = [fullVersionMatch[0], fullVersionMatch[1].split('.').slice(0, 2).join('.')];
+      }
+    }
+    if (!versionMatch) {
+      // Try YAML format
+      const yamlVersionMatch = versionOutput.match(/serverVersion:\s+gitVersion:\s+v(\d+\.\d+\.\d+)/);
+      if (yamlVersionMatch) {
+        versionMatch = [yamlVersionMatch[0], yamlVersionMatch[1].split('.').slice(0, 2).join('.')];
       }
     }
     
@@ -413,7 +444,7 @@ haproxy:
 proxysql:
   enabled: true
   size: 3
-  image: percona/proxysql:2.7.3
+  image: percona/proxysql2:2.7.3
   resources:
     requests:
       memory: 256Mi
@@ -801,6 +832,9 @@ async function waitForOperatorReady(ns: string) {
           'app.kubernetes.io/component=operator'
         ];
         
+        let foundOperatorPods: string[] = [];
+        let workingLabel = '';
+        
         for (const label of altLabels) {
           try {
             const altResult = await execa('kubectl', ['get', 'pods', '-n', ns, '-l', label, '--no-headers'], { stdio: 'pipe' });
@@ -810,13 +844,32 @@ async function waitForOperatorReady(ns: string) {
               altPods.forEach((pod, index) => {
                 logInfo(`  ${index + 1}. ${pod}`);
               });
+              foundOperatorPods = altPods;
+              workingLabel = label;
+              break; // Use the first working label
             }
           } catch (altError) {
             // Ignore label errors
           }
         }
         
-        logInfo(`Percona operator pods not found yet... (${elapsed}s elapsed)`);
+        if (foundOperatorPods.length > 0) {
+          logInfo(`Using operator pods found with label '${workingLabel}'`);
+          const readyPods = foundOperatorPods.filter(line => {
+            const parts = line.split(/\s+/);
+            const ready = parts[1];
+            return ready.includes('/') && ready.split('/')[0] === ready.split('/')[1];
+          });
+          
+          if (readyPods.length > 0) {
+            logSuccess('Percona operator is ready');
+            return;
+          } else {
+            logInfo(`Percona operator pods starting: ${foundOperatorPods.length} found, ${readyPods.length} ready (${elapsed}s elapsed)`);
+          }
+        } else {
+          logInfo(`Percona operator pods not found yet... (${elapsed}s elapsed)`);
+        }
       } else {
         logInfo(`Operator pods found: ${operatorPods.length}`);
         operatorPods.forEach((pod, index) => {
