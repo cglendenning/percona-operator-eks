@@ -203,11 +203,30 @@ async function validateEksCluster(ns: string) {
         validationWarnings.push(`Total memory capacity (${Math.round(totalMemory/1024/1024/1024)}GB) may be insufficient for 3-node Percona cluster`);
       }
       
-      logSuccess(`✓ Cluster has ${readyNodes.length} nodes with ${Math.round(totalCpu/1000)} CPU cores and ${Math.round(totalMemory/1024/1024/1024)}GB memory`);
-    }
-  } catch (error) {
-    validationErrors.push(`Failed to check cluster nodes: ${error}`);
-  }
+              logSuccess(`✓ Cluster has ${readyNodes.length} nodes with ${Math.round(totalCpu/1000)} CPU cores and ${Math.round(totalMemory/1024/1024/1024)}GB memory`);
+              
+              // Check for multi-AZ deployment
+              const nodeZones = new Set();
+              readyNodes.forEach((node: any) => {
+                const zone = node.metadata.labels?.['topology.kubernetes.io/zone'] || 
+                            node.metadata.labels?.['failure-domain.beta.kubernetes.io/zone'];
+                if (zone) {
+                  nodeZones.add(zone);
+                  logInfo(`Node ${node.metadata.name} is in zone: ${zone}`);
+                }
+              });
+              
+              if (nodeZones.size >= 2) {
+                logSuccess(`✓ Multi-AZ deployment detected: ${nodeZones.size} availability zones (${Array.from(nodeZones).join(', ')})`);
+              } else if (nodeZones.size === 1) {
+                validationWarnings.push(`Single AZ deployment detected (${Array.from(nodeZones)[0]}). For high availability, consider deploying across multiple AZs.`);
+              } else {
+                validationWarnings.push('Could not determine availability zones for nodes');
+              }
+            }
+          } catch (error) {
+            validationErrors.push(`Failed to check cluster nodes: ${error}`);
+          }
   
   try {
     // 4. Check storage classes
@@ -247,10 +266,28 @@ async function validateEksCluster(ns: string) {
     validationWarnings.push(`Failed to check storage classes: ${error}`);
   }
   
+  // DNS resolution test moved to after namespace creation
+  
   try {
-    // 5. Check networking and DNS
-    logInfo('Checking DNS resolution...');
-    const dnsTestPod = `apiVersion: v1
+    // 6. Check IAM roles and permissions
+    logInfo('Checking IAM roles and permissions...');
+    
+    // First create the namespace if it doesn't exist
+    try {
+      await run('kubectl', ['create', 'namespace', ns], { stdio: 'pipe' });
+      logInfo(`Created namespace ${ns} for validation`);
+    } catch (error) {
+      if (error.toString().includes('already exists')) {
+        logInfo(`Namespace ${ns} already exists`);
+      } else {
+        validationWarnings.push(`Could not create namespace ${ns}: ${error}`);
+      }
+    }
+    
+    // Check DNS resolution now that namespace exists
+    try {
+      logInfo('Checking DNS resolution...');
+      const dnsTestPod = `apiVersion: v1
 kind: Pod
 metadata:
   name: dns-test
@@ -261,39 +298,35 @@ spec:
     image: busybox:1.35
     command: ['nslookup', 'kubernetes.default.svc.cluster.local']
   restartPolicy: Never`;
-    
-    const proc = execa('kubectl', ['apply', '-f', '-'], { stdio: ['pipe', 'pipe', 'pipe'] });
-    proc.stdin?.write(dnsTestPod);
-    proc.stdin?.end();
-    await proc;
-    
-    // Wait for pod to complete
-    await new Promise(resolve => setTimeout(resolve, 10000));
-    
-    try {
-      const dnsResult = await execa('kubectl', ['logs', 'dns-test', '-n', ns], { stdio: 'pipe' });
-      if (dnsResult.stdout.includes('kubernetes.default.svc.cluster.local')) {
-        logSuccess('✓ DNS resolution working');
-      } else {
-        validationWarnings.push('DNS resolution may have issues');
+      
+      const proc = execa('kubectl', ['apply', '-f', '-'], { stdio: ['pipe', 'pipe', 'pipe'] });
+      proc.stdin?.write(dnsTestPod);
+      proc.stdin?.end();
+      await proc;
+      
+      // Wait for pod to complete
+      await new Promise(resolve => setTimeout(resolve, 10000));
+      
+      try {
+        const dnsResult = await execa('kubectl', ['logs', 'dns-test', '-n', ns], { stdio: 'pipe' });
+        if (dnsResult.stdout.includes('kubernetes.default.svc.cluster.local')) {
+          logSuccess('✓ DNS resolution working');
+        } else {
+          validationWarnings.push('DNS resolution may have issues');
+        }
+      } catch (error) {
+        validationWarnings.push('Could not verify DNS resolution');
+      } finally {
+        // Clean up test pod
+        try {
+          await run('kubectl', ['delete', 'pod', 'dns-test', '-n', ns], { stdio: 'pipe' });
+        } catch (error) {
+          // Ignore cleanup errors
+        }
       }
     } catch (error) {
-      validationWarnings.push('Could not verify DNS resolution');
-    } finally {
-      // Clean up test pod
-      try {
-        await run('kubectl', ['delete', 'pod', 'dns-test', '-n', ns], { stdio: 'pipe' });
-      } catch (error) {
-        // Ignore cleanup errors
-      }
+      validationWarnings.push(`Failed to test DNS resolution: ${error}`);
     }
-  } catch (error) {
-    validationWarnings.push(`Failed to test DNS resolution: ${error}`);
-  }
-  
-  try {
-    // 6. Check IAM roles and permissions
-    logInfo('Checking IAM roles and permissions...');
     
     // Check if we can create secrets (needed for S3 credentials)
     try {
@@ -452,6 +485,16 @@ proxysql:
     limits:
       memory: 512Mi
       cpu: 500m
+  affinity:
+    podAntiAffinity:
+      requiredDuringSchedulingIgnoredDuringExecution:
+      - labelSelector:
+          matchExpressions:
+          - key: app.kubernetes.io/name
+            operator: In
+            values:
+            - proxysql
+        topologyKey: topology.kubernetes.io/zone
   volumeSpec:
     persistentVolumeClaim:
       accessModes:
@@ -954,30 +997,78 @@ async function waitForClusterReady(ns: string, name: string, nodes: number) {
       
       // Debug: log the actual status structure
       if (pxc.status) {
-        logInfo(`Debug - PXC status structure: ${JSON.stringify(pxc.status, null, 2)}`);
+        logInfo(`Debug - PXC status: state=${pxc.status.state}, pxc.status=${pxc.status.pxc?.status}, proxysql.status=${pxc.status.proxysql?.status}`);
       }
       
       const pxcCount = typeof pxc.status?.pxc === 'number' ? pxc.status.pxc : (pxc.status?.pxc?.ready || 0);
       const proxysqlCount = typeof pxc.status?.proxysql === 'number' ? pxc.status.proxysql : (pxc.status?.proxysql?.ready || 0);
       const status = pxc.status?.status || 'unknown';
-      
       const elapsed = Math.round((Date.now() - startTime) / 1000);
-      logInfo(`Cluster status: ${status}, PXC: ${pxcCount}/${nodes}, ProxySQL: ${proxysqlCount} (${elapsed}s elapsed)`);
+      
+      // Explain what the numbers mean
+      if (elapsed === 0 || elapsed % 60 === 0) { // Show explanation every minute
+        logInfo(`💡 Status Guide: PXC = Percona XtraDB Cluster nodes, ProxySQL = Database proxy pods, Status 'unknown' = Still initializing`);
+      }
+      logInfo(`📊 Cluster Progress: PXC nodes ${pxcCount}/${nodes}, ProxySQL pods ${proxysqlCount}/3, Status: ${status} (${elapsed}s elapsed)`);
       
       // Check PXC pods
       const podsResult = await execa('kubectl', ['get', 'pods', '-n', ns, '-l', 'app.kubernetes.io/name=percona-xtradb-cluster', '--no-headers'], { stdio: 'pipe' });
-      const podLines = podsResult.stdout.trim().split('\n').filter(line => line.includes(`${pxcResourceName}-pxc-`));
+      const pxcPodLines = podsResult.stdout.trim().split('\n').filter(line => line.includes(`${pxcResourceName}-pxc-`));
+      logInfo(`🔍 PXC pods found: ${pxcPodLines.length}/${nodes}`);
       
-      // Check ProxySQL pods specifically
+      // Check ProxySQL pods with multiple label selectors
       try {
-        const proxysqlPodsResult = await execa('kubectl', ['get', 'pods', '-n', ns, '-l', 'app.kubernetes.io/name=proxysql', '--no-headers'], { stdio: 'pipe' });
-        const proxysqlPodLines = proxysqlPodsResult.stdout.trim().split('\n');
-        logInfo(`ProxySQL pods: ${proxysqlPodLines.length} found`);
-        proxysqlPodLines.forEach((line, index) => {
-          if (line.trim()) {
-            logInfo(`  ProxySQL pod ${index + 1}: ${line}`);
+        let proxysqlPodsFound = 0;
+        const proxysqlLabels = [
+          'app.kubernetes.io/component=proxysql',
+          'app.kubernetes.io/name=proxysql',
+          'app=proxysql'
+        ];
+        
+        for (const label of proxysqlLabels) {
+          try {
+            const proxysqlPodsResult = await execa('kubectl', ['get', 'pods', '-n', ns, '-l', label, '--no-headers'], { stdio: 'pipe' });
+            const proxysqlPodLines = proxysqlPodsResult.stdout.trim().split('\n').filter(line => line.trim());
+            if (proxysqlPodLines.length > 0) {
+              logInfo(`🔍 ProxySQL pods found with label '${label}': ${proxysqlPodLines.length}`);
+              proxysqlPodLines.forEach((line, index) => {
+                const parts = line.split(/\s+/);
+                const name = parts[0];
+                const ready = parts[1];
+                const status = parts[2];
+                logInfo(`  ProxySQL pod ${index + 1}: ${name} (${ready}, ${status})`);
+              });
+              proxysqlPodsFound = Math.max(proxysqlPodsFound, proxysqlPodLines.length);
+            }
+          } catch (labelError) {
+            // Try next label
           }
-        });
+        }
+        
+        if (proxysqlPodsFound === 0) {
+          logInfo(`🔍 No ProxySQL pods found with any label selector`);
+        } else if (proxysqlPodsFound === 3) {
+          // Check if ProxySQL pods are distributed across AZs
+          try {
+            const proxysqlPodsResult = await execa('kubectl', ['get', 'pods', '-n', ns, '-l', 'app.kubernetes.io/component=proxysql', '-o', 'json'], { stdio: 'pipe' });
+            const proxysqlPods = JSON.parse(proxysqlPodsResult.stdout);
+            const zones = new Set();
+            
+            proxysqlPods.items.forEach((pod: any) => {
+              const zone = pod.metadata.labels?.['topology.kubernetes.io/zone'] || 
+                          pod.spec.nodeName ? 'Unknown' : 'Pending';
+              zones.add(zone);
+            });
+            
+            if (zones.size >= 2) {
+              logSuccess(`✓ ProxySQL pods distributed across ${zones.size} availability zones: ${Array.from(zones).join(', ')}`);
+            } else if (zones.size === 1) {
+              logWarn(`⚠️  All ProxySQL pods in same zone (${Array.from(zones)[0]}). Consider multi-AZ deployment for high availability.`);
+            }
+          } catch (error) {
+            // Ignore zone checking errors
+          }
+        }
       } catch (error) {
         logWarn(`Error checking ProxySQL pods: ${error}`);
       }
@@ -1041,18 +1132,23 @@ async function waitForClusterReady(ns: string, name: string, nodes: number) {
         }
       }
       
-      if (podLines.length >= nodes) {
-        const allReady = podLines.every(line => {
-          const parts = line.split(/\s+/);
-          const ready = parts[1];
-          return ready.includes('/') && ready.split('/')[0] === ready.split('/')[1];
-        });
-        
-        if (allReady && pxcCount >= nodes && status === 'ready') {
-          logSuccess(`Percona cluster ${pxcResourceName} is ready with ${nodes} nodes`);
-          return;
-        }
-      }
+              if (podLines.length >= nodes) {
+                const allReady = podLines.every(line => {
+                  const parts = line.split(/\s+/);
+                  const ready = parts[1];
+                  return ready.includes('/') && ready.split('/')[0] === ready.split('/')[1];
+                });
+                
+                // Check if cluster is ready based on PXC status
+                const clusterReady = pxc.status?.state === 'ready' || 
+                                   (pxcCount >= nodes && pxc.status?.proxysql?.status === 'ready');
+                
+                if (allReady && clusterReady) {
+                  logSuccess(`🎉 Percona cluster ${pxcResourceName} is ready with ${nodes} PXC nodes and 3 ProxySQL pods!`);
+                  logSuccess(`📊 Final Status: PXC ${pxcCount}/${nodes}, ProxySQL ${proxysqlCount}/3, State: ${pxc.status?.state || status}`);
+                  return;
+                }
+              }
       
       await new Promise(resolve => setTimeout(resolve, 30000)); // Wait 30 seconds
     } catch (error) {
@@ -1122,8 +1218,8 @@ async function uninstall(ns: string, name: string) {
     const result = await execa('kubectl', ['get', 'pxc', name, '-n', ns], { stdio: 'pipe' });
     if (result.exitCode === 0) {
       logInfo('Removing finalizers from PXC resource...');
-      await run('kubectl', ['patch', 'pxc', name, '-n', ns, '-p', '{"metadata":{"finalizers":[]}}', '--type=merge']);
-      await run('kubectl', ['delete', 'pxc', name, '-n', ns]);
+      await run('kubectl', ['patch', 'pxc', name, '-n', ns, '-p', '{"metadata":{"finalizers":[]}}', '--type=merge'], { stdio: 'pipe' });
+      await run('kubectl', ['delete', 'pxc', name, '-n', ns, '--force', '--grace-period=0'], { stdio: 'pipe' });
       logSuccess('PXC resource force deleted successfully');
     }
   } catch (error) {
@@ -1163,14 +1259,103 @@ async function uninstall(ns: string, name: string) {
   // Delete PVCs to avoid orphaned volumes
   try {
     logInfo('Deleting PVCs...');
-    await run('kubectl', ['delete', 'pvc', '--all', '-n', ns]);
+    await run('kubectl', ['delete', 'pvc', '--all', '-n', ns, '--timeout=60s']);
     logSuccess('PVCs deleted successfully');
   } catch (error) {
     if (error.toString().includes('NotFound') || error.toString().includes('no resources found')) {
       logInfo('No PVCs found or already deleted');
+    } else if (error.toString().includes('timeout')) {
+      logWarn('PVC deletion timed out, forcing cleanup...');
+      try {
+        // Force delete PVCs that are stuck
+        const { execa } = await import('execa');
+        const pvcResult = await execa('kubectl', ['get', 'pvc', '-n', ns, '--no-headers', '-o', 'custom-columns=NAME:.metadata.name'], { stdio: 'pipe' });
+        const pvcNames = pvcResult.stdout.trim().split('\n').filter(name => name.trim());
+        
+        for (const pvcName of pvcNames) {
+          try {
+            logInfo(`Force deleting PVC: ${pvcName}`);
+            // Remove finalizers first
+            await run('kubectl', ['patch', 'pvc', pvcName, '-n', ns, '-p', '{"metadata":{"finalizers":[]}}', '--type=merge'], { stdio: 'pipe' });
+            // Force delete with immediate termination
+            await run('kubectl', ['delete', 'pvc', pvcName, '-n', ns, '--force', '--grace-period=0'], { stdio: 'pipe' });
+          } catch (pvcError) {
+            logWarn(`Failed to force delete PVC ${pvcName}: ${pvcError}`);
+          }
+        }
+        logSuccess('PVCs force deleted successfully');
+      } catch (forceError) {
+        logWarn(`Error force deleting PVCs: ${forceError}`);
+      }
     } else {
       logWarn(`Error deleting PVCs: ${error}`);
     }
+  }
+  
+  // Delete Percona-related Secrets
+  try {
+    logInfo('Deleting Percona-related Secrets...');
+    
+    // Get all secrets and filter for Percona-related ones
+    const { execa } = await import('execa');
+    const secretsResult = await execa('kubectl', ['get', 'secrets', '-n', ns, '--no-headers', '-o', 'custom-columns=NAME:.metadata.name'], { stdio: 'pipe' });
+    const allSecrets = secretsResult.stdout.trim().split('\n').filter(line => line.trim());
+    const perconaSecrets = allSecrets.filter(secret => 
+      secret.includes('percona') || 
+      secret.includes('pxc') || 
+      secret.includes('proxysql') ||
+      secret.includes('backup') ||
+      secret.includes('ssl') ||
+      secret.includes('internal')
+    );
+    
+    if (perconaSecrets.length > 0) {
+      logInfo(`Found ${perconaSecrets.length} Percona-related Secrets to delete: ${perconaSecrets.join(', ')}`);
+      for (const secretName of perconaSecrets) {
+        try {
+          await run('kubectl', ['delete', 'secret', secretName, '-n', ns]);
+          logInfo(`Deleted secret: ${secretName}`);
+        } catch (secretError) {
+          logWarn(`Failed to delete secret ${secretName}: ${secretError}`);
+        }
+      }
+      logSuccess('Percona-related Secrets deleted successfully');
+    } else {
+      logInfo('No Percona-related Secrets found to delete');
+    }
+  } catch (error) {
+    logWarn(`Error deleting Percona-related Secrets: ${error}`);
+  }
+  
+  // Delete Percona-related ConfigMaps
+  try {
+    logInfo('Deleting Percona-related ConfigMaps...');
+    
+    const { execa } = await import('execa');
+    const cmResult = await execa('kubectl', ['get', 'configmap', '-n', ns, '--no-headers', '-o', 'custom-columns=NAME:.metadata.name'], { stdio: 'pipe' });
+    const allConfigMaps = cmResult.stdout.trim().split('\n').filter(line => line.trim());
+    const perconaConfigMaps = allConfigMaps.filter(cm => 
+      cm.includes('percona') || 
+      cm.includes('pxc') || 
+      cm.includes('proxysql')
+    );
+    
+    if (perconaConfigMaps.length > 0) {
+      logInfo(`Found ${perconaConfigMaps.length} Percona-related ConfigMaps to delete: ${perconaConfigMaps.join(', ')}`);
+      for (const cmName of perconaConfigMaps) {
+        try {
+          await run('kubectl', ['delete', 'configmap', cmName, '-n', ns]);
+          logInfo(`Deleted configmap: ${cmName}`);
+        } catch (cmError) {
+          logWarn(`Failed to delete configmap ${cmName}: ${cmError}`);
+        }
+      }
+      logSuccess('Percona-related ConfigMaps deleted successfully');
+    } else {
+      logInfo('No Percona-related ConfigMaps found to delete');
+    }
+  } catch (error) {
+    logWarn(`Error deleting Percona-related ConfigMaps: ${error}`);
   }
   
   // Uninstall Helm releases
@@ -1229,7 +1414,192 @@ async function uninstall(ns: string, name: string) {
     }
   }
   
+  // Verify complete cleanup
+  logInfo('=== Verifying complete cleanup ===');
+  await verifyCleanup(ns, name);
+  
+  // Delete the namespace itself
+  try {
+    logInfo('Deleting Percona namespace...');
+    await run('kubectl', ['delete', 'namespace', ns, '--timeout=60s'], { stdio: 'pipe' });
+    logSuccess(`Namespace ${ns} deleted successfully`);
+  } catch (error) {
+    if (error.toString().includes('NotFound')) {
+      logInfo(`Namespace ${ns} not found or already deleted`);
+    } else if (error.toString().includes('timeout')) {
+      logWarn(`Namespace deletion timed out, forcing cleanup...`);
+      try {
+        // Force delete namespace by removing finalizers
+        await run('kubectl', ['patch', 'namespace', ns, '-p', '{"metadata":{"finalizers":[]}}', '--type=merge'], { stdio: 'pipe' });
+        await run('kubectl', ['delete', 'namespace', ns, '--force', '--grace-period=0'], { stdio: 'pipe' });
+        logSuccess(`Namespace ${ns} force deleted successfully`);
+      } catch (forceError) {
+        logWarn(`Error force deleting namespace ${ns}: ${forceError}`);
+      }
+    } else {
+      logWarn(`Error deleting namespace ${ns}: ${error}`);
+    }
+  }
+  
   logSuccess('Percona cluster and operator uninstalled successfully');
+}
+
+async function verifyCleanup(ns: string, name: string) {
+  const { execa } = await import('execa');
+  let cleanupIssues: string[] = [];
+  
+  try {
+    // 1. Check for remaining PXC custom resources
+    logInfo('Checking for remaining PXC custom resources...');
+    try {
+      const pxcResult = await execa('kubectl', ['get', 'pxc', '-n', ns, '--no-headers'], { stdio: 'pipe' });
+      const pxcResources = pxcResult.stdout.trim().split('\n').filter(line => line.trim());
+      if (pxcResources.length > 0) {
+        cleanupIssues.push(`Found ${pxcResources.length} remaining PXC resources: ${pxcResources.join(', ')}`);
+      } else {
+        logSuccess('✓ No PXC custom resources found');
+      }
+    } catch (error) {
+      logSuccess('✓ No PXC custom resources found');
+    }
+    
+    // 2. Check for remaining StatefulSets
+    logInfo('Checking for remaining StatefulSets...');
+    try {
+      const stsResult = await execa('kubectl', ['get', 'statefulset', '-n', ns, '--no-headers'], { stdio: 'pipe' });
+      const stsResources = stsResult.stdout.trim().split('\n').filter(line => line.trim());
+      if (stsResources.length > 0) {
+        cleanupIssues.push(`Found ${stsResources.length} remaining StatefulSets: ${stsResources.join(', ')}`);
+      } else {
+        logSuccess('✓ No StatefulSets found');
+      }
+    } catch (error) {
+      logSuccess('✓ No StatefulSets found');
+    }
+    
+    // 3. Check for remaining Services
+    logInfo('Checking for remaining Services...');
+    try {
+      const svcResult = await execa('kubectl', ['get', 'service', '-n', ns, '--no-headers'], { stdio: 'pipe' });
+      const svcResources = svcResult.stdout.trim().split('\n').filter(line => line.trim());
+      if (svcResources.length > 0) {
+        cleanupIssues.push(`Found ${svcResources.length} remaining Services: ${svcResources.join(', ')}`);
+      } else {
+        logSuccess('✓ No Services found');
+      }
+    } catch (error) {
+      logSuccess('✓ No Services found');
+    }
+    
+    // 4. Check for remaining PVCs
+    logInfo('Checking for remaining PVCs...');
+    try {
+      const pvcResult = await execa('kubectl', ['get', 'pvc', '-n', ns, '--no-headers'], { stdio: 'pipe' });
+      const pvcResources = pvcResult.stdout.trim().split('\n').filter(line => line.trim());
+      if (pvcResources.length > 0) {
+        cleanupIssues.push(`Found ${pvcResources.length} remaining PVCs: ${pvcResources.join(', ')}`);
+      } else {
+        logSuccess('✓ No PVCs found');
+      }
+    } catch (error) {
+      logSuccess('✓ No PVCs found');
+    }
+    
+    // 5. Check for remaining Pods
+    logInfo('Checking for remaining Pods...');
+    try {
+      const podsResult = await execa('kubectl', ['get', 'pods', '-n', ns, '--no-headers'], { stdio: 'pipe' });
+      const podResources = podsResult.stdout.trim().split('\n').filter(line => line.trim());
+      if (podResources.length > 0) {
+        cleanupIssues.push(`Found ${podResources.length} remaining Pods: ${podResources.join(', ')}`);
+      } else {
+        logSuccess('✓ No Pods found');
+      }
+    } catch (error) {
+      logSuccess('✓ No Pods found');
+    }
+    
+    // 6. Check for remaining Secrets
+    logInfo('Checking for Percona-related Secrets...');
+    try {
+      const secretsResult = await execa('kubectl', ['get', 'secrets', '-n', ns, '--no-headers'], { stdio: 'pipe' });
+      const allSecrets = secretsResult.stdout.trim().split('\n').filter(line => line.trim());
+      const perconaSecrets = allSecrets.filter(secret => 
+        secret.includes('percona') || 
+        secret.includes('pxc') || 
+        secret.includes('proxysql') ||
+        secret.includes('backup')
+      );
+      if (perconaSecrets.length > 0) {
+        cleanupIssues.push(`Found ${perconaSecrets.length} Percona-related Secrets: ${perconaSecrets.join(', ')}`);
+      } else {
+        logSuccess('✓ No Percona-related Secrets found');
+      }
+    } catch (error) {
+      logSuccess('✓ No Percona-related Secrets found');
+    }
+    
+    // 7. Check for remaining ConfigMaps
+    logInfo('Checking for Percona-related ConfigMaps...');
+    try {
+      const cmResult = await execa('kubectl', ['get', 'configmap', '-n', ns, '--no-headers'], { stdio: 'pipe' });
+      const allConfigMaps = cmResult.stdout.trim().split('\n').filter(line => line.trim());
+      const perconaConfigMaps = allConfigMaps.filter(cm => 
+        cm.includes('percona') || 
+        cm.includes('pxc') || 
+        cm.includes('proxysql')
+      );
+      if (perconaConfigMaps.length > 0) {
+        cleanupIssues.push(`Found ${perconaConfigMaps.length} Percona-related ConfigMaps: ${perconaConfigMaps.join(', ')}`);
+      } else {
+        logSuccess('✓ No Percona-related ConfigMaps found');
+      }
+    } catch (error) {
+      logSuccess('✓ No Percona-related ConfigMaps found');
+    }
+    
+    // 8. Check for remaining Helm releases
+    logInfo('Checking for remaining Helm releases...');
+    try {
+      const helmResult = await execa('helm', ['list', '-n', ns, '--output', 'json'], { stdio: 'pipe' });
+      const releases = JSON.parse(helmResult.stdout);
+      const perconaReleases = releases.filter((r: any) => 
+        r.name.includes('percona') || 
+        r.name.includes('pxc') || 
+        r.name === name
+      );
+      if (perconaReleases.length > 0) {
+        cleanupIssues.push(`Found ${perconaReleases.length} remaining Helm releases: ${perconaReleases.map((r: any) => r.name).join(', ')}`);
+      } else {
+        logSuccess('✓ No Helm releases found');
+      }
+    } catch (error) {
+      logSuccess('✓ No Helm releases found');
+    }
+    
+    
+    // 9. Check if namespace still exists
+    logInfo('Checking if Percona namespace still exists...');
+    try {
+      await execa('kubectl', ['get', 'namespace', ns], { stdio: 'pipe' });
+      cleanupIssues.push(`Namespace ${ns} still exists`);
+    } catch (error) {
+      logSuccess('✓ Percona namespace has been deleted');
+    }
+    
+    // 10. Summary
+    logInfo('=== Cleanup Verification Summary ===');
+    if (cleanupIssues.length > 0) {
+      logWarn('⚠️  Cleanup issues found:');
+      cleanupIssues.forEach(issue => logWarn(`  - ${issue}`));
+      logWarn('Some resources may still exist. You may need to delete them manually.');
+    } else {
+      logSuccess('✅ All Percona resources have been successfully removed');
+    }
+    
+  } catch (error) {
+    logWarn(`Error during cleanup verification: ${error}`);
+  }
 }
 
 async function main() {
