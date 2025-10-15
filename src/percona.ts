@@ -31,7 +31,7 @@ async function ensureNamespace(ns: string) {
 
 async function addRepos(repoUrl: string) {
   try {
-    await run('helm', ['repo', 'add', 'percona', repoUrl]);
+    await run('helm', ['repo', 'add', 'percona', repoUrl], { stdio: 'pipe' });
   } catch (err) {
     // Repo already exists, that's fine
     logInfo('Percona repo already exists, continuing...');
@@ -63,7 +63,7 @@ haproxy:
 proxysql:
   enabled: true
   size: 3
-  image: percona/proxysql:2.4.4
+  image: percona/proxysql:2.7.3
   resources:
     requests:
       memory: 256Mi
@@ -349,12 +349,76 @@ async function installCluster(ns: string, name: string, nodes: number, accountId
   await proc;
 }
 
+async function checkProxySQLIssues(ns: string, name: string) {
+  const { execa } = await import('execa');
+  
+  try {
+    // Check ProxySQL StatefulSet
+    const stsResult = await execa('kubectl', ['get', 'statefulset', '-n', ns, '-l', 'app.kubernetes.io/name=proxysql', '-o', 'json'], { stdio: 'pipe' });
+    const stsData = JSON.parse(stsResult.stdout);
+    
+    if (stsData.items && stsData.items.length > 0) {
+      const sts = stsData.items[0];
+      const readyReplicas = sts.status.readyReplicas || 0;
+      const desiredReplicas = sts.spec.replicas || 0;
+      
+      logInfo(`ProxySQL StatefulSet: ${readyReplicas}/${desiredReplicas} ready`);
+      
+      if (readyReplicas < desiredReplicas) {
+        logWarn(`ProxySQL StatefulSet not ready: ${readyReplicas}/${desiredReplicas}`);
+        
+        // Check for specific issues
+        if (sts.status.conditions) {
+          sts.status.conditions.forEach((condition: any) => {
+            if (condition.type === 'Ready' && condition.status !== 'True') {
+              logWarn(`ProxySQL StatefulSet condition: ${condition.type}=${condition.status} - ${condition.message}`);
+            }
+          });
+        }
+      }
+    }
+    
+    // Check ProxySQL pods for specific issues
+    const podsResult = await execa('kubectl', ['get', 'pods', '-n', ns, '-l', 'app.kubernetes.io/name=proxysql', '-o', 'json'], { stdio: 'pipe' });
+    const podsData = JSON.parse(podsResult.stdout);
+    
+    if (podsData.items) {
+      podsData.items.forEach((pod: any) => {
+        const podName = pod.metadata.name;
+        const phase = pod.status.phase;
+        const ready = pod.status.containerStatuses?.[0]?.ready || false;
+        
+        logInfo(`ProxySQL pod ${podName}: ${phase}, ready: ${ready}`);
+        
+        if (phase === 'Pending' || phase === 'Failed' || !ready) {
+          logWarn(`ProxySQL pod ${podName} has issues: ${phase}`);
+          
+          // Check container status
+          if (pod.status.containerStatuses) {
+            pod.status.containerStatuses.forEach((container: any) => {
+              if (container.state.waiting) {
+                logWarn(`  Container waiting: ${container.state.waiting.reason} - ${container.state.waiting.message}`);
+              }
+              if (container.state.terminated) {
+                logWarn(`  Container terminated: ${container.state.terminated.reason} - ${container.state.terminated.message}`);
+              }
+            });
+          }
+        }
+      });
+    }
+    
+  } catch (error) {
+    logWarn(`Error checking ProxySQL issues: ${error}`);
+  }
+}
+
 async function waitForClusterReady(ns: string, name: string, nodes: number) {
   const pxcResourceName = `${name}-pxc-db`;
   logInfo(`Waiting for Percona cluster ${pxcResourceName} to be ready...`);
   const { execa } = await import('execa');
   const startTime = Date.now();
-  const timeout = 30 * 60 * 1000; // 30 minutes
+  const timeout = 15 * 60 * 1000; // 15 minutes (reduced from 30)
   
   while (Date.now() - startTime < timeout) {
     try {
@@ -362,16 +426,94 @@ async function waitForClusterReady(ns: string, name: string, nodes: number) {
       const pxcResult = await execa('kubectl', ['get', 'pxc', pxcResourceName, '-n', ns, '-o', 'json'], { stdio: 'pipe' });
       const pxc = JSON.parse(pxcResult.stdout);
       
-      const pxcCount = pxc.status?.pxc || 0;
-      const proxysqlCount = pxc.status?.proxysql || 0;
+      // Debug: log the actual status structure
+      if (pxc.status) {
+        logInfo(`Debug - PXC status structure: ${JSON.stringify(pxc.status, null, 2)}`);
+      }
+      
+      const pxcCount = typeof pxc.status?.pxc === 'number' ? pxc.status.pxc : (pxc.status?.pxc?.ready || 0);
+      const proxysqlCount = typeof pxc.status?.proxysql === 'number' ? pxc.status.proxysql : (pxc.status?.proxysql?.ready || 0);
       const status = pxc.status?.status || 'unknown';
       
       const elapsed = Math.round((Date.now() - startTime) / 1000);
       logInfo(`Cluster status: ${status}, PXC: ${pxcCount}/${nodes}, ProxySQL: ${proxysqlCount} (${elapsed}s elapsed)`);
       
-      // Check if all PXC pods are ready
+      // Check PXC pods
       const podsResult = await execa('kubectl', ['get', 'pods', '-n', ns, '-l', 'app.kubernetes.io/name=percona-xtradb-cluster', '--no-headers'], { stdio: 'pipe' });
       const podLines = podsResult.stdout.trim().split('\n').filter(line => line.includes(`${pxcResourceName}-pxc-`));
+      
+      // Check ProxySQL pods specifically
+      try {
+        const proxysqlPodsResult = await execa('kubectl', ['get', 'pods', '-n', ns, '-l', 'app.kubernetes.io/name=proxysql', '--no-headers'], { stdio: 'pipe' });
+        const proxysqlPodLines = proxysqlPodsResult.stdout.trim().split('\n');
+        logInfo(`ProxySQL pods: ${proxysqlPodLines.length} found`);
+        proxysqlPodLines.forEach((line, index) => {
+          if (line.trim()) {
+            logInfo(`  ProxySQL pod ${index + 1}: ${line}`);
+          }
+        });
+      } catch (error) {
+        logWarn(`Error checking ProxySQL pods: ${error}`);
+      }
+      
+      // Check for any failed pods
+      try {
+        const failedPodsResult = await execa('kubectl', ['get', 'pods', '-n', ns, '--field-selector=status.phase=Failed', '--no-headers'], { stdio: 'pipe' });
+        const failedPods = failedPodsResult.stdout.trim().split('\n').filter(line => line.trim());
+        if (failedPods.length > 0) {
+          logWarn(`Found ${failedPods.length} failed pods:`);
+          failedPods.forEach(pod => logWarn(`  Failed: ${pod}`));
+        }
+      } catch (error) {
+        // Ignore errors here as this is just for debugging
+      }
+      
+      // Check Kubernetes events for errors (every 2 minutes)
+      if (elapsed % 120 === 0 && elapsed > 0) {
+        try {
+          const eventsResult = await execa('kubectl', ['get', 'events', '-n', ns, '--sort-by=.lastTimestamp', '--field-selector=type=Warning', '--no-headers'], { stdio: 'pipe' });
+          const warningEvents = eventsResult.stdout.trim().split('\n').filter(line => line.trim()).slice(-5); // Last 5 warnings
+          if (warningEvents.length > 0) {
+            logWarn(`Recent warning events:`);
+            warningEvents.forEach(event => logWarn(`  ${event}`));
+          }
+        } catch (error) {
+          // Ignore errors here as this is just for debugging
+        }
+      }
+      
+      // Check ProxySQL issues (every 2 minutes)
+      if (elapsed % 120 === 0 && elapsed > 0) {
+        logInfo('=== Checking ProxySQL status ===');
+        await checkProxySQLIssues(ns, name);
+      }
+      
+      // Check ProxySQL pod logs if there are issues (every 3 minutes)
+      if (elapsed % 180 === 0 && elapsed > 0) {
+        try {
+          const proxysqlPodsResult = await execa('kubectl', ['get', 'pods', '-n', ns, '-l', 'app.kubernetes.io/name=proxysql', '--no-headers', '-o', 'custom-columns=NAME:.metadata.name'], { stdio: 'pipe' });
+          const proxysqlPodNames = proxysqlPodsResult.stdout.trim().split('\n').filter(name => name.trim());
+          
+          for (const podName of proxysqlPodNames.slice(0, 2)) { // Check first 2 ProxySQL pods
+            try {
+              const logsResult = await execa('kubectl', ['logs', podName, '-n', ns, '--tail=10', '--since=2m'], { stdio: 'pipe' });
+              const logs = logsResult.stdout.trim();
+              if (logs) {
+                logInfo(`ProxySQL pod ${podName} recent logs:`);
+                logs.split('\n').forEach(line => {
+                  if (line.trim()) {
+                    logInfo(`  ${line}`);
+                  }
+                });
+              }
+            } catch (logError) {
+              logWarn(`Could not get logs from ProxySQL pod ${podName}: ${logError}`);
+            }
+          }
+        } catch (error) {
+          logWarn(`Error checking ProxySQL pod logs: ${error}`);
+        }
+      }
       
       if (podLines.length >= nodes) {
         const allReady = podLines.every(line => {
@@ -394,7 +536,7 @@ async function waitForClusterReady(ns: string, name: string, nodes: number) {
     }
   }
   
-  throw new Error(`Percona cluster ${pxcResourceName} did not become ready within 30 minutes`);
+  throw new Error(`Percona cluster ${pxcResourceName} did not become ready within 15 minutes. Check the logs above for ProxySQL and PXC pod issues.`);
 }
 
 async function expandVolumes(ns: string, name: string, newSize: string) {
