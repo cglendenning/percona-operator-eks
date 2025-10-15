@@ -413,6 +413,53 @@ Resources:
       ManagedPolicyArns:
         - arn:aws:iam::aws:policy/service-role/AmazonEBSCSIDriverPolicy
 
+  # EKS Add-ons
+  VpcCniAddon:
+    Type: AWS::EKS::Addon
+    DependsOn: EKSCluster
+    Properties:
+      ClusterName: !Ref EKSCluster
+      AddonName: vpc-cni
+      AddonVersion: latest
+      ResolveConflicts: OVERWRITE
+
+  CoreDnsAddon:
+    Type: AWS::EKS::Addon
+    DependsOn: EKSCluster
+    Properties:
+      ClusterName: !Ref EKSCluster
+      AddonName: coredns
+      AddonVersion: latest
+      ResolveConflicts: OVERWRITE
+
+  KubeProxyAddon:
+    Type: AWS::EKS::Addon
+    DependsOn: EKSCluster
+    Properties:
+      ClusterName: !Ref EKSCluster
+      AddonName: kube-proxy
+      AddonVersion: latest
+      ResolveConflicts: OVERWRITE
+
+  EbsCsiAddon:
+    Type: AWS::EKS::Addon
+    DependsOn: [EKSCluster, EBSCSIDriverRole]
+    Properties:
+      ClusterName: !Ref EKSCluster
+      AddonName: aws-ebs-csi-driver
+      AddonVersion: latest
+      ServiceAccountRoleArn: !GetAtt EBSCSIDriverRole.Arn
+      ResolveConflicts: OVERWRITE
+
+  MetricsServerAddon:
+    Type: AWS::EKS::Addon
+    DependsOn: EKSCluster
+    Properties:
+      ClusterName: !Ref EKSCluster
+      AddonName: metrics-server
+      AddonVersion: latest
+      ResolveConflicts: OVERWRITE
+
 Outputs:
   ClusterName:
     Description: EKS Cluster Name

@@ -417,87 +417,6 @@ update_kubeconfig() {
     fi
 }
 
-# Install EBS CSI driver
-install_ebs_csi() {
-    log_step "Installing EBS CSI driver..."
-    
-    # Get the EBS CSI driver role ARN from CloudFormation outputs
-    log_verbose "Retrieving EBS CSI driver role ARN from CloudFormation outputs..."
-    local ebs_csi_role_arn=$(aws cloudformation describe-stacks \
-        --stack-name "$STACK_NAME" \
-        --region "$REGION" \
-        --query 'Stacks[0].Outputs[?OutputKey==`EBSCSIDriverRoleArn`].OutputValue' \
-        --output text)
-    
-    if [ -z "$ebs_csi_role_arn" ]; then
-        log_error "Could not get EBS CSI driver role ARN from CloudFormation outputs"
-        log_error "Make sure the CloudFormation stack was deployed successfully"
-        exit 1
-    fi
-    
-    log_verbose "EBS CSI driver role ARN: $ebs_csi_role_arn"
-    
-    # Install EBS CSI driver
-    log_verbose "Installing EBS CSI driver from Kubernetes manifests..."
-    local ebs_install_url="https://github.com/kubernetes-sigs/aws-ebs-csi-driver/deploy/kubernetes/overlays/stable/?ref=release-1.28"
-    log_verbose "Install URL: $ebs_install_url"
-    
-    local install_cmd="kubectl apply -k \"$ebs_install_url\""
-    log_command "$install_cmd"
-    
-    if eval "$install_cmd"; then
-        log_verbose "EBS CSI driver manifests applied successfully"
-    else
-        log_error "Failed to apply EBS CSI driver manifests"
-        exit 1
-    fi
-    
-    # Wait for pods to be created
-    log_verbose "Waiting for EBS CSI driver pods to be created..."
-    sleep 10
-    
-    # Annotate the service account
-    log_verbose "Annotating EBS CSI controller service account with IAM role..."
-    local annotate_cmd="kubectl annotate serviceaccount ebs-csi-controller-sa \
-        -n kube-system \
-        \"eks.amazonaws.com/role-arn=$ebs_csi_role_arn\" \
-        --overwrite"
-    log_command "$annotate_cmd"
-    
-    if eval "$annotate_cmd"; then
-        log_verbose "Service account annotated successfully"
-    else
-        log_warn "Failed to annotate service account, but continuing..."
-    fi
-    
-    # Restart the EBS CSI driver pods
-    log_verbose "Restarting EBS CSI controller deployment..."
-    local restart_cmd="kubectl rollout restart deployment ebs-csi-controller -n kube-system"
-    log_command "$restart_cmd"
-    
-    if eval "$restart_cmd"; then
-        log_verbose "EBS CSI controller deployment restart initiated"
-    else
-        log_warn "Failed to restart EBS CSI controller deployment"
-    fi
-    
-    # Wait for pods to be ready
-    log_verbose "Waiting for EBS CSI driver pods to be ready..."
-    show_progress "Waiting for EBS CSI driver pods to be ready" "2-3 minutes"
-    
-    if kubectl wait --for=condition=ready pod -l app=ebs-csi-controller -n kube-system --timeout=300s; then
-        log_verbose "EBS CSI driver pods are ready"
-    else
-        log_warn "EBS CSI driver pods may not be ready yet"
-    fi
-    
-    # Verify installation
-    log_verbose "Verifying EBS CSI driver installation..."
-    local pod_status=$(kubectl get pods -l app=ebs-csi-controller -n kube-system --no-headers 2>/dev/null | wc -l)
-    log_verbose "Number of EBS CSI controller pods: $pod_status"
-    
-    log_info "EBS CSI driver installed and configured"
-}
 
 # Verify deployment
 verify_deployment() {
@@ -556,14 +475,19 @@ verify_deployment() {
         log_verbose "  $line"
     done
     
-    # Check EBS CSI driver
-    log_verbose "Checking EBS CSI driver status..."
-    local ebs_pods=$(kubectl get pods -l app=ebs-csi-controller -n kube-system --no-headers 2>/dev/null | wc -l)
-    log_verbose "EBS CSI controller pods: $ebs_pods"
+    # Check EKS add-ons
+    log_verbose "Checking EKS add-ons status..."
+    local addons=$(aws eks list-addons --cluster-name "$CLUSTER_NAME" --region "$REGION" --query 'addons' --output json 2>/dev/null)
+    local addon_count=$(echo "$addons" | jq '. | length')
+    log_verbose "Number of EKS add-ons: $addon_count"
     
-    if [ "$ebs_pods" -gt 0 ]; then
-        local ebs_ready=$(kubectl get pods -l app=ebs-csi-controller -n kube-system --no-headers 2>/dev/null | grep -c "Running" || echo "0")
-        log_verbose "EBS CSI controller ready pods: $ebs_ready"
+    if [ "$addon_count" -gt 0 ]; then
+        log_verbose "Installed add-ons:"
+        echo "$addons" | jq -r '.[]' | while read -r addon; do
+            log_verbose "  - $addon"
+        done
+    else
+        log_warn "No EKS add-ons found"
     fi
     
     # Check system pods
@@ -661,7 +585,6 @@ main() {
     deploy_stack
     wait_for_cluster
     update_kubeconfig
-    install_ebs_csi
     verify_deployment
     
     # Calculate deployment time
@@ -679,7 +602,7 @@ main() {
     log_info "Next steps:"
     log_info "  1. Verify cluster access: kubectl get nodes"
     log_info "  2. Deploy Percona XtraDB Cluster"
-    log_info "  3. Check EBS CSI driver: kubectl get pods -n kube-system -l app=ebs-csi-controller"
+    log_info "  3. Check EKS add-ons: aws eks list-addons --cluster-name $CLUSTER_NAME --region $REGION"
     log_info ""
     log_info "Useful commands:"
     log_info "  kubectl get nodes                    # List cluster nodes"
