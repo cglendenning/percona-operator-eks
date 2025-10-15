@@ -58,12 +58,12 @@ function clusterValues(nodes: number, accountId: string): string {
     size: 20Gi
     accessMode: ReadWriteOnce
     storageClass: gp3
-proxyHaproxy:
+haproxy:
   enabled: false
-proxyProxysql:
+proxysql:
   enabled: true
   size: 3
-  image: percona/proxysql:2.5.5
+  image: percona/proxysql:2.4.4
   resources:
     requests:
       memory: 256Mi
@@ -240,12 +240,13 @@ async function createS3CredentialsSecret(ns: string, region: string) {
     
     // Create IAM user for Percona backups
     try {
-      await run('aws', ['iam', 'create-user', '--user-name', userName]);
+      const userResult = await execa('aws', ['iam', 'create-user', '--user-name', userName], { stdio: 'pipe' });
       logInfo(`Created IAM user: ${userName}`);
     } catch (error) {
-      if (error.toString().includes('EntityAlreadyExists')) {
+      if (error.toString().includes('EntityAlreadyExists') || error.toString().includes('User with name percona-backup-user already exists')) {
         logInfo(`IAM user ${userName} already exists`);
       } else {
+        logWarn(`Unexpected error creating IAM user: ${error}`);
         throw error;
       }
     }
@@ -269,7 +270,7 @@ async function createS3CredentialsSecret(ns: string, region: string) {
     };
     
     try {
-      await run('aws', ['iam', 'create-policy', '--policy-name', policyName, '--policy-document', JSON.stringify(policyDocument)]);
+      await execa('aws', ['iam', 'create-policy', '--policy-name', policyName, '--policy-document', JSON.stringify(policyDocument)], { stdio: 'pipe' });
       logInfo(`Created IAM policy: ${policyName}`);
     } catch (error) {
       if (error.toString().includes('EntityAlreadyExists')) {
@@ -280,13 +281,41 @@ async function createS3CredentialsSecret(ns: string, region: string) {
     }
     
     // Attach policy to user
-    await run('aws', ['iam', 'attach-user-policy', '--user-name', userName, '--policy-arn', `arn:aws:iam::${accountId}:policy/${policyName}`]);
+    try {
+      await execa('aws', ['iam', 'attach-user-policy', '--user-name', userName, '--policy-arn', `arn:aws:iam::${accountId}:policy/${policyName}`], { stdio: 'pipe' });
+    } catch (error) {
+      if (error.toString().includes('EntityAlreadyExists')) {
+        logInfo(`Policy already attached to user ${userName}`);
+      } else {
+        throw error;
+      }
+    }
+    
+    // Check if user already has access keys
+    let accessKey, secretKey;
+    try {
+      const existingKeysResult = await execa('aws', ['iam', 'list-access-keys', '--user-name', userName], { stdio: 'pipe' });
+      const existingKeys = JSON.parse(existingKeysResult.stdout);
+      
+      if (existingKeys.AccessKeyMetadata && existingKeys.AccessKeyMetadata.length > 0) {
+        logInfo(`User ${userName} already has access keys, using existing ones`);
+        // Get the existing access key ID
+        const existingKeyId = existingKeys.AccessKeyMetadata[0].AccessKeyId;
+        
+        // We can't retrieve the secret key, so we need to create a new one
+        // First delete the old one
+        await run('aws', ['iam', 'delete-access-key', '--user-name', userName, '--access-key-id', existingKeyId]);
+        logInfo('Deleted existing access key, creating new one');
+      }
+    } catch (error) {
+      logInfo('No existing access keys found or error checking, creating new ones');
+    }
     
     // Create access key for the user
     const keyResult = await execa('aws', ['iam', 'create-access-key', '--user-name', userName], { stdio: 'pipe' });
     const keyData = JSON.parse(keyResult.stdout);
-    const accessKey = keyData.AccessKey.AccessKeyId;
-    const secretKey = keyData.AccessKey.SecretAccessKey;
+    accessKey = keyData.AccessKey.AccessKeyId;
+    secretKey = keyData.AccessKey.SecretAccessKey;
     
     // Create Kubernetes secret
     const secretYaml = `apiVersion: v1
@@ -321,7 +350,8 @@ async function installCluster(ns: string, name: string, nodes: number, accountId
 }
 
 async function waitForClusterReady(ns: string, name: string, nodes: number) {
-  logInfo(`Waiting for Percona cluster ${name} to be ready...`);
+  const pxcResourceName = `${name}-pxc-db`;
+  logInfo(`Waiting for Percona cluster ${pxcResourceName} to be ready...`);
   const { execa } = await import('execa');
   const startTime = Date.now();
   const timeout = 30 * 60 * 1000; // 30 minutes
@@ -329,7 +359,7 @@ async function waitForClusterReady(ns: string, name: string, nodes: number) {
   while (Date.now() - startTime < timeout) {
     try {
       // Check PXC custom resource status
-      const pxcResult = await execa('kubectl', ['get', 'pxc', name, '-n', ns, '-o', 'json'], { stdio: 'pipe' });
+      const pxcResult = await execa('kubectl', ['get', 'pxc', pxcResourceName, '-n', ns, '-o', 'json'], { stdio: 'pipe' });
       const pxc = JSON.parse(pxcResult.stdout);
       
       const pxcCount = pxc.status?.pxc || 0;
@@ -341,7 +371,7 @@ async function waitForClusterReady(ns: string, name: string, nodes: number) {
       
       // Check if all PXC pods are ready
       const podsResult = await execa('kubectl', ['get', 'pods', '-n', ns, '-l', 'app.kubernetes.io/name=percona-xtradb-cluster', '--no-headers'], { stdio: 'pipe' });
-      const podLines = podsResult.stdout.trim().split('\n').filter(line => line.includes('pxc-cluster-pxc-db-pxc-'));
+      const podLines = podsResult.stdout.trim().split('\n').filter(line => line.includes(`${pxcResourceName}-pxc-`));
       
       if (podLines.length >= nodes) {
         const allReady = podLines.every(line => {
@@ -351,7 +381,7 @@ async function waitForClusterReady(ns: string, name: string, nodes: number) {
         });
         
         if (allReady && pxcCount >= nodes && status === 'ready') {
-          logSuccess(`Percona cluster ${name} is ready with ${nodes} nodes`);
+          logSuccess(`Percona cluster ${pxcResourceName} is ready with ${nodes} nodes`);
           return;
         }
       }
@@ -364,7 +394,7 @@ async function waitForClusterReady(ns: string, name: string, nodes: number) {
     }
   }
   
-  throw new Error(`Percona cluster ${name} did not become ready within 30 minutes`);
+  throw new Error(`Percona cluster ${pxcResourceName} did not become ready within 30 minutes`);
 }
 
 async function expandVolumes(ns: string, name: string, newSize: string) {
