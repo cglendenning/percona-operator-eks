@@ -65,6 +65,26 @@ addons:
 `; 
 }
 
+async function checkClusterExists(clusterName: string, region: string): Promise<boolean> {
+  try {
+    logInfo(`Checking if cluster ${clusterName} exists...`);
+    const { execSync } = await import('child_process');
+    
+    const result = execSync(`AWS_PROFILE=${process.env.AWS_PROFILE} aws eks describe-cluster --name ${clusterName} --region ${region}`, {
+      encoding: 'utf8',
+      stdio: 'pipe'
+    });
+    
+    const cluster = JSON.parse(result);
+    const exists = cluster.cluster && cluster.cluster.status === 'ACTIVE';
+    logInfo(`Cluster ${clusterName} exists: ${exists}`);
+    return exists;
+  } catch (error) {
+    logInfo(`Cluster ${clusterName} does not exist or is not accessible`);
+    return false;
+  }
+}
+
 async function getAvailableAZs(region: string): Promise<string[]> {
   logInfo('=== STARTING getAvailableAZs ===');
   logInfo(`Region: ${region}`);
@@ -96,10 +116,20 @@ async function getAvailableAZs(region: string): Promise<string[]> {
       throw new Error('AvailabilityZones not found in response');
     }
     
-    // Filter for EKS-compatible AZs (exclude us-east-1c which often lacks public subnets)
-    const azs = data.AvailabilityZones
-      .filter((az: any) => az.ZoneName !== 'us-east-1c') // Exclude us-east-1c which often lacks public subnets
-      .map((az: any) => az.ZoneName);
+    // Get all available AZs first
+    const allAZs = data.AvailabilityZones.map((az: any) => az.ZoneName);
+    logInfo(`All available AZs: ${JSON.stringify(allAZs)}`);
+    
+    // Check which AZs have public subnets by querying VPCs
+    const vpcCommand = `AWS_PROFILE=${process.env.AWS_PROFILE} aws ec2 describe-subnets --region ${region} --filters Name=map-public-ip-on-launch,Values=true --query "Subnets[].AvailabilityZone" --output json`;
+    logInfo(`Checking public subnets with command: ${vpcCommand}`);
+    
+    const vpcResult = execSync(vpcCommand, { encoding: 'utf8', stdio: 'pipe' });
+    const publicSubnetAZs = JSON.parse(vpcResult);
+    logInfo(`AZs with public subnets: ${JSON.stringify(publicSubnetAZs)}`);
+    
+    // Filter for AZs that have public subnets
+    const azs = allAZs.filter((az: string) => publicSubnetAZs.includes(az));
     
     logInfo(`EKS-compatible AZs: ${JSON.stringify(azs)}`);
     logInfo(`AZs length: ${azs.length}`);
@@ -127,42 +157,47 @@ async function createCluster(args: EksArgs) {
   await ensurePrereqs();
   logInfo('Prerequisites checked');
   
-  try {
-    // Query AWS for actual available AZs - no fallbacks
-    logInfo('Querying AWS for availability zones...');
-    logInfo('About to call getAvailableAZs...');
-    logInfo(`Function exists: ${typeof getAvailableAZs}`);
-    
-    let availableAZs;
+  // Check if cluster already exists
+  const clusterExists = await checkClusterExists(args.name, args.region);
+  if (clusterExists) {
+    logInfo(`EKS cluster ${args.name} already exists, skipping creation`);
+  } else {
     try {
-      logInfo('Calling getAvailableAZs now...');
-      availableAZs = await getAvailableAZs(args.region);
-      logInfo('getAvailableAZs completed successfully');
-    } catch (azError) {
-      logError('getAvailableAZs threw an error:', azError);
-      throw azError;
+      // Query AWS for actual available AZs - no fallbacks
+      logInfo('Querying AWS for availability zones...');
+      logInfo('About to call getAvailableAZs...');
+      logInfo(`Function exists: ${typeof getAvailableAZs}`);
+      
+      let availableAZs;
+      try {
+        logInfo('Calling getAvailableAZs now...');
+        availableAZs = await getAvailableAZs(args.region);
+        logInfo('getAvailableAZs completed successfully');
+      } catch (azError) {
+        logError('getAvailableAZs threw an error:', azError);
+        throw azError;
+      }
+      
+      logInfo(`getAvailableAZs returned: ${JSON.stringify(availableAZs)}`);
+      logInfo(`availableAZs type: ${typeof availableAZs}`);
+      logInfo(`availableAZs is array: ${Array.isArray(availableAZs)}`);
+      
+      if (!availableAZs) {
+        throw new Error('getAvailableAZs returned undefined');
+      }
+      
+      logInfo(`Successfully retrieved ${availableAZs.length} available AZs: ${availableAZs.join(', ')}`);
+      
+      const yaml = buildClusterYaml(args, availableAZs);
+      
+      logInfo('Creating EKS cluster via eksctl...');
+      await createClusterWithStdin(yaml);
+      logSuccess(`EKS cluster ${args.name} created successfully`);
+    } catch (error) {
+      logError('Failed to create cluster:', error);
+      throw error;
     }
-    
-    logInfo(`getAvailableAZs returned: ${JSON.stringify(availableAZs)}`);
-    logInfo(`availableAZs type: ${typeof availableAZs}`);
-    logInfo(`availableAZs is array: ${Array.isArray(availableAZs)}`);
-    
-    if (!availableAZs) {
-      throw new Error('getAvailableAZs returned undefined');
-    }
-    
-    logInfo(`Successfully retrieved ${availableAZs.length} available AZs: ${availableAZs.join(', ')}`);
-    
-    const yaml = buildClusterYaml(args, availableAZs);
-    
-    logInfo('Creating EKS cluster via eksctl...');
-    await createClusterWithStdin(yaml);
-  } catch (error) {
-    logError('Failed to create cluster:', error);
-    throw error;
   }
-  
-  logSuccess(`EKS cluster ${args.name} created successfully`);
   
   // Wait for cluster to be ready
   await waitForClusterReady(args.name, args.region);
