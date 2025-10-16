@@ -69,12 +69,12 @@ Resources:
       InternetGatewayId: !Ref InternetGateway
       VpcId: !Ref VPC
 
-  # Subnets - Use AZs that support EKS
+  # Subnets - Use specific AZs that are known to work (avoiding us-east-1b)
   PublicSubnet1:
     Type: AWS::EC2::Subnet
     Properties:
       VpcId: !Ref VPC
-      AvailabilityZone: !Select [0, !GetAZs '']
+      AvailabilityZone: us-east-1a
       CidrBlock: 10.0.1.0/24
       MapPublicIpOnLaunch: true
       Tags:
@@ -87,7 +87,7 @@ Resources:
     Type: AWS::EC2::Subnet
     Properties:
       VpcId: !Ref VPC
-      AvailabilityZone: !Select [1, !GetAZs '']
+      AvailabilityZone: us-east-1c
       CidrBlock: 10.0.2.0/24
       MapPublicIpOnLaunch: true
       Tags:
@@ -100,7 +100,7 @@ Resources:
     Type: AWS::EC2::Subnet
     Properties:
       VpcId: !Ref VPC
-      AvailabilityZone: !Select [2, !GetAZs '']
+      AvailabilityZone: us-east-1d
       CidrBlock: 10.0.3.0/24
       MapPublicIpOnLaunch: true
       Tags:
@@ -113,7 +113,7 @@ Resources:
     Type: AWS::EC2::Subnet
     Properties:
       VpcId: !Ref VPC
-      AvailabilityZone: !Select [0, !GetAZs '']
+      AvailabilityZone: us-east-1a
       CidrBlock: 10.0.11.0/24
       Tags:
         - Key: Name
@@ -125,7 +125,7 @@ Resources:
     Type: AWS::EC2::Subnet
     Properties:
       VpcId: !Ref VPC
-      AvailabilityZone: !Select [1, !GetAZs '']
+      AvailabilityZone: us-east-1c
       CidrBlock: 10.0.12.0/24
       Tags:
         - Key: Name
@@ -137,7 +137,7 @@ Resources:
     Type: AWS::EC2::Subnet
     Properties:
       VpcId: !Ref VPC
-      AvailabilityZone: !Select [2, !GetAZs '']
+      AvailabilityZone: us-east-1d
       CidrBlock: 10.0.13.0/24
       Tags:
         - Key: Name
@@ -385,12 +385,12 @@ Resources:
         MaxUnavailablePercentage: 25
       Labels:
         workload: percona
-        topology.kubernetes.io/zone: !Select [0, !GetAZs '']
+        topology.kubernetes.io/zone: us-east-1a
       Tags:
         Name: !Sub '${ClusterName}-nodes-az1'
-        AvailabilityZone: !Select [0, !GetAZs '']
+        AvailabilityZone: us-east-1a
 
-  # EKS Node Group - AZ 2 (us-east-1b)
+  # EKS Node Group - AZ 2 (us-east-1c)
   EKSNodeGroup2:
     Type: AWS::EKS::Nodegroup
     Properties:
@@ -411,12 +411,12 @@ Resources:
         MaxUnavailablePercentage: 25
       Labels:
         workload: percona
-        topology.kubernetes.io/zone: !Select [1, !GetAZs '']
+        topology.kubernetes.io/zone: us-east-1c
       Tags:
         Name: !Sub '${ClusterName}-nodes-az2'
-        AvailabilityZone: !Select [1, !GetAZs '']
+        AvailabilityZone: us-east-1c
 
-  # EKS Node Group - AZ 3 (us-east-1c)
+  # EKS Node Group - AZ 3 (us-east-1d)
   EKSNodeGroup3:
     Type: AWS::EKS::Nodegroup
     Properties:
@@ -437,10 +437,10 @@ Resources:
         MaxUnavailablePercentage: 25
       Labels:
         workload: percona
-        topology.kubernetes.io/zone: !Select [2, !GetAZs '']
+        topology.kubernetes.io/zone: us-east-1d
       Tags:
         Name: !Sub '${ClusterName}-nodes-az3'
-        AvailabilityZone: !Select [2, !GetAZs '']
+        AvailabilityZone: us-east-1d
 
   # OIDC Provider
   OIDCProvider:
