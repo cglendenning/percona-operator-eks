@@ -486,11 +486,21 @@ function clusterValues(nodes: number, accountId: string): string {
     size: 20Gi
     accessMode: ReadWriteOnce
     storageClass: gp3
+  affinity:
+    podAntiAffinity:
+      requiredDuringSchedulingIgnoredDuringExecution:
+      - labelSelector:
+          matchExpressions:
+          - key: app.kubernetes.io/component
+            operator: In
+            values:
+            - pxc
+        topologyKey: topology.kubernetes.io/zone
 haproxy:
   enabled: false
 proxysql:
   enabled: true
-  size: 3
+  size: ${nodes}
   image: percona/proxysql2:2.7.3
   resources:
     requests:
@@ -504,7 +514,7 @@ proxysql:
       requiredDuringSchedulingIgnoredDuringExecution:
       - labelSelector:
           matchExpressions:
-          - key: app.kubernetes.io/name
+          - key: app.kubernetes.io/component
             operator: In
             values:
             - proxysql
