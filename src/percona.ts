@@ -1010,17 +1010,20 @@ async function validatePodDistribution(ns: string, nodes: number) {
                    nodeData.metadata.labels?.['failure-domain.beta.kubernetes.io/zone'] ||
                    'unknown';
       
-      // Categorize pods
-      if (component === 'pxc' || podName.includes('-pxc-')) {
-        if (!pxcPodsByZone.has(zone)) {
-          pxcPodsByZone.set(zone, []);
-        }
-        pxcPodsByZone.get(zone)!.push(podName);
-      } else if (component === 'proxysql' || podName.includes('proxysql')) {
+      // Categorize pods (be specific to avoid catching operator or other pods)
+      // PXC pods have names like: pxc-cluster-pxc-db-pxc-0, pxc-cluster-pxc-db-pxc-1, etc.
+      // ProxySQL pods have names like: pxc-cluster-pxc-db-proxysql-0, pxc-cluster-pxc-db-proxysql-1, etc.
+      if (component === 'proxysql' || (podName.includes('proxysql') && !podName.includes('operator'))) {
+        // Check ProxySQL first since it also contains 'pxc' in the name
         if (!proxysqlPodsByZone.has(zone)) {
           proxysqlPodsByZone.set(zone, []);
         }
         proxysqlPodsByZone.get(zone)!.push(podName);
+      } else if (component === 'pxc' || (podName.includes('-pxc-') && !podName.includes('operator') && !podName.includes('proxysql'))) {
+        if (!pxcPodsByZone.has(zone)) {
+          pxcPodsByZone.set(zone, []);
+        }
+        pxcPodsByZone.get(zone)!.push(podName);
       }
     }
     
