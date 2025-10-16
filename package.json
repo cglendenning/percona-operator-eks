@@ -5,7 +5,6 @@
   "type": "module",
   "scripts": {
     "build": "tsc -p tsconfig.json",
-    "eks": "tsx src/eks.ts",
     "percona": "tsx src/percona.ts"
   },
   "dependencies": {
