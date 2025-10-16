@@ -255,7 +255,7 @@ deploy_stack() {
         local stack_status=$(aws cloudformation describe-stacks --stack-name "$STACK_NAME" --region "$REGION" --query 'Stacks[0].StackStatus' --output text)
         log_verbose "Current stack status: $stack_status"
         
-        if [ "$stack_status" = "ROLLBACK_COMPLETE" ] || [ "$stack_status" = "ROLLBACK_FAILED" ]; then
+        if [ "$stack_status" = "ROLLBACK_COMPLETE" ] || [ "$stack_status" = "ROLLBACK_FAILED" ] || [ "$stack_status" = "UPDATE_ROLLBACK_COMPLETE" ] || [ "$stack_status" = "UPDATE_ROLLBACK_FAILED" ]; then
             log_warn "Stack is in $stack_status state, deleting it first..."
             aws cloudformation delete-stack --stack-name "$STACK_NAME" --region "$REGION"
             log_verbose "Waiting for stack deletion to complete..."
