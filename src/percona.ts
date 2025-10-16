@@ -1444,31 +1444,31 @@ async function uninstall(ns: string, name: string) {
     throw new Error('CRITICAL: PXC resource deletion failed - uninstall aborted');
   }
   
-  // Delete resources in correct order (dependent resources first)
+  // Delete resources in correct order (controllers before pods to prevent recreation)
   
-  // 1. Delete Pods first (they depend on StatefulSets)
-  try {
-    logInfo('Deleting Pods...');
-    await run('kubectl', ['delete', 'pods', '--all', '-n', ns, '--timeout=30s'], { stdio: 'pipe' });
-    logSuccess('Pods deleted successfully');
-  } catch (error) {
-    if (error.toString().includes('NotFound') || error.toString().includes('no resources found')) {
-      logInfo('No Pods found or already deleted');
-    } else {
-      logWarn(`Error deleting Pods: ${error}`);
-    }
-  }
-  
-  // 2. Delete StatefulSets (they depend on PVCs)
+  // 1. Delete StatefulSets first (stops pod recreation)
   try {
     logInfo('Deleting StatefulSets...');
-    await run('kubectl', ['delete', 'statefulset', '--all', '-n', ns, '--timeout=30s'], { stdio: 'pipe' });
+    await run('kubectl', ['delete', 'statefulset', '--all', '-n', ns, '--timeout=60s'], { stdio: 'pipe' });
     logSuccess('StatefulSets deleted successfully');
   } catch (error) {
     if (error.toString().includes('NotFound') || error.toString().includes('no resources found')) {
       logInfo('No StatefulSets found or already deleted');
     } else {
       logWarn(`Error deleting StatefulSets: ${error}`);
+    }
+  }
+  
+  // 2. Delete any remaining Pods (should be cleaned up by StatefulSet deletion)
+  try {
+    logInfo('Deleting remaining Pods...');
+    await run('kubectl', ['delete', 'pods', '--all', '-n', ns, '--timeout=30s', '--force', '--grace-period=0'], { stdio: 'pipe' });
+    logSuccess('Pods deleted successfully');
+  } catch (error) {
+    if (error.toString().includes('NotFound') || error.toString().includes('no resources found')) {
+      logInfo('No Pods found or already deleted');
+    } else {
+      logWarn(`Error deleting Pods: ${error}`);
     }
   }
   
