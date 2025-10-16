@@ -21,7 +21,7 @@ async function ensurePrereqs() {
   await ensureBinaryExists('helm', ['version']);
 }
 
-async function validateEksCluster(ns: string) {
+async function validateEksCluster(ns: string, nodes: number) {
   logInfo('=== Validating EKS cluster state for Percona installation ===');
   const { execa } = await import('execa');
   
@@ -149,8 +149,8 @@ async function validateEksCluster(ns: string) {
       
       logInfo(`Found ${readyNodes.length}/${nodesData.items.length} ready nodes`);
       
-      if (readyNodes.length < 3) {
-        validationWarnings.push(`Only ${readyNodes.length} ready nodes found. Percona recommends at least 3 nodes for high availability`);
+      if (readyNodes.length < nodes) {
+        validationWarnings.push(`Only ${readyNodes.length} ready nodes found. Expected ${nodes} nodes for the Percona cluster`);
       }
       
       // Check node resources
@@ -191,16 +191,19 @@ async function validateEksCluster(ns: string) {
         logInfo(`  Converted: CPU=${cpuMillicores}mc, Memory=${memoryBytes} bytes (${Math.round(memoryBytes/1024/1024/1024)}GB)`);
       });
       
-      // Percona needs at least 3 CPU cores and 6GB RAM total
-      const minCpu = 3000; // 3 cores in millicores
-      const minMemory = 6 * 1024 * 1024 * 1024; // 6GB in bytes
+      // Percona needs ~1 CPU core and ~2GB RAM per node (conservative estimate)
+      // Each node runs: PXC pod (~500m CPU, 1GB RAM) + ProxySQL pod (~200m CPU, 512MB RAM) + system overhead
+      const minCpuPerNode = 1000; // 1 core per node in millicores
+      const minMemoryPerNode = 2 * 1024 * 1024 * 1024; // 2GB per node in bytes
+      const minCpu = minCpuPerNode * nodes;
+      const minMemory = minMemoryPerNode * nodes;
       
       if (totalCpu < minCpu) {
-        validationWarnings.push(`Total CPU capacity (${Math.round(totalCpu/1000)} cores) may be insufficient for 3-node Percona cluster`);
+        validationWarnings.push(`Total CPU capacity (${Math.round(totalCpu/1000)} cores) may be insufficient for ${nodes}-node Percona cluster (minimum ${nodes} cores recommended)`);
       }
       
       if (totalMemory < minMemory) {
-        validationWarnings.push(`Total memory capacity (${Math.round(totalMemory/1024/1024/1024)}GB) may be insufficient for 3-node Percona cluster`);
+        validationWarnings.push(`Total memory capacity (${Math.round(totalMemory/1024/1024/1024)}GB) may be insufficient for ${nodes}-node Percona cluster (minimum ${nodes * 2}GB recommended)`);
       }
       
               logSuccess(`✓ Cluster has ${readyNodes.length} nodes with ${Math.round(totalCpu/1000)} CPU cores and ${Math.round(totalMemory/1024/1024/1024)}GB memory`);
@@ -248,14 +251,20 @@ async function validateEksCluster(ns: string) {
     const scResult = await execa('kubectl', ['get', 'storageclass', '-o', 'json'], { stdio: 'pipe' });
     const scData = JSON.parse(scResult.stdout);
     
-    const ebsCsiSc = scData.items?.find((sc: any) => 
-      sc.provisioner === 'ebs.csi.aws.com' && sc.metadata.name === 'gp3'
+    // Check for EBS storage classes (gp2 is EKS default, gp3 is preferred)
+    const ebsStorageClass = scData.items?.find((sc: any) => 
+      sc.provisioner === 'kubernetes.io/aws-ebs' || sc.provisioner === 'ebs.csi.aws.com'
     );
     
-    if (!ebsCsiSc) {
-      validationWarnings.push('gp3 storage class with EBS CSI driver not found. Will create one during installation.');
+    if (!ebsStorageClass) {
+      validationWarnings.push('No EBS storage class found. Storage provisioning may fail.');
     } else {
-      logSuccess('✓ gp3 storage class with EBS CSI driver found');
+      logSuccess(`✓ EBS storage class found: ${ebsStorageClass.metadata.name} (provisioner: ${ebsStorageClass.provisioner})`);
+      
+      // Prefer gp3 but accept gp2
+      if (ebsStorageClass.metadata.name !== 'gp3' && ebsStorageClass.metadata.name !== 'gp2') {
+        logInfo(`  Note: Using ${ebsStorageClass.metadata.name} storage class. Consider using gp3 for better performance/cost.`);
+      }
     }
     
     // Check if EBS CSI driver is running
@@ -1865,7 +1874,7 @@ async function main() {
     await ensurePrereqs();
     if (parsed.action === 'install') {
       // Validate EKS cluster state before installation
-      await validateEksCluster(parsed.namespace);
+      await validateEksCluster(parsed.namespace, parsed.nodes);
       
       await ensureNamespace(parsed.namespace);
       await addRepos(parsed.helmRepo);
