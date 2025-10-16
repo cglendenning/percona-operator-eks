@@ -968,6 +968,118 @@ async function waitForOperatorReady(ns: string) {
   throw new Error('Percona operator did not become ready within 5 minutes');
 }
 
+async function validatePodDistribution(ns: string, nodes: number) {
+  logInfo('=== Validating Pod Distribution Across Availability Zones ===');
+  const { execa } = await import('execa');
+  
+  try {
+    // Get all pods with their zones
+    const podsResult = await execa('kubectl', ['get', 'pods', '-n', ns, '-o', 'json'], { stdio: 'pipe' });
+    const podsData = JSON.parse(podsResult.stdout);
+    
+    // Track PXC pods by zone
+    const pxcPodsByZone = new Map<string, string[]>();
+    // Track ProxySQL pods by zone
+    const proxysqlPodsByZone = new Map<string, string[]>();
+    
+    for (const pod of podsData.items) {
+      const podName = pod.metadata.name;
+      const labels = pod.metadata.labels || {};
+      const component = labels['app.kubernetes.io/component'];
+      
+      // Get the node this pod is running on
+      const nodeName = pod.spec.nodeName;
+      if (!nodeName) {
+        logWarn(`Pod ${podName} is not yet scheduled to a node`);
+        continue;
+      }
+      
+      // Get the node's zone
+      const nodeResult = await execa('kubectl', ['get', 'node', nodeName, '-o', 'json'], { stdio: 'pipe' });
+      const nodeData = JSON.parse(nodeResult.stdout);
+      const zone = nodeData.metadata.labels?.['topology.kubernetes.io/zone'] || 
+                   nodeData.metadata.labels?.['failure-domain.beta.kubernetes.io/zone'] ||
+                   'unknown';
+      
+      // Categorize pods
+      if (component === 'pxc' || podName.includes('-pxc-')) {
+        if (!pxcPodsByZone.has(zone)) {
+          pxcPodsByZone.set(zone, []);
+        }
+        pxcPodsByZone.get(zone)!.push(podName);
+      } else if (component === 'proxysql' || podName.includes('proxysql')) {
+        if (!proxysqlPodsByZone.has(zone)) {
+          proxysqlPodsByZone.set(zone, []);
+        }
+        proxysqlPodsByZone.get(zone)!.push(podName);
+      }
+    }
+    
+    let validationPassed = true;
+    const issues: string[] = [];
+    
+    // Validate PXC pods
+    logInfo('=== PXC Pod Distribution ===');
+    if (pxcPodsByZone.size === 0) {
+      issues.push('No PXC pods found');
+      validationPassed = false;
+    } else {
+      for (const [zone, pods] of pxcPodsByZone.entries()) {
+        logInfo(`Zone ${zone}: ${pods.length} PXC pod(s)`);
+        pods.forEach(pod => logInfo(`  - ${pod}`));
+        
+        if (pods.length > 1) {
+          issues.push(`VIOLATION: Multiple PXC pods (${pods.length}) in same zone ${zone}: ${pods.join(', ')}`);
+          validationPassed = false;
+        }
+      }
+      
+      if (pxcPodsByZone.size < nodes) {
+        issues.push(`PXC pods only in ${pxcPodsByZone.size} zone(s), expected ${nodes} zones`);
+        validationPassed = false;
+      }
+    }
+    
+    // Validate ProxySQL pods
+    logInfo('=== ProxySQL Pod Distribution ===');
+    if (proxysqlPodsByZone.size === 0) {
+      issues.push('No ProxySQL pods found');
+      validationPassed = false;
+    } else {
+      for (const [zone, pods] of proxysqlPodsByZone.entries()) {
+        logInfo(`Zone ${zone}: ${pods.length} ProxySQL pod(s)`);
+        pods.forEach(pod => logInfo(`  - ${pod}`));
+        
+        if (pods.length > 1) {
+          issues.push(`VIOLATION: Multiple ProxySQL pods (${pods.length}) in same zone ${zone}: ${pods.join(', ')}`);
+          validationPassed = false;
+        }
+      }
+      
+      if (proxysqlPodsByZone.size < nodes) {
+        issues.push(`ProxySQL pods only in ${proxysqlPodsByZone.size} zone(s), expected ${nodes} zones`);
+        validationPassed = false;
+      }
+    }
+    
+    // Report results
+    logInfo('=== Pod Distribution Validation Results ===');
+    if (validationPassed) {
+      logSuccess('✅ All pods are properly distributed across availability zones');
+      logSuccess(`✅ PXC pods: ${pxcPodsByZone.size} zones (expected ${nodes})`);
+      logSuccess(`✅ ProxySQL pods: ${proxysqlPodsByZone.size} zones (expected ${nodes})`);
+    } else {
+      logError('❌ Pod distribution validation FAILED:');
+      issues.forEach(issue => logError(`  - ${issue}`));
+      throw new Error('Pod anti-affinity validation failed: Pods are not properly distributed across availability zones');
+    }
+    
+  } catch (error) {
+    logError('Failed to validate pod distribution:', error);
+    throw error;
+  }
+}
+
 async function waitForClusterReady(ns: string, name: string, nodes: number) {
   const pxcResourceName = `${name}-pxc-db`;
   logInfo(`Waiting for Percona cluster ${pxcResourceName} to be ready...`);
@@ -1782,6 +1894,9 @@ async function main() {
       
       // Wait for cluster to be fully ready
       await waitForClusterReady(parsed.namespace, parsed.name, parsed.nodes);
+      
+      // Validate pod distribution across availability zones
+      await validatePodDistribution(parsed.namespace, parsed.nodes);
       
       logSuccess('Percona operator and cluster installed and ready.');
     } else if (parsed.action === 'expand') {
