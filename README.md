@@ -57,6 +57,27 @@ Uninstall and cleanup PVCs:
 npm run percona -- uninstall --namespace percona --name pxc-cluster
 ```
 
+### Cost-saving: Tear Down When Not in Use
+Delete the entire stack to avoid charges (can be recreated quickly):
+```bash
+aws cloudformation delete-stack --stack-name percona-eks-cluster --region us-east-1
+aws cloudformation wait stack-delete-complete --stack-name percona-eks-cluster --region us-east-1
+```
+
+This deletes everything (cluster, nodes, network). EBS volumes with data are also deleted.
+
+**Costs while deleted: $0**
+
+To recreate the cluster when needed:
+```bash
+./deploy.sh              # Creates EKS cluster (~15-20 min)
+npm run percona -- install  # Installs Percona (~10-15 min)
+```
+
+Total recreation time: ~30-35 minutes
+
+**Note:** If you need to preserve data between teardowns, configure Percona backups to S3 before deleting the stack.
+
 ### AWS Console Access
 Grant your IAM user/role access to view Kubernetes resources in the AWS Console:
 ```bash
