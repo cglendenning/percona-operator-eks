@@ -9,7 +9,7 @@ TEMPLATE_FILE="cloudformation/eks-cluster.yaml"
 REGION="us-east-1"
 CLUSTER_NAME="percona-eks"
 NODE_INSTANCE_TYPE="m5.large"
-USE_SPOT="true"
+USE_SPOT="false"
 
 # Colors for output
 RED='\033[0;31m'
