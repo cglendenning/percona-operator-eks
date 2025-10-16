@@ -13,27 +13,6 @@ Parameters:
     AllowedValues: [m5.large, m5.xlarge, m6i.large, m6i.xlarge, c5.large, c5.xlarge]
     Description: EC2 instance type for the worker nodes
   
-  NodeGroupDesiredSize:
-    Type: Number
-    Default: 3
-    MinValue: 1
-    MaxValue: 10
-    Description: Desired number of worker nodes
-  
-  NodeGroupMinSize:
-    Type: Number
-    Default: 3
-    MinValue: 1
-    MaxValue: 10
-    Description: Minimum number of worker nodes
-  
-  NodeGroupMaxSize:
-    Type: Number
-    Default: 6
-    MinValue: 1
-    MaxValue: 20
-    Description: Maximum number of worker nodes
-  
   UseSpotInstances:
     Type: String
     Default: 'true'
