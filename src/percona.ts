@@ -1647,22 +1647,57 @@ async function uninstall(ns: string, name: string) {
     }
   }
   
-  // If namespace deletion failed or timed out, try force deletion
+  // If namespace deletion failed or timed out, try aggressive cleanup
   if (!namespaceDeleted) {
     try {
       // Check if namespace still exists
       const nsCheck = await execa('kubectl', ['get', 'namespace', ns], { stdio: 'pipe' });
       if (nsCheck.exitCode === 0) {
-        logWarn('Namespace still exists, removing finalizers and force deleting...');
+        logWarn('Namespace still exists, performing aggressive cleanup...');
+        
+        // 1. Remove finalizers from all resources in the namespace
+        logInfo('Removing finalizers from all resources...');
+        const resourceTypes = ['pxc', 'perconaxtradbclusters', 'persistentvolumeclaims', 'pods', 'statefulsets', 'deployments', 'replicasets', 'services'];
+        
+        for (const resourceType of resourceTypes) {
+          try {
+            const resources = await execa('kubectl', ['get', resourceType, '-n', ns, '-o', 'json'], { stdio: 'pipe' });
+            const resourceData = JSON.parse(resources.stdout);
+            
+            if (resourceData.items && resourceData.items.length > 0) {
+              logInfo(`Found ${resourceData.items.length} ${resourceType} to clean up`);
+              for (const resource of resourceData.items) {
+                const resourceName = resource.metadata.name;
+                try {
+                  await run('kubectl', ['patch', resourceType, resourceName, '-n', ns, '-p', '{"metadata":{"finalizers":[]}}', '--type=merge'], { stdio: 'pipe' });
+                  logInfo(`  Removed finalizers from ${resourceType}/${resourceName}`);
+                } catch (patchError) {
+                  // Ignore errors - resource might not exist anymore
+                }
+              }
+            }
+          } catch (getError) {
+            // Ignore errors - resource type might not exist
+          }
+        }
+        
+        // 2. Remove finalizer from namespace itself
+        logInfo('Removing namespace finalizers...');
         await run('kubectl', ['patch', 'namespace', ns, '-p', '{"metadata":{"finalizers":[]}}', '--type=merge'], { stdio: 'pipe' });
+        
+        // 3. Force delete the namespace
+        logInfo('Force deleting namespace...');
         await run('kubectl', ['delete', 'namespace', ns, '--force', '--grace-period=0'], { stdio: 'pipe' });
         logInfo('Force deletion command completed, verifying...');
+        
+        // Wait a moment for deletion to propagate
+        await new Promise(resolve => setTimeout(resolve, 2000));
       } else {
         logInfo('Namespace not found - deletion successful');
         namespaceDeleted = true;
       }
     } catch (forceError) {
-      logWarn(`Error during force deletion: ${forceError}`);
+      logWarn(`Error during aggressive cleanup: ${forceError}`);
     }
   }
   
