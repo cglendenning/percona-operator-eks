@@ -11,11 +11,41 @@ Automated deployment of EKS cluster with Percona XtraDB Cluster operator via Clo
 
 ### AWS authentication options
 Choose one of the following:
-- AWS SSO: `aws configure sso` then `aws sso login --profile <profile>`
-- Access keys: `aws configure` and set AWS Access Key ID/Secret Access Key
-- Env vars: export `AWS_PROFILE` or `AWS_ACCESS_KEY_ID`/`AWS_SECRET_ACCESS_KEY` (and optional `AWS_SESSION_TOKEN`)
 
-Confirm: `aws sts get-caller-identity`
+**Option 1: AWS SSO (Recommended)**
+
+Check if you already have SSO configured:
+```bash
+cat ~/.aws/config
+```
+
+If you see an existing profile with `sso_session` configured, use it:
+```bash
+aws sso login --profile <profile-name>
+export AWS_PROFILE=<profile-name>
+```
+
+Otherwise, set up a new SSO profile (requires SSO start URL from your AWS admin):
+```bash
+aws configure sso
+aws sso login --profile <profile>
+export AWS_PROFILE=<profile>
+```
+
+**Option 2: Access keys**
+```bash
+aws configure
+export AWS_PROFILE=default
+```
+
+**Option 3: Environment variables**
+```bash
+export AWS_ACCESS_KEY_ID=<key>
+export AWS_SECRET_ACCESS_KEY=<secret>
+export AWS_SESSION_TOKEN=<token>  # optional
+```
+
+Confirm authentication: `aws sts get-caller-identity`
 
 ### Install dependencies
 ```bash
