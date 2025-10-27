@@ -505,6 +505,8 @@ function clusterValues(nodes: number, accountId: string): string {
             values:
             - pxc
         topologyKey: topology.kubernetes.io/zone
+  podDisruptionBudget:
+    maxUnavailable: 1
 haproxy:
   enabled: false
 proxysql:
@@ -528,6 +530,8 @@ proxysql:
             values:
             - proxysql
         topologyKey: topology.kubernetes.io/zone
+  podDisruptionBudget:
+    maxUnavailable: 1
   volumeSpec:
     persistentVolumeClaim:
       accessModes:
