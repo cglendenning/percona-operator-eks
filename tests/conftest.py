@@ -4,9 +4,18 @@ Pytest configuration and shared fixtures for Percona XtraDB Cluster tests
 import os
 import subprocess
 import json
+import warnings
 import pytest
 from kubernetes import client, config
 from rich.console import Console
+
+# Suppress urllib3 warnings about OpenSSL
+warnings.filterwarnings('ignore', category=UserWarning, module='urllib3')
+try:
+    import urllib3
+    urllib3.disable_warnings(urllib3.exceptions.NotOpenSSLWarning)
+except (ImportError, AttributeError):
+    pass
 
 console = Console()
 

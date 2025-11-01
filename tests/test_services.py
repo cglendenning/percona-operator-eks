@@ -23,7 +23,8 @@ class TestServices:
         service = services.items[0]
         console.print(f"[cyan]PXC Service:[/cyan] {service.metadata.name}")
         console.print(f"[cyan]Service Type:[/cyan] {service.spec.type}")
-        console.print(f"[cyan]Ports:[/cyan] {[f\"{p.port}/{p.protocol}\" for p in service.spec.ports]}")
+        ports_str = [f"{p.port}/{p.protocol}" for p in service.spec.ports]
+        console.print(f"[cyan]Ports:[/cyan] {ports_str}")
         
         assert service.spec.type in ['ClusterIP', 'LoadBalancer', 'NodePort'], \
             f"PXC service has unexpected type: {service.spec.type}"
@@ -43,7 +44,8 @@ class TestServices:
         service = services.items[0]
         console.print(f"[cyan]ProxySQL Service:[/cyan] {service.metadata.name}")
         console.print(f"[cyan]Service Type:[/cyan] {service.spec.type}")
-        console.print(f"[cyan]Ports:[/cyan] {[f\"{p.port}/{p.protocol}\" for p in service.spec.ports]}")
+        ports_str = [f"{p.port}/{p.protocol}" for p in service.spec.ports]
+        console.print(f"[cyan]Ports:[/cyan] {ports_str}")
         
         # ProxySQL typically uses port 3306
         mysql_ports = [p for p in service.spec.ports if p.port == 3306]

@@ -13,14 +13,13 @@ class TestStatefulSets:
 
     def test_pxc_statefulset_exists(self, apps_v1):
         """Test that PXC StatefulSet exists"""
-        sts_list = apps_v1.list_namespaced_stateful_set(
-            namespace=TEST_NAMESPACE,
-            label_selector='app.kubernetes.io/component=pxc'
-        )
+        # Get all StatefulSets and find PXC by name pattern
+        sts_list = apps_v1.list_namespaced_stateful_set(namespace=TEST_NAMESPACE)
+        pxc_sts = [sts for sts in sts_list.items if '-pxc' in sts.metadata.name and 'proxysql' not in sts.metadata.name]
         
-        assert len(sts_list.items) > 0, "PXC StatefulSet not found"
+        assert len(pxc_sts) > 0, "PXC StatefulSet not found"
         
-        sts = sts_list.items[0]
+        sts = pxc_sts[0]
         console.print(f"[cyan]PXC StatefulSet:[/cyan] {sts.metadata.name}")
         console.print(f"[cyan]Replicas:[/cyan] {sts.spec.replicas}/{sts.status.ready_replicas}")
         
@@ -32,14 +31,13 @@ class TestStatefulSets:
 
     def test_proxysql_statefulset_exists(self, apps_v1):
         """Test that ProxySQL StatefulSet exists"""
-        sts_list = apps_v1.list_namespaced_stateful_set(
-            namespace=TEST_NAMESPACE,
-            label_selector='app.kubernetes.io/component=proxysql'
-        )
+        # Get all StatefulSets and find ProxySQL by name pattern
+        sts_list = apps_v1.list_namespaced_stateful_set(namespace=TEST_NAMESPACE)
+        proxysql_sts = [sts for sts in sts_list.items if 'proxysql' in sts.metadata.name]
         
-        assert len(sts_list.items) > 0, "ProxySQL StatefulSet not found"
+        assert len(proxysql_sts) > 0, "ProxySQL StatefulSet not found"
         
-        sts = sts_list.items[0]
+        sts = proxysql_sts[0]
         console.print(f"[cyan]ProxySQL StatefulSet:[/cyan] {sts.metadata.name}")
         console.print(f"[cyan]Replicas:[/cyan] {sts.spec.replicas}/{sts.status.ready_replicas}")
         
@@ -83,14 +81,13 @@ class TestStatefulSets:
 
     def test_statefulset_volume_claim_templates(self, apps_v1):
         """Test that StatefulSets have volume claim templates"""
-        sts_list = apps_v1.list_namespaced_stateful_set(
-            namespace=TEST_NAMESPACE,
-            label_selector='app.kubernetes.io/component=pxc'
-        )
+        # Get all StatefulSets and find PXC by name pattern
+        sts_list = apps_v1.list_namespaced_stateful_set(namespace=TEST_NAMESPACE)
+        pxc_sts = [sts for sts in sts_list.items if '-pxc' in sts.metadata.name and 'proxysql' not in sts.metadata.name]
         
-        assert len(sts_list.items) > 0, "PXC StatefulSet not found"
+        assert len(pxc_sts) > 0, "PXC StatefulSet not found"
         
-        sts = sts_list.items[0]
+        sts = pxc_sts[0]
         volume_claims = sts.spec.volume_claim_templates
         
         assert len(volume_claims) > 0, \

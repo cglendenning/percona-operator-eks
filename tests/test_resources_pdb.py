@@ -13,14 +13,13 @@ class TestResourceLimits:
 
     def test_pxc_resource_requests(self, apps_v1):
         """Test that PXC pods have resource requests configured"""
-        sts_list = apps_v1.list_namespaced_stateful_set(
-            namespace=TEST_NAMESPACE,
-            label_selector='app.kubernetes.io/component=pxc'
-        )
+        # Get all StatefulSets and find PXC by name pattern
+        sts_list = apps_v1.list_namespaced_stateful_set(namespace=TEST_NAMESPACE)
+        pxc_sts = [sts for sts in sts_list.items if '-pxc' in sts.metadata.name and 'proxysql' not in sts.metadata.name]
         
-        assert len(sts_list.items) > 0, "PXC StatefulSet not found"
+        assert len(pxc_sts) > 0, "PXC StatefulSet not found"
         
-        sts = sts_list.items[0]
+        sts = pxc_sts[0]
         containers = sts.spec.template.spec.containers
         
         pxc_container = next(
@@ -62,12 +61,12 @@ class TestResourceLimits:
 
     def test_pxc_resource_values(self, apps_v1):
         """Test that PXC resources match expected values (500m CPU, 1Gi memory request)"""
-        sts_list = apps_v1.list_namespaced_stateful_set(
-            namespace=TEST_NAMESPACE,
-            label_selector='app.kubernetes.io/component=pxc'
-        )
+        # Get all StatefulSets and find PXC by name pattern
+        sts_list = apps_v1.list_namespaced_stateful_set(namespace=TEST_NAMESPACE)
+        pxc_sts = [sts for sts in sts_list.items if '-pxc' in sts.metadata.name and 'proxysql' not in sts.metadata.name]
         
-        sts = sts_list.items[0]
+        assert len(pxc_sts) > 0, "PXC StatefulSet not found"
+        sts = pxc_sts[0]
         containers = sts.spec.template.spec.containers
         
         pxc_container = next(
@@ -95,14 +94,13 @@ class TestResourceLimits:
 
     def test_proxysql_resource_requests(self, apps_v1):
         """Test that ProxySQL pods have resource requests configured"""
-        sts_list = apps_v1.list_namespaced_stateful_set(
-            namespace=TEST_NAMESPACE,
-            label_selector='app.kubernetes.io/component=proxysql'
-        )
+        # Get all StatefulSets and find ProxySQL by name pattern
+        sts_list = apps_v1.list_namespaced_stateful_set(namespace=TEST_NAMESPACE)
+        proxysql_sts = [sts for sts in sts_list.items if 'proxysql' in sts.metadata.name]
         
-        assert len(sts_list.items) > 0, "ProxySQL StatefulSet not found"
+        assert len(proxysql_sts) > 0, "ProxySQL StatefulSet not found"
         
-        sts = sts_list.items[0]
+        sts = proxysql_sts[0]
         containers = sts.spec.template.spec.containers
         
         proxysql_container = next(
@@ -126,12 +124,12 @@ class TestResourceLimits:
 
     def test_proxysql_resource_values(self, apps_v1):
         """Test that ProxySQL resources match expected values (100m CPU, 256Mi memory request)"""
-        sts_list = apps_v1.list_namespaced_stateful_set(
-            namespace=TEST_NAMESPACE,
-            label_selector='app.kubernetes.io/component=proxysql'
-        )
+        # Get all StatefulSets and find ProxySQL by name pattern
+        sts_list = apps_v1.list_namespaced_stateful_set(namespace=TEST_NAMESPACE)
+        proxysql_sts = [sts for sts in sts_list.items if 'proxysql' in sts.metadata.name]
         
-        sts = sts_list.items[0]
+        assert len(proxysql_sts) > 0, "ProxySQL StatefulSet not found"
+        sts = proxysql_sts[0]
         containers = sts.spec.template.spec.containers
         
         proxysql_container = next(

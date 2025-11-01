@@ -54,10 +54,30 @@ echo ""
 # Set default environment variables if not set
 export TEST_NAMESPACE=${TEST_NAMESPACE:-percona}
 export TEST_CLUSTER_NAME=${TEST_CLUSTER_NAME:-pxc-cluster}
-export TEST_EXPECTED_NODES=${TEST_EXPECTED_NODES:-6}
-export TEST_BACKUP_TYPE=${TEST_BACKUP_TYPE:-s3}
-export TEST_BACKUP_BUCKET=${TEST_BACKUP_BUCKET:-}
+export TEST_BACKUP_TYPE=${TEST_BACKUP_TYPE:-minio}
+export TEST_BACKUP_BUCKET=${TEST_BACKUP_BUCKET:-percona-backups}
 export TEST_OPERATOR_NAMESPACE=${TEST_OPERATOR_NAMESPACE:-$TEST_NAMESPACE}
+
+# Auto-detect node count from cluster if not set
+if [ -z "${TEST_EXPECTED_NODES:-}" ]; then
+    # Try to get node count from PXC StatefulSet
+    # First try to find by name pattern (contains -pxc but not proxysql)
+    PXC_STS_NAME=$(kubectl get statefulset -n "$TEST_NAMESPACE" -o jsonpath='{range .items[*]}{.metadata.name}{"\n"}{end}' 2>/dev/null | grep -E '\-pxc' | grep -v proxysql | head -1)
+    if [ -n "$PXC_STS_NAME" ]; then
+        PXC_STS=$(kubectl get statefulset "$PXC_STS_NAME" -n "$TEST_NAMESPACE" -o jsonpath='{.spec.replicas}' 2>/dev/null)
+        if [ -n "$PXC_STS" ] && [ "$PXC_STS" != "null" ] && [ "$PXC_STS" -gt 0 ] 2>/dev/null; then
+            export TEST_EXPECTED_NODES=$PXC_STS
+            echo -e "${BLUE}Auto-detected node count: ${GREEN}$TEST_EXPECTED_NODES${NC} (from PXC StatefulSet: $PXC_STS_NAME)"
+        fi
+    fi
+    
+    # If auto-detection failed, use default
+    if [ -z "${TEST_EXPECTED_NODES:-}" ]; then
+        export TEST_EXPECTED_NODES=6
+        echo -e "${YELLOW}⚠ Could not auto-detect node count, using default: 6${NC}"
+        echo -e "${YELLOW}   Set TEST_EXPECTED_NODES environment variable to override${NC}"
+    fi
+fi
 
 echo -e "${BLUE}Test Configuration:${NC}"
 echo "  Namespace: $TEST_NAMESPACE"
@@ -112,6 +132,11 @@ else
     echo -e "${RED}Some tests failed ✗${NC}"
 fi
 echo -e "${BLUE}========================================${NC}"
+if [ $TEST_RESULT -eq 0 ]; then
+    echo ""
+    echo -e "${BLUE}Note: Warnings are suppressed by default.${NC}"
+    echo -e "${BLUE}      To view warnings, run: pytest -W default tests/${NC}"
+fi
 
 if [ "${GENERATE_HTML_REPORT:-}" == "true" ]; then
     echo ""
