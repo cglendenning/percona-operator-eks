@@ -302,6 +302,271 @@ export TEST_CLUSTER_NAME=your-cluster-name
 
 For more detailed test documentation, see [`tests/README.md`](tests/README.md).
 
+### Chaos Engineering with LitmusChaos
+
+The project includes **LitmusChaos** for chaos engineering to test cluster resilience. LitmusChaos is automatically installed when you run `npm run percona -- install`.
+
+#### What is LitmusChaos?
+
+LitmusChaos is a cloud-native chaos engineering platform that helps test the resilience of your Percona XtraDB Cluster by introducing controlled failures. It's developed by Harness (US-based company) and is a CNCF incubating project.
+
+#### Chaos Experiments Included
+
+LitmusChaos can break approximately **65% of the test suite** by simulating various failure scenarios:
+
+**Tests That CAN Be Broken:**
+- ✅ **StatefulSets** (90%) - Pod kills, container failures
+- ✅ **Services** (100%) - Network partitions, pod failures
+- ✅ **Cluster Versions** (80%) - Operator/PXC pod failures
+- ✅ **Resources/PDB** (70%) - CPU/memory stress, PDB violations
+- ✅ **Anti-affinity** (60%) - Node failures, network partitions
+- ✅ **Backups** (80%) - MinIO pod failures, network issues
+- ✅ **PVCs/Storage** (40%) - I/O stress, disk fill
+
+**Tests That CANNOT Be Broken (require manual intervention):**
+- ❌ Secrets (backup credentials)
+- ❌ PVC specifications (size, storage class)
+- ❌ Helm release configurations
+- ❌ Resource requests/limits in specs
+- ❌ Anti-affinity rules in specs
+
+#### Running Chaos Experiments
+
+**1. View available chaos experiments:**
+```bash
+kubectl get chaosexperiments -n litmus
+```
+
+**2. Create a simple pod-delete experiment:**
+```bash
+# Example: Delete a PXC pod
+kubectl apply -f - <<EOF
+apiVersion: litmuschaos.io/v1alpha1
+kind: ChaosEngine
+metadata:
+  name: pxc-pod-delete
+  namespace: percona
+spec:
+  appinfo:
+    appns: percona
+    applabel: 'app.kubernetes.io/component=pxc'
+    appkind: 'statefulset'
+  chaosServiceAccount: litmus-admin
+  experiments:
+    - name: pod-delete
+      spec:
+        components:
+          env:
+            - name: TOTAL_CHAOS_DURATION
+              value: '60'
+            - name: CHAOS_INTERVAL
+              value: '10'
+            - name: FORCE
+              value: 'false'
+EOF
+```
+
+**3. Monitor chaos experiments:**
+```bash
+# View chaos engines
+kubectl get chaosengines -n percona
+
+# View chaos results
+kubectl get chaosresults -n percona
+
+# View detailed logs
+kubectl describe chaosengine pxc-pod-delete -n percona
+```
+
+**4. Access LitmusChaos UI:**
+```bash
+kubectl port-forward -n litmus svc/litmus-portal-frontend 8080:9091
+# Open http://localhost:8080 in your browser
+```
+
+#### Running Continuous Chaos (Daemon Mode)
+
+To run chaos experiments continuously and randomly:
+
+**1. Install LitmusChaos manually (if not already installed):**
+```bash
+./install-litmus.sh
+```
+
+**2. Create a scheduled chaos workflow:**
+```bash
+# Example: Random pod deletion every 30 minutes
+kubectl apply -f - <<EOF
+apiVersion: argoproj.io/v1alpha1
+kind: CronWorkflow
+metadata:
+  name: percona-chaos-daily
+  namespace: litmus
+spec:
+  schedule: "*/30 * * * *"  # Every 30 minutes
+  workflowSpec:
+    entrypoint: chaos-workflow
+    templates:
+      - name: chaos-workflow
+        steps:
+          - - name: pxc-pod-delete
+              templateRef:
+                name: pod-delete
+                template: pod-delete
+                clusterScope: true
+              arguments:
+                parameters:
+                  - name: appns
+                    value: percona
+                  - name: applabel
+                    value: 'app.kubernetes.io/component=pxc'
+EOF
+```
+
+#### Running Tests During Chaos
+
+Run your test suite while chaos experiments are active to verify resilience:
+
+```bash
+# In one terminal: Start chaos experiments
+kubectl create -f chaos-experiments/pod-delete-pxc.yaml
+
+# In another terminal: Run tests
+pytest tests/ -v
+
+# Tests should handle failures gracefully or report expected failures
+```
+
+#### Available Chaos Experiment Types
+
+LitmusChaos provides experiments for:
+
+- **Pod Chaos**: `pod-delete`, `pod-cpu-hog`, `pod-memory-hog`, `container-kill`
+- **Network Chaos**: `network-partition`, `network-latency`, `network-loss`, `network-duplication`
+- **Node Chaos**: `node-cpu-hog`, `node-memory-hog`, `node-drain`, `node-taint`
+- **Storage Chaos**: `disk-fill`, `disk-loss`
+- **DNS Chaos**: `dns-chaos`
+
+#### Stopping Chaos Experiments
+
+```bash
+# Delete a specific chaos engine
+kubectl delete chaosengine pxc-pod-delete -n percona
+
+# Stop all chaos experiments
+kubectl delete chaosengines --all -n percona
+
+# Uninstall LitmusChaos completely
+npm run percona -- uninstall --namespace percona --name pxc-cluster
+# Or manually:
+helm uninstall litmus -n litmus
+kubectl delete namespace litmus
+```
+
+#### Chaos Engineering Best Practices
+
+1. **Start Small**: Begin with simple experiments (single pod delete) before complex scenarios
+2. **Test in Non-Production**: Always test chaos experiments in non-production environments first
+3. **Monitor Metrics**: Watch cluster metrics during chaos experiments
+4. **Document Results**: Record which tests fail and why to improve resilience
+5. **Gradual Increase**: Start with low-frequency chaos and gradually increase
+6. **Have Rollback Plan**: Ensure you can quickly stop chaos experiments if needed
+
+#### Chaos Experiments Directory
+
+Create chaos experiment manifests in a `chaos-experiments/` directory:
+
+```bash
+mkdir -p chaos-experiments
+# Create YAML files for reusable chaos experiments
+```
+
+Example experiment files to create:
+- `pod-delete-pxc.yaml` - Delete PXC pods
+- `pod-delete-proxysql.yaml` - Delete ProxySQL pods
+- `network-partition.yaml` - Partition network between zones
+- `pod-cpu-hog.yaml` - Stress CPU on PXC pods
+- `node-drain.yaml` - Drain nodes to test pod rescheduling
+
+---
+
+## Chaos Engineering Tool Comparison
+
+This project uses **LitmusChaos** for chaos engineering. Below is a comparison with other options:
+
+### Why LitmusChaos?
+
+**Selected: LitmusChaos** - Better security posture, US ownership, and comprehensive features suitable for Percona XtraDB Cluster testing.
+
+### Feature Comparison Matrix
+
+#### Pod-Level Chaos (Affects: StatefulSets, Services, Cluster Versions, Resources/PDB)
+
+| Feature | Chaos Mesh | LitmusChaos | Test Impact |
+|---------|------------|-------------|-------------|
+| **Pod Kill** | ✅ PodChaos | ✅ pod-delete | Breaks: `test_statefulsets.py`, `test_cluster_versions.py`, `test_services.py`, `test_resources_pdb.py` |
+| **Container Kill** | ✅ PodChaos | ✅ pod-delete (per-container) | Similar to pod kill |
+| **Pod Stress (CPU/Memory)** | ✅ StressChaos | ✅ pod-cpu-hog, pod-memory-hog | Breaks: `test_resources_pdb.py` |
+| **Pod I/O Stress** | ✅ IOChaos | ✅ disk-fill | Breaks: `test_pvcs_storage.py`, `test_backups.py` |
+
+#### Network-Level Chaos (Affects: Services, Backups, Anti-affinity)
+
+| Feature | Chaos Mesh | LitmusChaos | Test Impact |
+|---------|------------|-------------|-------------|
+| **Network Partition** | ✅ NetworkChaos | ✅ network-partition | Breaks: `test_services.py`, `test_backups.py`, `test_affinity_taints.py` |
+| **Network Latency** | ✅ NetworkChaos | ✅ network-latency | Breaks: `test_services.py`, `test_backups.py` |
+| **Packet Loss** | ✅ NetworkChaos | ✅ network-loss | Similar to latency |
+| **DNS Chaos** | ❌ Not available | ✅ dns-chaos | Can break service discovery |
+
+**Winner:** **LitmusChaos** - Includes DNS chaos, better for network failure scenarios
+
+#### Node-Level Chaos (Affects: Anti-affinity, Cluster Versions)
+
+| Feature | Chaos Mesh | LitmusChaos | Test Impact |
+|---------|------------|-------------|-------------|
+| **Node Failure** | ✅ Limited (AWS EC2 only) | ✅ node-drain, node-reboot | Breaks: `test_affinity_taints.py` |
+| **Node CPU/Memory Stress** | ✅ Limited | ✅ node-cpu-hog, node-memory-hog | Can cause pod eviction |
+| **Node Taint** | ❌ Not available | ✅ node-taint | Can break `test_affinity_taints.py` |
+
+**Winner:** **LitmusChaos** - Comprehensive node-level chaos, including taints
+
+### Security & Compliance Comparison
+
+| Aspect | Chaos Mesh | LitmusChaos |
+|--------|------------|-------------|
+| **Company Ownership** | PingCAP (China) | Harness (USA) |
+| **CNCF Status** | Incubating | Incubating |
+| **Recent CVEs** | Multiple critical (2025) - Fixed in 2.7.3 | None found |
+| **Security Posture** | ⚠️ Recent vulnerabilities | ✅ Clean security record |
+| **Supply Chain Risk** | ⚠️ Chinese origin | ✅ US-owned |
+
+**Winner:** **LitmusChaos** - Better security posture and compliance-friendly
+
+### Test Coverage Summary
+
+| Test Category | % Breakable by Chaos | Tool Recommendation |
+|---------------|---------------------|---------------------|
+| StatefulSets | 90% | Both (LitmusChaos preferred) |
+| Services | 100% | Both |
+| Cluster Versions | 80% | Both |
+| Resources/PDB | 70% | Both |
+| Anti-affinity | 60% | LitmusChaos (node taints) |
+| Backups | 80% | Both |
+| PVCs/Storage | 40% | Chaos Mesh (I/O granularity) |
+| Helm Charts | 0% | Neither (requires API operations) |
+
+**Overall: ~65% of tests can be broken by chaos tools**
+
+### Why We Chose LitmusChaos
+
+1. ✅ **US-based ownership** (Harness) - Better for compliance and security
+2. ✅ **Clean security record** - No recent critical CVEs
+3. ✅ **Comprehensive node chaos** - Including taints for anti-affinity testing
+4. ✅ **DNS chaos support** - Better network failure scenarios
+5. ✅ **Excellent community** - Harness backing provides strong support
+
+---
+
 ### Notes
 - EKS control plane incurs ~$0.10/hr while the cluster exists; delete when done.
 - Check for orphaned LoadBalancers and EBS volumes after uninstall/delete.

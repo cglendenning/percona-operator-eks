@@ -1765,6 +1765,91 @@ async function expandVolumes(ns: string, name: string, newSize: string) {
   }
 }
 
+async function installLitmusChaos() {
+  logInfo('Installing LitmusChaos...');
+  const { execa } = await import('execa');
+  
+  try {
+    // Check if LitmusChaos is already installed
+    try {
+      await execa('kubectl', ['get', 'namespace', 'litmus'], { stdio: 'pipe' });
+      logInfo('LitmusChaos namespace already exists, checking installation...');
+      
+      const helmCheck = await execa('helm', ['list', '-n', 'litmus', '--output', 'json'], { stdio: 'pipe' });
+      const releases = JSON.parse(helmCheck.stdout);
+      if (releases && releases.length > 0 && releases.some((r: any) => r.name === 'litmus')) {
+        logSuccess('✓ LitmusChaos is already installed');
+        return;
+      }
+    } catch (error) {
+      // Namespace doesn't exist, proceed with installation
+    }
+    
+    // Create namespace
+    await run('kubectl', ['create', 'namespace', 'litmus', '--dry-run=client', '-o', 'yaml'], { stdio: 'pipe' })
+      .catch(() => {});
+    await run('kubectl', ['create', 'namespace', 'litmus'], { stdio: 'pipe' })
+      .catch(() => {}); // Ignore if already exists
+    
+    // Add Helm repo
+    logInfo('Adding LitmusChaos Helm repository...');
+    await run('helm', ['repo', 'add', 'litmuschaos', 'https://litmuschaos.github.io/litmus-helm/'], { stdio: 'pipe' })
+      .catch(() => {}); // Ignore if already exists
+    await run('helm', ['repo', 'update'], { stdio: 'pipe' });
+    
+    // Install LitmusChaos
+    logInfo('Installing LitmusChaos (this may take a few minutes)...');
+    await run('helm', [
+      'upgrade', '--install', 'litmus', 'litmuschaos/litmus',
+      '--namespace', 'litmus',
+      '--set', 'adminConfig.DBUSER=admin',
+      '--set', 'adminConfig.DBPASSWORD=litmus',
+      '--set', 'image.imageTag=3.1.0',
+      '--wait',
+      '--timeout', '10m'
+    ]);
+    
+    logSuccess('✓ LitmusChaos installed successfully');
+  } catch (error) {
+    logWarn(`Failed to install LitmusChaos: ${error}`);
+    logWarn('You can install it manually later with: ./install-litmus.sh');
+  }
+}
+
+async function uninstallLitmusChaos() {
+  logInfo('Uninstalling LitmusChaos...');
+  const { execa } = await import('execa');
+  
+  try {
+    // Check if LitmusChaos is installed
+    try {
+      await execa('kubectl', ['get', 'namespace', 'litmus'], { stdio: 'pipe' });
+    } catch (error) {
+      logInfo('LitmusChaos namespace not found - already uninstalled');
+      return;
+    }
+    
+    // Uninstall Helm release
+    try {
+      await run('helm', ['uninstall', 'litmus', '-n', 'litmus'], { stdio: 'pipe' });
+      logSuccess('✓ LitmusChaos Helm release uninstalled');
+    } catch (error) {
+      logWarn(`Failed to uninstall LitmusChaos Helm release: ${error}`);
+    }
+    
+    // Delete namespace (will also delete all resources)
+    try {
+      await run('kubectl', ['delete', 'namespace', 'litmus', '--timeout=60s'], { stdio: 'pipe' });
+      logSuccess('✓ LitmusChaos namespace deleted');
+    } catch (error) {
+      logWarn(`Failed to delete LitmusChaos namespace: ${error}`);
+      logWarn('You may need to delete it manually: kubectl delete namespace litmus');
+    }
+  } catch (error) {
+    logWarn(`Error during LitmusChaos uninstall: ${error}`);
+  }
+}
+
 async function uninstall(ns: string, name: string) {
   logInfo('Uninstalling Percona cluster and operator...');
   
@@ -2500,6 +2585,9 @@ async function main() {
       // Validate pod distribution across availability zones
       await validatePodDistribution(parsed.namespace, parsed.nodes);
       
+      // Install LitmusChaos for chaos engineering
+      await installLitmusChaos();
+      
       logSuccess('Percona operator and cluster installed and ready.');
     } else if (parsed.action === 'expand') {
       if (!parsed.size) {
@@ -2512,6 +2600,8 @@ async function main() {
       logSuccess('Volume expansion completed.');
     } else {
       await uninstall(parsed.namespace, parsed.name);
+      // Optionally uninstall LitmusChaos (commented out to preserve for other uses)
+      // await uninstallLitmusChaos();
       logSuccess('Uninstall completed.');
     }
   } catch (err) {
