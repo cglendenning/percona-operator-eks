@@ -109,7 +109,7 @@ Set environment variables to customize test behavior:
 export TEST_NAMESPACE=percona
 export TEST_CLUSTER_NAME=pxc-cluster
 export TEST_EXPECTED_NODES=6
-export TEST_BACKUP_TYPE=s3  # or 'minio'
+export TEST_BACKUP_TYPE=minio  # or 's3' (default: minio for on-prem replication)
 export TEST_BACKUP_BUCKET=my-backup-bucket
 ```
 

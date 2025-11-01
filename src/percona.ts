@@ -543,12 +543,13 @@ proxysql:
 backup:
   enabled: true
   storages:
-    s3-backup:
+    minio-backup:
       type: s3
       s3:
-        bucket: percona-backups-${accountId}
+        bucket: percona-backups
         region: us-east-1
-        credentialsSecret: percona-backup-s3-credentials
+        endpoint: http://minio.minio.svc.cluster.local:9000
+        credentialsSecret: percona-backup-minio-credentials
   schedule:
     - name: "daily-backup"
       schedule: "0 2 * * *"
@@ -556,14 +557,14 @@ backup:
         type: "count"
         count: 7
         deleteFromStorage: true
-      storageName: s3-backup
+      storageName: minio-backup
     - name: "weekly-backup"
       schedule: "0 1 * * 0"
       retention:
         type: "count"
         count: 4
         deleteFromStorage: true
-      storageName: s3-backup
+      storageName: minio-backup
 `;}
 
 async function createStorageClass() {
@@ -599,204 +600,124 @@ volumeBindingMode: WaitForFirstConsumer`;
   logSuccess('Storage class created');
 }
 
-async function createS3BackupBucket(region: string) {
-  logInfo('Creating S3 backup bucket...');
+async function installMinIO(ns: string) {
+  logInfo('Installing MinIO for on-premises backup storage...');
   const { execa } = await import('execa');
   
   try {
-    // Get AWS account ID
-    const accountResult = await execa('aws', ['sts', 'get-caller-identity', '--query', 'Account', '--output', 'text'], { stdio: 'pipe' });
-    const accountId = accountResult.stdout.trim();
-    
-    const bucketName = `percona-backups-${accountId}`;
-    
-    // Create S3 bucket
-    await run('aws', ['s3', 'mb', `s3://${bucketName}`, '--region', region]);
-    
-    // Enable versioning
-    await run('aws', ['s3api', 'put-bucket-versioning', '--bucket', bucketName, '--versioning-configuration', 'Status=Enabled', '--region', region]);
-    
-    // Enable server-side encryption
-    await run('aws', ['s3api', 'put-bucket-encryption', '--bucket', bucketName, '--server-side-encryption-configuration', JSON.stringify({
-      Rules: [{
-        ApplyServerSideEncryptionByDefault: {
-          SSEAlgorithm: 'AES256'
-        }
-      }]
-    }), '--region', region]);
-    
-    // Enable MFA delete protection (optional but recommended for production)
+    // Check if MinIO Helm repo exists, add if not
     try {
-      await run('aws', ['s3api', 'put-bucket-versioning', '--bucket', bucketName, '--versioning-configuration', 'Status=Enabled,MFADelete=Disabled', '--region', region]);
+      await run('helm', ['repo', 'list'], { stdio: 'pipe' });
+      const repoListResult = await execa('helm', ['repo', 'list'], { stdio: 'pipe' });
+      if (!repoListResult.stdout.includes('minio')) {
+        await run('helm', ['repo', 'add', 'minio', 'https://charts.min.io/']);
+        await run('helm', ['repo', 'update']);
+        logInfo('Added MinIO Helm repository');
+      }
     } catch (error) {
-      logInfo('MFA delete configuration skipped (requires MFA device)');
+      // Add repo if it doesn't exist
+      await run('helm', ['repo', 'add', 'minio', 'https://charts.min.io/']);
+      await run('helm', ['repo', 'update']);
+      logInfo('Added MinIO Helm repository');
     }
     
-    // Set basic lifecycle policy for cost optimization
-    const lifecyclePolicy = {
-      Rules: [{
-        ID: 'BackupLifecycle',
-        Status: 'Enabled',
-        Filter: {
-          Prefix: ''
-        },
-        Transitions: [
-          {
-            Days: 30,
-            StorageClass: 'STANDARD_IA'
-          }
-        ],
-        Expiration: {
-          Days: 2555  // 7 years retention
-        }
-      }]
-    };
-    
-    // Write lifecycle policy to temporary file
-    const { writeFileSync, unlinkSync } = await import('fs');
-    const lifecycleFile = '/tmp/lifecycle-policy.json';
-    writeFileSync(lifecycleFile, JSON.stringify(lifecyclePolicy, null, 2));
-    
+    // Create MinIO namespace if it doesn't exist
     try {
-      await run('aws', ['s3api', 'put-bucket-lifecycle-configuration', '--bucket', bucketName, '--lifecycle-configuration', `file://${lifecycleFile}`, '--region', region]);
-    } catch (lifecycleError) {
-      logWarn(`Failed to set lifecycle policy: ${lifecycleError}`);
-      logInfo('Continuing without lifecycle policy...');
-    } finally {
-      // Clean up temporary file
-      try {
-        unlinkSync(lifecycleFile);
-      } catch (cleanupError) {
-        // Ignore cleanup errors
+      await run('kubectl', ['create', 'namespace', 'minio'], { stdio: 'pipe' });
+      logInfo('Created MinIO namespace');
+    } catch (error) {
+      if (error.toString().includes('already exists')) {
+        logInfo('MinIO namespace already exists');
+      } else {
+        throw error;
       }
     }
     
-    // Enable public access blocking for security
-    await run('aws', ['s3api', 'put-public-access-block', '--bucket', bucketName, '--public-access-block-configuration', JSON.stringify({
-      BlockPublicAcls: true,
-      IgnorePublicAcls: true,
-      BlockPublicPolicy: true,
-      RestrictPublicBuckets: true
-    }), '--region', region]);
+    // Check if MinIO is already installed
+    try {
+      const existingRelease = await execa('helm', ['list', '-n', 'minio', '--filter', '^minio$'], { stdio: 'pipe' });
+      const releases = existingRelease.stdout.split('\n').filter(line => line.trim() && !line.includes('NAME'));
+      if (releases.some(line => line.includes('minio'))) {
+        logInfo('MinIO is already installed, fetching credentials...');
+        // Try to get credentials from existing secret if available
+        try {
+          const secretResult = await execa('kubectl', ['get', 'secret', 'minio', '-n', 'minio', '-o', 'jsonpath={.data.rootUser}', '--ignore-not-found'], { stdio: 'pipe' });
+          if (secretResult.stdout) {
+            const accessKey = Buffer.from(secretResult.stdout, 'base64').toString();
+            const secretKeyResult = await execa('kubectl', ['get', 'secret', 'minio', '-n', 'minio', '-o', 'jsonpath={.data.rootPassword}', '--ignore-not-found'], { stdio: 'pipe' });
+            const secretKey = secretKeyResult.stdout ? Buffer.from(secretKeyResult.stdout, 'base64').toString() : 'minioadmin';
+            return { accessKey, secretKey };
+          }
+        } catch (secretError) {
+          // Use defaults if secret not found
+        }
+        return { accessKey: 'minioadmin', secretKey: 'minioadmin' };
+      }
+    } catch (error) {
+      // MinIO not installed, continue with installation
+    }
     
-    logSuccess(`S3 backup bucket created: ${bucketName}`);
-    return bucketName;
+    // Generate secure credentials (you should change these in production)
+    const minioAccessKey = 'minioadmin';
+    const minioSecretKey = 'minioadmin';
+    
+    // Install MinIO using Helm
+    await run('helm', [
+      'upgrade', '--install', 'minio', 'minio/minio',
+      '--namespace', 'minio',
+      '--set', 'persistence.size=100Gi',
+      '--set', 'persistence.storageClass=gp3',
+      '--set', `accessKey=${minioAccessKey}`,
+      '--set', `secretKey=${minioSecretKey}`,
+      '--set', 'defaultBuckets=percona-backups',
+      '--set', 'resources.requests.memory=1Gi',
+      '--set', 'resources.requests.cpu=500m',
+      '--set', 'resources.limits.memory=2Gi',
+      '--set', 'resources.limits.cpu=1000m',
+      '--wait'
+    ]);
+    
+    logSuccess('MinIO installed successfully');
+    
+    // Wait for MinIO service to be ready
+    logInfo('Waiting for MinIO service to be ready...');
+    await run('kubectl', ['wait', '--for=condition=ready', 'pod', '-l', 'app=minio', '-n', 'minio', '--timeout=300s']);
+    
+    return { accessKey: minioAccessKey, secretKey: minioSecretKey };
   } catch (error) {
-    logWarn(`Failed to create S3 bucket: ${error}`);
+    logError(`Failed to install MinIO: ${error}`);
     throw error;
   }
 }
 
-async function createS3CredentialsSecret(ns: string, region: string) {
-  logInfo('Creating S3 credentials secret...');
+async function createMinIOCredentialsSecret(ns: string, accessKey: string, secretKey: string) {
+  logInfo('Creating MinIO credentials secret...');
   const { execa } = await import('execa');
   
   try {
-    // Get AWS account ID
-    const accountResult = await execa('aws', ['sts', 'get-caller-identity', '--query', 'Account', '--output', 'text'], { stdio: 'pipe' });
-    const accountId = accountResult.stdout.trim();
+    // MinIO endpoint (using cluster-internal DNS)
+    const minioEndpoint = 'http://minio.minio.svc.cluster.local:9000';
     
-    const userName = 'percona-backup-user';
-    const policyName = 'PerconaBackupPolicy';
-    
-    // Create IAM user for Percona backups
-    try {
-      const userResult = await execa('aws', ['iam', 'create-user', '--user-name', userName], { stdio: 'pipe' });
-      logInfo(`Created IAM user: ${userName}`);
-    } catch (error) {
-      if (error.toString().includes('EntityAlreadyExists') || error.toString().includes('User with name percona-backup-user already exists')) {
-        logInfo(`IAM user ${userName} already exists`);
-      } else {
-        logWarn(`Unexpected error creating IAM user: ${error}`);
-        throw error;
-      }
-    }
-    
-    // Create IAM policy for S3 backup access
-    const policyDocument = {
-      Version: '2012-10-17',
-      Statement: [{
-        Effect: 'Allow',
-        Action: [
-          's3:GetObject',
-          's3:PutObject',
-          's3:DeleteObject',
-          's3:ListBucket'
-        ],
-        Resource: [
-          `arn:aws:s3:::percona-backups-${accountId}`,
-          `arn:aws:s3:::percona-backups-${accountId}/*`
-        ]
-      }]
-    };
-    
-    try {
-      await execa('aws', ['iam', 'create-policy', '--policy-name', policyName, '--policy-document', JSON.stringify(policyDocument)], { stdio: 'pipe' });
-      logInfo(`Created IAM policy: ${policyName}`);
-    } catch (error) {
-      if (error.toString().includes('EntityAlreadyExists')) {
-        logInfo(`IAM policy ${policyName} already exists`);
-      } else {
-        throw error;
-      }
-    }
-    
-    // Attach policy to user
-    try {
-      await execa('aws', ['iam', 'attach-user-policy', '--user-name', userName, '--policy-arn', `arn:aws:iam::${accountId}:policy/${policyName}`], { stdio: 'pipe' });
-    } catch (error) {
-      if (error.toString().includes('EntityAlreadyExists')) {
-        logInfo(`Policy already attached to user ${userName}`);
-      } else {
-        throw error;
-      }
-    }
-    
-    // Check if user already has access keys
-    let accessKey, secretKey;
-    try {
-      const existingKeysResult = await execa('aws', ['iam', 'list-access-keys', '--user-name', userName], { stdio: 'pipe' });
-      const existingKeys = JSON.parse(existingKeysResult.stdout);
-      
-      if (existingKeys.AccessKeyMetadata && existingKeys.AccessKeyMetadata.length > 0) {
-        logInfo(`User ${userName} already has access keys, using existing ones`);
-        // Get the existing access key ID
-        const existingKeyId = existingKeys.AccessKeyMetadata[0].AccessKeyId;
-        
-        // We can't retrieve the secret key, so we need to create a new one
-        // First delete the old one
-        await run('aws', ['iam', 'delete-access-key', '--user-name', userName, '--access-key-id', existingKeyId]);
-        logInfo('Deleted existing access key, creating new one');
-      }
-    } catch (error) {
-      logInfo('No existing access keys found or error checking, creating new ones');
-    }
-    
-    // Create access key for the user
-    const keyResult = await execa('aws', ['iam', 'create-access-key', '--user-name', userName], { stdio: 'pipe' });
-    const keyData = JSON.parse(keyResult.stdout);
-    accessKey = keyData.AccessKey.AccessKeyId;
-    secretKey = keyData.AccessKey.SecretAccessKey;
-    
-    // Create Kubernetes secret
+    // Create Kubernetes secret with MinIO credentials
     const secretYaml = `apiVersion: v1
 kind: Secret
 metadata:
-  name: percona-backup-s3-credentials
+  name: percona-backup-minio-credentials
   namespace: ${ns}
 type: Opaque
-data:
-  AWS_ACCESS_KEY_ID: ${Buffer.from(accessKey).toString('base64')}
-  AWS_SECRET_ACCESS_KEY: ${Buffer.from(secretKey).toString('base64')}`;
+stringData:
+  AWS_ACCESS_KEY_ID: ${accessKey}
+  AWS_SECRET_ACCESS_KEY: ${secretKey}
+  AWS_ENDPOINT: ${minioEndpoint}`;
 
     const proc = execa('kubectl', ['apply', '-f', '-'], { stdio: ['pipe', 'inherit', 'inherit'] });
     proc.stdin?.write(secretYaml);
     proc.stdin?.end();
     await proc;
 
-    logSuccess('S3 credentials secret created');
+    logSuccess('MinIO credentials secret created');
   } catch (error) {
-    logWarn(`Failed to create S3 credentials secret: ${error}`);
+    logWarn(`Failed to create MinIO credentials secret: ${error}`);
     throw error;
   }
 }
@@ -1924,14 +1845,16 @@ async function main() {
       // Create storage class first
       await createStorageClass();
       
-      // Get AWS account ID
+      // Get AWS account ID (still needed for some operations)
       const { execa } = await import('execa');
       const accountResult = await execa('aws', ['sts', 'get-caller-identity', '--query', 'Account', '--output', 'text'], { stdio: 'pipe' });
       const accountId = accountResult.stdout.trim();
       
-      // Create S3 backup bucket and credentials
-      await createS3BackupBucket('us-east-1');
-      await createS3CredentialsSecret(parsed.namespace, 'us-east-1');
+      // Install MinIO for on-premises backup storage (replicates on-prem environment)
+      const minioCredentials = await installMinIO(parsed.namespace);
+      
+      // Create MinIO credentials secret for Percona backups
+      await createMinIOCredentialsSecret(parsed.namespace, minioCredentials.accessKey, minioCredentials.secretKey);
       
       logInfo('Installing Percona operator...');
       await installOperator(parsed.namespace);

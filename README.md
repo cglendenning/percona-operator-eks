@@ -106,7 +106,53 @@ npm run percona -- install  # Installs Percona (~10-15 min)
 
 Total recreation time: ~30-35 minutes
 
-**Note:** If you need to preserve data between teardowns, configure Percona backups to S3 before deleting the stack.
+**Note:** If you need to preserve data between teardowns, ensure Percona backups to MinIO are completed before deleting the stack.
+
+### Backup Configuration
+
+By default, the Percona installation uses **MinIO** for backups to replicate on-premises environments where external access (like AWS S3) is restricted. The installation script automatically:
+- Installs MinIO using Helm in the `minio` namespace
+- Creates a `percona-backups` bucket in MinIO
+- Sets up credentials and Kubernetes secrets for backup access
+- Configures Percona cluster to use MinIO's S3-compatible API
+
+This approach ensures the deployment matches on-premises environments where external cloud storage access is not permitted.
+
+#### Using AWS S3 for Backups (Alternative)
+
+If you prefer to use **AWS S3** instead of MinIO, you'll need to manually configure it:
+
+**1. Create S3 bucket and credentials:**
+
+The installation script no longer creates S3 resources by default. You would need to manually:
+- Create an S3 bucket
+- Set up IAM user and credentials
+- Create a Kubernetes secret with S3 credentials
+
+**2. Update Percona cluster configuration:**
+
+Edit the PXC custom resource to use S3 storage:
+
+```bash
+kubectl get pxc <cluster-name>-pxc-db -n percona -o yaml > pxc-config.yaml
+```
+
+Update the backup section:
+
+```yaml
+spec:
+  backup:
+    enabled: true
+    storages:
+      s3-backup:
+        type: s3
+        s3:
+          bucket: your-s3-bucket-name
+          region: us-east-1
+          credentialsSecret: percona-backup-s3-credentials
+```
+
+**Note:** This setup is designed to replicate on-premises environments, so MinIO (on-premises S3-compatible storage) is the default.
 
 ### AWS Console Access
 Grant your IAM user/role access to view Kubernetes resources in the AWS Console:

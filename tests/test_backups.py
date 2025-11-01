@@ -23,21 +23,28 @@ class TestBackupConfiguration:
         
         backup_secrets = [
             s for s in secrets.items
-            if 'backup' in s.metadata.name.lower() and 's3' in s.metadata.name.lower()
+            if 'backup' in s.metadata.name.lower() and ('minio' in s.metadata.name.lower() or 's3' in s.metadata.name.lower())
         ]
         
         assert len(backup_secrets) > 0, \
-            "Backup S3 credentials secret not found (expected: percona-backup-s3-credentials)"
+            "Backup credentials secret not found (expected: percona-backup-minio-credentials or percona-backup-s3-credentials)"
         
         secret = backup_secrets[0]
         console.print(f"[cyan]Backup Secret Found:[/cyan] {secret.metadata.name}")
         
         # Verify secret has required keys
-        required_keys = ['AWS_ACCESS_KEY_ID', 'AWS_SECRET_ACCESS_KEY']
+        if 'minio' in secret.metadata.name.lower():
+            required_keys = ['AWS_ACCESS_KEY_ID', 'AWS_SECRET_ACCESS_KEY', 'AWS_ENDPOINT']
+        else:
+            required_keys = ['AWS_ACCESS_KEY_ID', 'AWS_SECRET_ACCESS_KEY']
+        
         data = secret.data or {}
+        string_data = secret.string_data or {}
+        # Check both data (base64 encoded) and string_data (plain text)
+        all_data = {**{k: v for k, v in data.items()}, **{k: v for k, v in string_data.items()}}
         
         for key in required_keys:
-            assert key in data, \
+            assert key in all_data, \
                 f"Backup secret {secret.metadata.name} missing required key: {key}"
 
     def test_backup_storage_configured(self):
@@ -64,16 +71,24 @@ class TestBackupConfiguration:
         assert len(storages) > 0, \
             "Backup storages should be configured"
         
-        # Check for S3 storage
+        # Check for S3-compatible storage (MinIO or S3)
         s3_storages = {
             k: v for k, v in storages.items()
-            if v.get('type') == 's3' or 's3' in k.lower()
+            if v.get('type') == 's3' or 's3' in k.lower() or 'minio' in k.lower()
         }
         
         assert len(s3_storages) > 0, \
-            "At least one S3 backup storage should be configured"
+            "At least one S3-compatible backup storage (MinIO or S3) should be configured"
         
         console.print(f"[cyan]Backup Storages Configured:[/cyan] {list(storages.keys())}")
+        
+        # If using MinIO, verify endpoint is configured
+        for storage_name, storage_config in s3_storages.items():
+            if 'minio' in storage_name.lower():
+                s3_config = storage_config.get('s3', {})
+                assert 'endpoint' in s3_config, \
+                    f"MinIO storage {storage_name} should have endpoint configured"
+                console.print(f"[cyan]{storage_name} Endpoint:[/cyan] {s3_config.get('endpoint')}")
 
     def test_backup_schedules_exist(self):
         """Test that backup schedules are configured"""
@@ -126,9 +141,9 @@ class TestBackupConfiguration:
             console.print("[yellow]⚠ Backup CronJobs not found (may use different mechanism)[/yellow]")
 
     def test_s3_bucket_accessible(self):
-        """Test that S3 backup bucket exists and is accessible (if AWS credentials available)"""
+        """Test that S3 backup bucket exists and is accessible (if AWS credentials available and using S3)"""
         if TEST_BACKUP_TYPE != 's3':
-            pytest.skip("Skipping S3 bucket test - not using S3")
+            pytest.skip(f"Skipping S3 bucket test - using {TEST_BACKUP_TYPE} instead of S3")
         
         if not TEST_BACKUP_BUCKET:
             pytest.skip("Skipping S3 bucket test - TEST_BACKUP_BUCKET not set")
@@ -150,9 +165,9 @@ class TestBackupConfiguration:
             pytest.skip("AWS CLI not available or timeout - skipping S3 bucket access test")
 
     def test_minio_accessible(self):
-        """Test MinIO accessibility (if using MinIO)"""
+        """Test MinIO accessibility (default backup storage)"""
         if TEST_BACKUP_TYPE != 'minio':
-            pytest.skip("Skipping MinIO test - not using MinIO")
+            pytest.skip(f"Skipping MinIO test - using {TEST_BACKUP_TYPE} instead of MinIO")
         
         # This would require MinIO client setup
         # For now, just check if MinIO service exists

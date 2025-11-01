@@ -17,7 +17,7 @@ pytest_plugins = []
 TEST_NAMESPACE = os.getenv('TEST_NAMESPACE', 'percona')
 TEST_CLUSTER_NAME = os.getenv('TEST_CLUSTER_NAME', 'pxc-cluster')
 TEST_EXPECTED_NODES = int(os.getenv('TEST_EXPECTED_NODES', '6'))
-TEST_BACKUP_TYPE = os.getenv('TEST_BACKUP_TYPE', 's3')  # 's3' or 'minio'
+TEST_BACKUP_TYPE = os.getenv('TEST_BACKUP_TYPE', 'minio')  # 's3' or 'minio' (default: minio for on-prem replication)
 TEST_BACKUP_BUCKET = os.getenv('TEST_BACKUP_BUCKET', '')
 TEST_OPERATOR_NAMESPACE = os.getenv('TEST_OPERATOR_NAMESPACE', TEST_NAMESPACE)
 
