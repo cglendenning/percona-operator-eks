@@ -600,6 +600,150 @@ volumeBindingMode: WaitForFirstConsumer`;
   logSuccess('Storage class created');
 }
 
+// Helper function to diagnose resource allocation issues for Pending pods
+async function diagnoseResourceIssues(podName: string, namespace: string) {
+  const { execa } = await import('execa');
+  const issues: string[] = [];
+  
+  try {
+    // Get pod details
+    const describeResult = await execa('kubectl', ['describe', 'pod', podName, '-n', namespace], { stdio: 'pipe' });
+    const describeOutput = describeResult.stdout;
+    
+    // Check for resource-related issues
+    if (describeOutput.includes('Insufficient cpu') || describeOutput.match(/Insufficient\s+cpu/i)) {
+      const cpuMatch = describeOutput.match(/Insufficient\s+cpu\s*\((\d+)\s*requested/i);
+      if (cpuMatch) {
+        issues.push(`Insufficient CPU: ${cpuMatch[1]} requested but not available`);
+      } else {
+        issues.push('Insufficient CPU resources available on any node');
+      }
+    }
+    
+    if (describeOutput.includes('Insufficient memory') || describeOutput.match(/Insufficient\s+memory/i)) {
+      const memMatch = describeOutput.match(/Insufficient\s+memory\s*\(([^)]+)\s*requested/i);
+      if (memMatch) {
+        issues.push(`Insufficient Memory: ${memMatch[1]} requested but not available`);
+      } else {
+        issues.push('Insufficient memory resources available on any node');
+      }
+    }
+    
+    // Check node resources if pod is assigned
+    const nodeMatch = describeOutput.match(/Node:\s+([^\s]+)/);
+    if (nodeMatch && !describeOutput.includes('Pending')) {
+      const nodeName = nodeMatch[1];
+      try {
+        // Get node resource allocation
+        const nodeResult = await execa('kubectl', ['describe', 'node', nodeName], { stdio: 'pipe' });
+        const nodeOutput = nodeResult.stdout;
+        
+        // Check for resource pressure
+        if (nodeOutput.includes('MemoryPressure')) {
+          issues.push(`Node ${nodeName} is under MemoryPressure`);
+        }
+        if (nodeOutput.includes('DiskPressure')) {
+          issues.push(`Node ${nodeName} is under DiskPressure`);
+        }
+        if (nodeOutput.includes('PIDPressure')) {
+          issues.push(`Node ${nodeName} is under PIDPressure`);
+        }
+        
+        // Extract allocatable vs requested resources
+        const allocatableMatch = nodeOutput.match(/Allocatable:\s*\n\s*cpu:\s*([^\n]+)\n\s*memory:\s*([^\n]+)/);
+        const requestsMatch = nodeOutput.match(/cpu\s+request:\s*([^\s]+)/);
+        const memoryRequestsMatch = nodeOutput.match(/memory\s+request:\s*([^\s]+)/);
+        
+        if (allocatableMatch && requestsMatch && memoryRequestsMatch) {
+          logInfo(`  Node ${nodeName} resources: Allocatable CPU=${allocatableMatch[1]}, Memory=${allocatableMatch[2]}`);
+          logInfo(`  Requested: CPU=${requestsMatch[1]}, Memory=${memoryRequestsMatch[1]}`);
+        }
+      } catch (nodeError) {
+        // Ignore node check errors
+      }
+    } else if (describeOutput.includes('Pending')) {
+      // Pod not assigned - check all nodes for available resources
+      try {
+        const nodesResult = await execa('kubectl', ['get', 'nodes', '-o', 'json'], { stdio: 'pipe' });
+        const nodesData = JSON.parse(nodesResult.stdout);
+        
+        // Get pod resource requests
+        const podResult = await execa('kubectl', ['get', 'pod', podName, '-n', namespace, '-o', 'json'], { stdio: 'pipe' });
+        const podData = JSON.parse(podResult.stdout);
+        
+        let podCpuRequest = 0;
+        let podMemoryRequest = 0;
+        
+        // Calculate pod resource requests
+        if (podData.spec?.containers) {
+          for (const container of podData.spec.containers) {
+            const cpu = container.resources?.requests?.cpu || '0';
+            const memory = container.resources?.requests?.memory || '0';
+            
+            // Convert CPU (e.g., "500m" = 500 millicores, "1" = 1000 millicores)
+            const cpuMillicores = cpu.endsWith('m') ? parseInt(cpu) : parseFloat(cpu) * 1000;
+            podCpuRequest += cpuMillicores;
+            
+            // Convert memory to bytes
+            let memBytes = 0;
+            if (memory.endsWith('Gi')) {
+              memBytes = parseFloat(memory) * 1024 * 1024 * 1024;
+            } else if (memory.endsWith('Mi')) {
+              memBytes = parseFloat(memory) * 1024 * 1024;
+            }
+            podMemoryRequest += memBytes;
+          }
+        }
+        
+        // Check each node for available resources
+        let foundSuitableNode = false;
+        for (const node of nodesData.items || []) {
+          const allocatable = node.status?.allocatable || {};
+          const nodeCpu = allocatable.cpu || '0';
+          const nodeMemory = allocatable.memory || '0';
+          
+          // Check if node has enough resources
+          const nodeCpuMillicores = nodeCpu.endsWith('m') ? parseInt(nodeCpu) : parseFloat(nodeCpu) * 1000;
+          let nodeMemBytes = 0;
+          if (nodeMemory.endsWith('Gi')) {
+            nodeMemBytes = parseFloat(nodeMemory) * 1024 * 1024 * 1024;
+          } else if (nodeMemory.endsWith('Mi')) {
+            nodeMemBytes = parseFloat(nodeMemory) * 1024 * 1024;
+          }
+          
+          if (nodeCpuMillicores >= podCpuRequest && nodeMemBytes >= podMemoryRequest) {
+            foundSuitableNode = true;
+            break;
+          }
+        }
+        
+        if (!foundSuitableNode) {
+          issues.push(`No node has sufficient resources (CPU: ${podCpuRequest}m, Memory: ${Math.round(podMemoryRequest/1024/1024)}Mi)`);
+        }
+      } catch (resourceError) {
+        // Ignore resource check errors
+      }
+    }
+    
+    // Check for other scheduling issues
+    const eventsMatch = describeOutput.match(/Events:\s*\n((?:.*\n)*)/);
+    if (eventsMatch) {
+      const events = eventsMatch[1];
+      if (events.includes('0/') && events.includes('nodes are available')) {
+        const nodeMatch = events.match(/(\d+)\/\d+\s+nodes?\s+are\s+available/i);
+        if (nodeMatch && nodeMatch[1] === '0') {
+          issues.push('No nodes are available to schedule this pod (check node taints, affinity, or resource constraints)');
+        }
+      }
+    }
+    
+    return issues;
+  } catch (error) {
+    logWarn(`Could not diagnose resource issues for pod ${podName}: ${error}`);
+    return [];
+  }
+}
+
 async function installMinIO(ns: string) {
   logInfo('Installing MinIO for on-premises backup storage...');
   const { execa } = await import('execa');
@@ -638,7 +782,22 @@ async function installMinIO(ns: string) {
       const existingRelease = await execa('helm', ['list', '-n', 'minio', '--filter', '^minio$'], { stdio: 'pipe' });
       const releases = existingRelease.stdout.split('\n').filter(line => line.trim() && !line.includes('NAME'));
       if (releases.some(line => line.includes('minio'))) {
-        logInfo('MinIO is already installed, fetching credentials...');
+        logInfo('MinIO is already installed, checking installation...');
+        
+        // Check how many pods exist - warn if distributed mode
+        try {
+          const podsResult = await execa('kubectl', ['get', 'pods', '-n', 'minio', '-l', 'app.kubernetes.io/name=minio', '--no-headers'], { stdio: 'pipe' });
+          const podCount = podsResult.stdout.trim().split('\n').filter(line => line.trim() && !line.includes('post-job')).length;
+          if (podCount > 3) {
+            logWarn(`⚠️  WARNING: Found ${podCount} MinIO pods - MinIO appears to be in distributed mode!`);
+            logWarn(`    This will consume excessive resources (${podCount} pods × 1Gi memory = ${podCount}Gi minimum).`);
+            logWarn(`    To fix: helm uninstall minio -n minio && kubectl delete namespace minio`);
+            logWarn(`    Then re-run this installation to use standalone mode (1 pod).`);
+          }
+        } catch (podCheckError) {
+          // Ignore pod check errors
+        }
+        
         // Try to get credentials from existing secret if available
         try {
           const secretResult = await execa('kubectl', ['get', 'secret', 'minio', '-n', 'minio', '-o', 'jsonpath={.data.rootUser}', '--ignore-not-found'], { stdio: 'pipe' });
@@ -653,7 +812,7 @@ async function installMinIO(ns: string) {
         }
         return { accessKey: 'minioadmin', secretKey: 'minioadmin' };
       }
-    } catch (error) {
+  } catch (error) {
       // MinIO not installed, continue with installation
     }
     
@@ -662,34 +821,270 @@ async function installMinIO(ns: string) {
     const minioSecretKey = 'minioadmin';
     
     // Install MinIO using Helm
-    await run('helm', [
-      'upgrade', '--install', 'minio', 'minio/minio',
-      '--namespace', 'minio',
-      '--set', 'persistence.size=100Gi',
-      '--set', 'persistence.storageClass=gp3',
-      '--set', `accessKey=${minioAccessKey}`,
-      '--set', `secretKey=${minioSecretKey}`,
-      '--set', 'defaultBuckets=percona-backups',
-      '--set', 'resources.requests.memory=1Gi',
-      '--set', 'resources.requests.cpu=500m',
-      '--set', 'resources.limits.memory=2Gi',
-      '--set', 'resources.limits.cpu=1000m',
-      '--wait'
-    ]);
+    // Use --wait=false to prevent Helm from waiting for pods (we'll wait separately)
+    // This avoids timeout issues with Helm's post-install hooks
+    logInfo('Installing MinIO Helm chart (this may take a few minutes)...');
+    try {
+      await run('helm', [
+        'upgrade', '--install', 'minio', 'minio/minio',
+        '--namespace', 'minio',
+        '--set', 'mode=standalone',  // Use standalone mode (single pod) instead of distributed
+        '--set', 'replicas=1',  // Explicitly set to 1 replica
+        '--set', 'persistence.size=100Gi',
+        '--set', 'persistence.storageClass=gp3',
+        '--set', `accessKey=${minioAccessKey}`,
+        '--set', `secretKey=${minioSecretKey}`,
+        '--set', 'defaultBuckets=percona-backups',
+        '--set', 'resources.requests.memory=1Gi',
+        '--set', 'resources.requests.cpu=500m',
+        '--set', 'resources.limits.memory=2Gi',
+        '--set', 'resources.limits.cpu=1000m',
+        '--timeout', '10m',
+        '--wait=false'  // Don't wait for resources - we'll wait manually
+      ]);
+    } catch (helmError) {
+      // If Helm install failed, check what resources were created
+      logWarn('Helm install had issues, checking what was created...');
+      try {
+        const podsResult = await execa('kubectl', ['get', 'pods', '-n', 'minio', '-o', 'json'], { stdio: 'pipe' });
+        const podsData = JSON.parse(podsResult.stdout);
+        if (podsData.items && podsData.items.length > 0) {
+          logInfo(`Found ${podsData.items.length} MinIO pod(s) created`);
+          podsData.items.forEach((pod: any) => {
+            logInfo(`  Pod: ${pod.metadata.name}, Status: ${pod.status.phase}`);
+          });
+        }
+        
+        const pvcResult = await execa('kubectl', ['get', 'pvc', '-n', 'minio', '-o', 'json'], { stdio: 'pipe' });
+        const pvcData = JSON.parse(pvcResult.stdout);
+        if (pvcData.items && pvcData.items.length > 0) {
+          logInfo(`Found ${pvcData.items.length} MinIO PVC(s) created`);
+          pvcData.items.forEach((pvc: any) => {
+            logInfo(`  PVC: ${pvc.metadata.name}, Status: ${pvc.status.phase}`);
+          });
+        }
+      } catch (checkError) {
+        // Ignore check errors
+      }
+      
+      // Re-throw the error if it's not just a timeout issue
+      if (!helmError.toString().includes('timeout') && !helmError.toString().includes('timed out')) {
+        throw helmError;
+      }
+      // If it's a timeout, continue - we'll check pod status manually
+      logWarn('Helm install timed out, but resources may have been created. Continuing with manual pod wait...');
+    }
     
-    logSuccess('MinIO installed successfully');
+    logSuccess('MinIO Helm chart installation initiated');
     
-    // Wait for MinIO service to be ready
-    logInfo('Waiting for MinIO service to be ready...');
-    await run('kubectl', ['wait', '--for=condition=ready', 'pod', '-l', 'app=minio', '-n', 'minio', '--timeout=300s']);
+    // Wait a moment for resources to be created
+    await new Promise(resolve => setTimeout(resolve, 5000));
+    
+    // Fix sessionAffinity warning on headless services
+    // This must be done early, right after Helm install, to prevent the warning
+    logInfo('Fixing sessionAffinity warning on headless services...');
+    try {
+      // Get all services in the minio namespace
+      const servicesResult = await execa('kubectl', ['get', 'services', '-n', 'minio', '-o', 'json'], { stdio: 'pipe' });
+      const servicesData = JSON.parse(servicesResult.stdout);
+      
+      if (servicesData.items && servicesData.items.length > 0) {
+        // Find all headless services (those with clusterIP: None)
+        const headlessServices = servicesData.items.filter((svc: any) => 
+          svc.spec.clusterIP === 'None' && svc.spec.sessionAffinity
+        );
+        
+        if (headlessServices.length > 0) {
+          logInfo(`Found ${headlessServices.length} headless service(s) with sessionAffinity that need patching`);
+          
+          for (const svc of headlessServices) {
+            const svcName = svc.metadata.name;
+            logInfo(`Removing sessionAffinity from service: ${svcName}`);
+            try {
+              await run('kubectl', ['patch', 'service', svcName, '-n', 'minio', '-p', '{"spec":{"sessionAffinity":null}}', '--type=merge'], { stdio: 'pipe' });
+              logSuccess(`Fixed sessionAffinity on service: ${svcName}`);
+            } catch (patchError) {
+              logWarn(`Could not patch service ${svcName}: ${patchError}`);
+            }
+          }
+        } else {
+          logInfo('No headless services with sessionAffinity found (or already fixed)');
+        }
+      }
+    } catch (patchError) {
+      // Service might not exist yet or already fixed, log but don't fail
+      logInfo('Note: Could not check/patch services (may not exist yet or already configured)');
+    }
+    
+    // Check pod status before waiting
+    logInfo('Checking MinIO pod status...');
+    try {
+      const statusResult = await execa('kubectl', ['get', 'pods', '-n', 'minio', '--no-headers'], { stdio: 'pipe' });
+      if (statusResult.stdout.trim()) {
+        logInfo('Current MinIO pods:');
+        statusResult.stdout.trim().split('\n').forEach((line: string) => {
+          logInfo(`  ${line}`);
+        });
+      } else {
+        logWarn('No MinIO pods found yet');
+      }
+    } catch (error) {
+      logWarn('Could not check pod status');
+    }
+    
+    // Wait for MinIO pods to be ready (with periodic status updates)
+    logInfo('Waiting for MinIO pods to be ready (this may take a few minutes)...');
+    logInfo('Status updates will be provided every 30 seconds...');
+    let podsReady = false;
+    
+    const waitStartTime = Date.now();
+    const maxWaitTime = 10 * 60 * 1000; // 10 minutes
+    const statusUpdateInterval = 30 * 1000; // 30 seconds
+    let lastStatusUpdate = 0;
+    let warnedAboutTooManyPods = false;
+    
+    // Try different label selectors
+    const labelSelectors = [
+      'app.kubernetes.io/name=minio',
+      'app=minio',
+      'release=minio',
+      'app.kubernetes.io/instance=minio'
+    ];
+    
+    // Poll for pod readiness with status updates
+    while (Date.now() - waitStartTime < maxWaitTime && !podsReady) {
+      const elapsed = Math.floor((Date.now() - waitStartTime) / 1000);
+      const shouldUpdate = Date.now() - lastStatusUpdate >= statusUpdateInterval;
+      
+      if (shouldUpdate || elapsed === 0) {
+        logInfo(`[${Math.floor(elapsed/60)}m ${elapsed%60}s] Checking MinIO pod status...`);
+        lastStatusUpdate = Date.now();
+      }
+      
+      // Try each label selector
+      for (const selector of labelSelectors) {
+        try {
+          // Check if pods with this selector exist and are ready
+          const checkResult = await execa('kubectl', ['get', 'pods', '-n', 'minio', '-l', selector, '-o', 'json'], { stdio: 'pipe' });
+          const podsData = JSON.parse(checkResult.stdout);
+          
+          if (podsData.items && podsData.items.length > 0) {
+            const readyPods = podsData.items.filter((pod: any) => {
+              const ready = pod.status.containerStatuses?.[0]?.ready || false;
+              return pod.status.phase === 'Running' && ready;
+            });
+            
+            if (shouldUpdate) {
+              logInfo(`  Found ${podsData.items.length} pod(s) with selector "${selector}"`);
+              logInfo(`  Ready: ${readyPods.length}/${podsData.items.length}`);
+              
+              // Warn if too many pods (indicates distributed mode instead of standalone)
+              if (podsData.items.length > 3 && !warnedAboutTooManyPods) {
+                logWarn(`⚠️  WARNING: Found ${podsData.items.length} MinIO pods - this suggests distributed mode is active!`);
+                logWarn(`    Expected only 1 pod in standalone mode. This will consume excessive resources.`);
+                logWarn(`    If this is a fresh install, you may need to uninstall and reinstall with correct mode.`);
+                warnedAboutTooManyPods = true;
+              }
+              
+              // Show pod statuses and diagnose Pending pods
+              for (const pod of podsData.items) {
+                const phase = pod.status.phase || 'Unknown';
+                const ready = pod.status.containerStatuses?.[0]?.ready ? 'Ready' : 'NotReady';
+                const reason = pod.status.containerStatuses?.[0]?.state?.waiting?.reason || 
+                              pod.status.containerStatuses?.[0]?.state?.waiting?.message || '';
+                logInfo(`    - ${pod.metadata.name}: ${phase}/${ready}${reason ? ` (${reason})` : ''}`);
+                
+                // Diagnose resource issues for Pending pods
+                if (phase === 'Pending' && elapsed >= 30) {  // Only diagnose after 30 seconds to avoid spam
+                  const resourceIssues = await diagnoseResourceIssues(pod.metadata.name, 'minio');
+                  if (resourceIssues.length > 0) {
+                    logWarn(`    ⚠️  Resource issues detected for ${pod.metadata.name}:`);
+                    resourceIssues.forEach(issue => logWarn(`      - ${issue}`));
+                    logInfo(`    → Consider: Reducing MinIO resource requests or adding more nodes`);
+                    logInfo(`    → Check node capacity: kubectl top nodes`);
+                  }
+                }
+              }
+            }
+            
+            // Check if all pods are ready
+            if (readyPods.length === podsData.items.length && podsData.items.length > 0) {
+              podsReady = true;
+              logSuccess(`MinIO pods are ready! (matched selector: ${selector})`);
+              logSuccess(`  ${readyPods.length} pod(s) ready in ${Math.floor(elapsed/60)}m ${elapsed%60}s`);
+              break;
+            }
+          }
+        } catch (error) {
+          // Selector might not match or error - continue
+        }
+      }
+      
+      if (podsReady) break;
+      
+      // Wait 15 seconds before next check
+      await new Promise(resolve => setTimeout(resolve, 15000));
+    }
+    
+    if (!podsReady) {
+      // Final attempt: wait for any pod in the namespace to be ready
+      logWarn('Standard label selectors did not work, checking for any ready pods in minio namespace...');
+      try {
+        const anyPodsResult = await execa('kubectl', ['get', 'pods', '-n', 'minio', '--no-headers'], { stdio: 'pipe' });
+        if (anyPodsResult.stdout.trim()) {
+          const podLines = anyPodsResult.stdout.trim().split('\n');
+          const readyPods = podLines.filter((line: string) => {
+            const parts = line.split(/\s+/);
+            const ready = parts[1];
+            return ready.includes('/') && ready.split('/')[0] === ready.split('/')[1];
+          });
+          
+          if (readyPods.length > 0) {
+            logSuccess(`Found ${readyPods.length} ready pod(s) in minio namespace`);
+            podsReady = true;
+          } else {
+            logWarn('No ready pods found yet. Pod status:');
+            podLines.forEach((line: string) => logWarn(`  ${line}`));
+          }
+        } else {
+          logError('No pods found in minio namespace');
+        }
+      } catch (finalError) {
+        logError(`Could not verify pod status: ${finalError}`);
+      }
+    }
+    
+    if (podsReady) {
+      logSuccess('MinIO pods are ready');
+    } else {
+      logWarn('MinIO pods may not be fully ready, but installation will continue');
+      logWarn('MinIO may become ready shortly. You can check with: kubectl get pods -n minio');
+      
+      // Check if there are any pods at all (even if not ready)
+      try {
+        const checkPodsResult = await execa('kubectl', ['get', 'pods', '-n', 'minio', '--no-headers'], { stdio: 'pipe' });
+        if (checkPodsResult.stdout.trim()) {
+          logInfo('MinIO pods exist (may still be starting):');
+          checkPodsResult.stdout.trim().split('\n').forEach((line: string) => {
+            logInfo(`  ${line}`);
+          });
+        } else {
+          logError('No MinIO pods found - installation may have failed');
+          throw new Error('MinIO installation failed: No pods created');
+        }
+      } catch (checkError) {
+        logError('Could not verify MinIO pod status');
+        throw new Error('MinIO installation failed: Could not verify pod status');
+      }
+    }
     
     return { accessKey: minioAccessKey, secretKey: minioSecretKey };
-  } catch (error) {
+    } catch (error) {
     logError(`Failed to install MinIO: ${error}`);
-    throw error;
-  }
-}
-
+        throw error;
+      }
+    }
+    
 async function createMinIOCredentialsSecret(ns: string, accessKey: string, secretKey: string) {
   logInfo('Creating MinIO credentials secret...');
   const { execa } = await import('execa');
@@ -723,12 +1118,16 @@ stringData:
 }
 
 async function installCluster(ns: string, name: string, nodes: number, accountId: string) {
+  logInfo(`Installing Percona cluster "${name}" with ${nodes} nodes via Helm...`);
+  logInfo('This may take a few minutes...');
   const values = clusterValues(nodes, accountId);
   const { execa } = await import('execa');
   const proc = execa('helm', ['upgrade', '--install', name, 'percona/pxc-db', '-n', ns, '-f', '-'], { stdio: ['pipe', 'inherit', 'inherit'] });
   proc.stdin?.write(values);
   proc.stdin?.end();
   await proc;
+  logSuccess('Percona cluster Helm chart installed successfully');
+  logInfo('Waiting for cluster pods to start...');
 }
 
 async function checkProxySQLIssues(ns: string, name: string) {
@@ -797,23 +1196,35 @@ async function checkProxySQLIssues(ns: string, name: string) {
 
 async function waitForOperatorReady(ns: string) {
   logInfo('Waiting for Percona operator to be ready...');
+  logInfo('Status updates will be provided every 30 seconds...');
   const { execa } = await import('execa');
   const startTime = Date.now();
   const timeout = 5 * 60 * 1000; // 5 minutes
+  const statusUpdateInterval = 30 * 1000; // 30 seconds
+  let lastStatusUpdate = 0;
   
   while (Date.now() - startTime < timeout) {
     try {
       const elapsed = Math.round((Date.now() - startTime) / 1000);
+      const shouldUpdate = Date.now() - lastStatusUpdate >= statusUpdateInterval || elapsed === 0;
+      
+      if (shouldUpdate) {
+        logInfo(`[${Math.floor(elapsed/60)}m ${elapsed%60}s] Checking Percona operator status...`);
+        lastStatusUpdate = Date.now();
+      }
       
       // Check for any pods in the namespace first
       const allPodsResult = await execa('kubectl', ['get', 'pods', '-n', ns, '--no-headers'], { stdio: 'pipe' });
       const allPods = allPodsResult.stdout.trim().split('\n').filter(line => line.trim());
-      logInfo(`Found ${allPods.length} total pods in namespace ${ns}`);
       
-      if (allPods.length > 0) {
-        logInfo('All pods in namespace:');
+      if (shouldUpdate) {
+        logInfo(`  Found ${allPods.length} total pod(s) in namespace ${ns}`);
+      }
+      
+      if (allPods.length > 0 && shouldUpdate) {
+        logInfo('  All pods in namespace:');
         allPods.forEach((pod, index) => {
-          logInfo(`  ${index + 1}. ${pod}`);
+          logInfo(`    ${index + 1}. ${pod}`);
         });
       }
       
@@ -821,13 +1232,16 @@ async function waitForOperatorReady(ns: string) {
       const operatorPodsResult = await execa('kubectl', ['get', 'pods', '-n', ns, '-l', 'app.kubernetes.io/name=percona-xtradb-cluster-operator', '--no-headers'], { stdio: 'pipe' });
       const operatorPods = operatorPodsResult.stdout.trim().split('\n').filter(line => line.trim());
       
-      logInfo(`Found ${operatorPods.length} operator pods with label 'app.kubernetes.io/name=percona-xtradb-cluster-operator'`);
+      if (shouldUpdate) {
+        logInfo(`  Found ${operatorPods.length} operator pod(s) with label 'app.kubernetes.io/name=percona-xtradb-cluster-operator'`);
+      }
       
       if (operatorPods.length === 0) {
-        // Try alternative labels
-        logInfo('Trying alternative operator pod labels...');
+        // Try alternative labels (only log when updating)
+        if (shouldUpdate) {
+          logInfo('  Trying alternative operator pod labels...');
+        }
         const altLabels = [
-          'app.kubernetes.io/name=percona-xtradb-cluster-operator',
           'app=percona-xtradb-cluster-operator',
           'name=percona-xtradb-cluster-operator',
           'app.kubernetes.io/component=operator'
@@ -841,10 +1255,12 @@ async function waitForOperatorReady(ns: string) {
             const altResult = await execa('kubectl', ['get', 'pods', '-n', ns, '-l', label, '--no-headers'], { stdio: 'pipe' });
             const altPods = altResult.stdout.trim().split('\n').filter(line => line.trim());
             if (altPods.length > 0) {
-              logInfo(`Found ${altPods.length} pods with label '${label}':`);
-              altPods.forEach((pod, index) => {
-                logInfo(`  ${index + 1}. ${pod}`);
-              });
+              if (shouldUpdate) {
+                logInfo(`  Found ${altPods.length} pod(s) with label '${label}':`);
+                altPods.forEach((pod, index) => {
+                  logInfo(`    ${index + 1}. ${pod}`);
+                });
+              }
               foundOperatorPods = altPods;
               workingLabel = label;
               break; // Use the first working label
@@ -855,7 +1271,9 @@ async function waitForOperatorReady(ns: string) {
         }
         
         if (foundOperatorPods.length > 0) {
-          logInfo(`Using operator pods found with label '${workingLabel}'`);
+          if (shouldUpdate) {
+            logInfo(`  Using operator pods found with label '${workingLabel}'`);
+          }
           const readyPods = foundOperatorPods.filter(line => {
             const parts = line.split(/\s+/);
             const ready = parts[1];
@@ -863,19 +1281,21 @@ async function waitForOperatorReady(ns: string) {
           });
           
           if (readyPods.length > 0) {
-            logSuccess('Percona operator is ready');
+            logSuccess(`Percona operator is ready! (${readyPods.length} pod(s) ready in ${Math.floor(elapsed/60)}m ${elapsed%60}s)`);
             return;
-          } else {
-            logInfo(`Percona operator pods starting: ${foundOperatorPods.length} found, ${readyPods.length} ready (${elapsed}s elapsed)`);
+          } else if (shouldUpdate) {
+            logInfo(`  Operator pods starting: ${foundOperatorPods.length} found, ${readyPods.length} ready`);
           }
-        } else {
-          logInfo(`Percona operator pods not found yet... (${elapsed}s elapsed)`);
+        } else if (shouldUpdate) {
+          logInfo(`  Operator pods not found yet`);
         }
       } else {
-        logInfo(`Operator pods found: ${operatorPods.length}`);
-        operatorPods.forEach((pod, index) => {
-          logInfo(`  ${index + 1}. ${pod}`);
-        });
+        if (shouldUpdate) {
+          logInfo(`  Operator pods found: ${operatorPods.length}`);
+          operatorPods.forEach((pod, index) => {
+            logInfo(`    ${index + 1}. ${pod}`);
+          });
+        }
         
         const readyPods = operatorPods.filter(line => {
           const parts = line.split(/\s+/);
@@ -884,14 +1304,15 @@ async function waitForOperatorReady(ns: string) {
         });
         
         if (readyPods.length > 0) {
-          logSuccess('Percona operator is ready');
+          logSuccess(`Percona operator is ready! (${readyPods.length} pod(s) ready in ${Math.floor(elapsed/60)}m ${elapsed%60}s)`);
           return;
-        } else {
-          logInfo(`Percona operator pods starting: ${operatorPods.length} found, ${readyPods.length} ready (${elapsed}s elapsed)`);
+        } else if (shouldUpdate) {
+          logInfo(`  Operator pods starting: ${operatorPods.length} found, ${readyPods.length} ready`);
         }
       }
       
-      await new Promise(resolve => setTimeout(resolve, 10000)); // Wait 10 seconds
+      // Wait 15 seconds before next check
+      await new Promise(resolve => setTimeout(resolve, 15000));
     } catch (error) {
       const elapsed = Math.round((Date.now() - startTime) / 1000);
       logWarn(`Error checking operator status (${elapsed}s): ${error}`);
@@ -1020,9 +1441,105 @@ async function validatePodDistribution(ns: string, nodes: number) {
 async function waitForClusterReady(ns: string, name: string, nodes: number) {
   const pxcResourceName = `${name}-pxc-db`;
   logInfo(`Waiting for Percona cluster ${pxcResourceName} to be ready...`);
+  logInfo('Status updates will be provided every 30 seconds...');
   const { execa } = await import('execa');
   const startTime = Date.now();
-  const timeout = 15 * 60 * 1000; // 15 minutes (reduced from 30)
+  const timeout = 15 * 60 * 1000; // 15 minutes
+  const statusUpdateInterval = 30 * 1000; // 30 seconds
+  let lastStatusUpdate = 0;
+  
+  // Track previous state to detect when stuck
+  let lastPxcCount = -1;
+  let lastProxysqlCount = -1;
+  let lastStatus = '';
+  let lastPxcPodStates: Map<string, string> = new Map();
+  let stuckSince: Map<string, number> = new Map();
+  
+  async function diagnoseStuckPod(podName: string, namespace: string) {
+    logInfo(`\n🔍 Diagnosing stuck pod: ${podName}`);
+    try {
+      // Get pod describe output
+      const describeResult = await execa('kubectl', ['describe', 'pod', podName, '-n', namespace], { stdio: 'pipe' });
+      const describeOutput = describeResult.stdout;
+      
+      // Extract events section
+      const eventsMatch = describeOutput.match(/Events:\s*\n((?:.*\n)*)/);
+      if (eventsMatch) {
+        logInfo('📋 Recent events:');
+        const events = eventsMatch[1].trim().split('\n').slice(-8); // Last 8 events
+        events.forEach(event => {
+          if (event.trim()) {
+            // Format events better
+            const parts = event.trim().split(/\s{2,}/);
+            if (parts.length >= 3) {
+              logInfo(`  ${parts[0]} ${parts[1]}: ${parts.slice(2).join(' ')}`);
+            } else {
+              logInfo(`  ${event.trim()}`);
+            }
+          }
+        });
+      }
+      
+      // Check for common issues and provide actionable info
+      if (describeOutput.includes('Insufficient cpu') || describeOutput.includes('Insufficient memory')) {
+        logWarn('⚠️  Insufficient node resources - pod cannot be scheduled');
+        logInfo('   → Check node capacity: kubectl top nodes');
+        logInfo('   → Consider reducing resource requests or adding more nodes');
+      }
+      
+      if (describeOutput.includes('persistentvolumeclaim')) {
+        logWarn('⚠️  Pod may be waiting for PersistentVolumeClaim');
+        // Extract PVC name
+        const pvcMatch = describeOutput.match(/persistentvolumeclaim[^\s]*\s+([^\s]+)/i);
+        if (pvcMatch) {
+          const pvcName = pvcMatch[1];
+          logInfo(`   → Checking PVC: ${pvcName}`);
+          try {
+            const pvcResult = await execa('kubectl', ['get', 'pvc', pvcName, '-n', namespace, '-o', 'json'], { stdio: 'pipe' });
+            const pvc = JSON.parse(pvcResult.stdout);
+            if (pvc.status.phase === 'Pending') {
+              logWarn(`   → PVC ${pvcName} is still Pending - may be waiting for storage provisioner`);
+              logInfo(`   → Check storage class: kubectl get storageclass ${pvc.spec.storageClassName || 'default'}`);
+            }
+          } catch (pvcError) {
+            logWarn(`   → Could not check PVC status: ${pvcError}`);
+          }
+        }
+      }
+      
+      if (describeOutput.includes('nodeSelector') || describeOutput.includes('node affinity')) {
+        logWarn('⚠️  Pod has scheduling constraints - may not match any nodes');
+      }
+      
+      if (describeOutput.includes('taint')) {
+        logWarn('⚠️  Pod may not tolerate node taints');
+        logInfo('   → Check node taints: kubectl describe nodes');
+      }
+      
+      // Check node resources if pod has been assigned to a node
+      const nodeMatch = describeOutput.match(/Node:\s+([^\s]+)/);
+      if (nodeMatch && !describeOutput.includes('Pending')) {
+        const nodeName = nodeMatch[1];
+        logInfo(`   → Pod assigned to node: ${nodeName}`);
+        try {
+          const nodeResult = await execa('kubectl', ['describe', 'node', nodeName], { stdio: 'pipe' });
+          const nodeOutput = nodeResult.stdout;
+          // Check for resource pressure
+          if (nodeOutput.includes('MemoryPressure') || nodeOutput.includes('DiskPressure') || nodeOutput.includes('PIDPressure')) {
+            logWarn(`   → Node ${nodeName} is under pressure`);
+          }
+        } catch (nodeError) {
+          // Ignore node check errors
+        }
+      } else if (describeOutput.includes('Pending')) {
+        logWarn('⚠️  Pod is Pending - not assigned to any node yet');
+        logInfo('   → This usually indicates scheduling constraints or resource limitations');
+      }
+      
+    } catch (error) {
+      logWarn(`Could not diagnose pod ${podName}: ${error}`);
+    }
+  }
   
   while (Date.now() - startTime < timeout) {
     try {
@@ -1033,34 +1550,20 @@ async function waitForClusterReady(ns: string, name: string, nodes: number) {
         pxcExists = true;
       } catch (error) {
         if (error.toString().includes('NotFound')) {
-          logInfo(`PXC resource ${pxcResourceName} not found yet, waiting for operator to create it...`);
+          // Log status updates every 30 seconds
+          const elapsed = Math.round((Date.now() - startTime) / 1000);
+          const shouldUpdate = Date.now() - lastStatusUpdate >= statusUpdateInterval || elapsed === 0;
+          if (shouldUpdate) {
+            logInfo(`[${Math.floor(elapsed/60)}m ${elapsed%60}s] Waiting for operator to create PXC resource...`);
+            lastStatusUpdate = Date.now();
+          }
         } else {
           logWarn(`Error checking PXC resource existence: ${error}`);
         }
       }
       
       if (!pxcExists) {
-        // Check if the operator is running
-        try {
-          const operatorPodsResult = await execa('kubectl', ['get', 'pods', '-n', ns, '-l', 'app.kubernetes.io/name=percona-xtradb-cluster-operator', '--no-headers'], { stdio: 'pipe' });
-          const operatorPods = operatorPodsResult.stdout.trim().split('\n').filter(line => line.trim());
-          
-          if (operatorPods.length === 0) {
-            logWarn('Percona operator not found, waiting for installation...');
-          } else {
-            const readyOperators = operatorPods.filter(line => line.includes('Running'));
-            if (readyOperators.length === 0) {
-              logWarn('Percona operator pods not ready yet...');
-            } else {
-              logInfo('Percona operator is running, waiting for PXC resource creation...');
-            }
-          }
-        } catch (error) {
-          logWarn(`Error checking operator status: ${error}`);
-        }
-        
-        // Wait and continue
-        await new Promise(resolve => setTimeout(resolve, 30000));
+        await new Promise(resolve => setTimeout(resolve, 15000));
         continue;
       }
       
@@ -1068,65 +1571,77 @@ async function waitForClusterReady(ns: string, name: string, nodes: number) {
       const pxcResult = await execa('kubectl', ['get', 'pxc', pxcResourceName, '-n', ns, '-o', 'json'], { stdio: 'pipe' });
       const pxc = JSON.parse(pxcResult.stdout);
       
-      // Debug: log the actual status structure
-      if (pxc.status) {
-        logInfo(`Debug - PXC status: state=${pxc.status.state}, pxc.status=${pxc.status.pxc?.status}, proxysql.status=${pxc.status.proxysql?.status}`);
-      }
-      
       const pxcCount = typeof pxc.status?.pxc === 'number' ? pxc.status.pxc : (pxc.status?.pxc?.ready || 0);
       const proxysqlCount = typeof pxc.status?.proxysql === 'number' ? pxc.status.proxysql : (pxc.status?.proxysql?.ready || 0);
-      const status = pxc.status?.status || 'unknown';
+      const status = pxc.status?.state || pxc.status?.status || 'unknown';
       const elapsed = Math.round((Date.now() - startTime) / 1000);
       
-      // Explain what the numbers mean
-      if (elapsed === 0 || elapsed % 60 === 0) { // Show explanation every minute
-        logInfo(`💡 Status Guide: PXC = Percona XtraDB Cluster nodes, ProxySQL = Database proxy pods, Status 'unknown' = Still initializing`);
-      }
-      logInfo(`📊 Cluster Progress: PXC nodes ${pxcCount}/${nodes}, ProxySQL pods ${proxysqlCount}/3, Status: ${status} (${elapsed}s elapsed)`);
-      
-      // Check PXC pods
-      const podsResult = await execa('kubectl', ['get', 'pods', '-n', ns, '-l', 'app.kubernetes.io/name=percona-xtradb-cluster', '--no-headers'], { stdio: 'pipe' });
-      const podLines = podsResult.stdout.trim().split('\n').filter(line => line.includes(`${pxcResourceName}-pxc-`));
-      logInfo(`🔍 PXC pods found: ${podLines.length}/${nodes}`);
-      
-      // Check ProxySQL pods with multiple label selectors
+      // Get PXC pod statuses
+      let currentPxcPodStates: Map<string, string> = new Map();
       try {
-        let proxysqlPodsFound = 0;
-        const proxysqlLabels = [
-          'app.kubernetes.io/component=proxysql',
-          'app.kubernetes.io/name=proxysql',
-          'app=proxysql'
-        ];
-        
-        for (const label of proxysqlLabels) {
-          try {
-            const proxysqlPodsResult = await execa('kubectl', ['get', 'pods', '-n', ns, '-l', label, '--no-headers'], { stdio: 'pipe' });
-            const proxysqlPodLines = proxysqlPodsResult.stdout.trim().split('\n').filter(line => line.trim());
-            if (proxysqlPodLines.length > 0) {
-              logInfo(`🔍 ProxySQL pods found with label '${label}': ${proxysqlPodLines.length}`);
-              proxysqlPodLines.forEach((line, index) => {
-                const parts = line.split(/\s+/);
-                const name = parts[0];
-                const ready = parts[1];
-                const status = parts[2];
-                logInfo(`  ProxySQL pod ${index + 1}: ${name} (${ready}, ${status})`);
-              });
-              proxysqlPodsFound = Math.max(proxysqlPodsFound, proxysqlPodLines.length);
+        const podsResult = await execa('kubectl', ['get', 'pods', '-n', ns, '-l', 'app.kubernetes.io/name=percona-xtradb-cluster', '-o', 'json'], { stdio: 'pipe' });
+        const podsData = JSON.parse(podsResult.stdout);
+        for (const pod of podsData.items || []) {
+          if (pod.metadata.name.includes(`${pxcResourceName}-pxc-`)) {
+            const podStatus = pod.status.phase || 'Unknown';
+            const ready = pod.status.containerStatuses?.[0]?.ready ? 'Ready' : 'NotReady';
+            currentPxcPodStates.set(pod.metadata.name, `${podStatus}/${ready}`);
+            
+            // Track stuck pods (Pending for > 2 minutes or same status for > 5 minutes)
+            const stateKey = `${pod.metadata.name}:${podStatus}`;
+            const now = Date.now();
+            if (lastPxcPodStates.get(pod.metadata.name) === `${podStatus}/${ready}`) {
+              if (!stuckSince.has(stateKey)) {
+                stuckSince.set(stateKey, now);
+              }
+              const stuckDuration = now - (stuckSince.get(stateKey) || now);
+              
+              // If pod is Pending for > 2 minutes or same status for > 5 minutes, diagnose it
+              if (podStatus === 'Pending' && stuckDuration > 2 * 60 * 1000) {
+                if (elapsed % 120 === 0) { // Only diagnose every 2 minutes to avoid spam
+                  await diagnoseStuckPod(pod.metadata.name, ns);
+                }
+              } else if (stuckDuration > 5 * 60 * 1000 && elapsed % 180 === 0) {
+                await diagnoseStuckPod(pod.metadata.name, ns);
+              }
+            } else {
+              // Status changed, reset stuck timer
+              stuckSince.delete(stateKey);
             }
-          } catch (labelError) {
-            // Try next label
           }
         }
+      } catch (error) {
+        // Ignore pod check errors
+      }
+      
+      // Log status updates every 30 seconds or when status changes
+      const statusChanged = pxcCount !== lastPxcCount || proxysqlCount !== lastProxysqlCount || status !== lastStatus;
+      const shouldLogSummary = elapsed === 0 || Date.now() - lastStatusUpdate >= statusUpdateInterval || statusChanged;
+      
+      if (shouldLogSummary) {
+        lastStatusUpdate = Date.now();
+        logInfo(`[${Math.floor(elapsed/60)}m ${elapsed%60}s] 📊 Cluster Status: PXC ${pxcCount}/${nodes} ready, ProxySQL ${proxysqlCount}/${nodes} ready, State: ${status}`);
         
-        if (proxysqlPodsFound === 0) {
-          logInfo(`🔍 No ProxySQL pods found with any label selector`);
-        } else if (proxysqlPodsFound === 3) {
-          // Check if ProxySQL pods are distributed across AZs
+        // Show pod states if there are issues
+        if (pxcCount < nodes || currentPxcPodStates.size < nodes) {
+          logInfo(`   PXC Pods: ${Array.from(currentPxcPodStates.entries()).map(([name, state]) => `${name.split('-').pop()}:${state}`).join(', ') || 'None yet'}`);
+        }
+        
+        // Track changes
+        lastPxcCount = pxcCount;
+        lastProxysqlCount = proxysqlCount;
+        lastStatus = status;
+        lastPxcPodStates = new Map(currentPxcPodStates);
+      }
+      
+      // Only check ProxySQL pods periodically or when status changes (to reduce spam)
+      if (shouldLogSummary && proxysqlCount < nodes) {
           try {
             const proxysqlPodsResult = await execa('kubectl', ['get', 'pods', '-n', ns, '-l', 'app.kubernetes.io/component=proxysql', '-o', 'json'], { stdio: 'pipe' });
             const proxysqlPods = JSON.parse(proxysqlPodsResult.stdout);
-            const zones = new Set();
             
+          if (proxysqlPods.items && proxysqlPods.items.length > 0) {
+            const zones = new Set();
             for (const pod of proxysqlPods.items) {
               if (pod.spec.nodeName) {
                 try {
@@ -1139,82 +1654,49 @@ async function waitForClusterReady(ns: string, name: string, nodes: number) {
                 } catch (nodeError) {
                   zones.add('Unknown');
                 }
-              } else {
-                zones.add('Pending');
               }
             }
-            
             if (zones.size >= 2) {
               logSuccess(`✓ ProxySQL pods distributed across ${zones.size} availability zones: ${Array.from(zones).join(', ')}`);
-            } else if (zones.size === 1) {
-              logWarn(`⚠️  All ProxySQL pods in same zone (${Array.from(zones)[0]}). Consider multi-AZ deployment for high availability.`);
-            }
-          } catch (error) {
-            // Ignore zone checking errors
           }
         }
       } catch (error) {
-        logWarn(`Error checking ProxySQL pods: ${error}`);
+          // Ignore errors
+        }
       }
       
-      // Check for any failed pods
+      // Check for failed pods (only when status changes or periodically)
+      if (shouldLogSummary) {
       try {
         const failedPodsResult = await execa('kubectl', ['get', 'pods', '-n', ns, '--field-selector=status.phase=Failed', '--no-headers'], { stdio: 'pipe' });
         const failedPods = failedPodsResult.stdout.trim().split('\n').filter(line => line.trim());
         if (failedPods.length > 0) {
-          logWarn(`Found ${failedPods.length} failed pods:`);
+            logWarn(`⚠️  Found ${failedPods.length} failed pods:`);
           failedPods.forEach(pod => logWarn(`  Failed: ${pod}`));
         }
       } catch (error) {
-        // Ignore errors here as this is just for debugging
+          // Ignore errors
       }
       
-      // Check Kubernetes events for errors (every 2 minutes)
-      if (elapsed % 120 === 0 && elapsed > 0) {
+        // Check Kubernetes events for warnings (only periodically)
+        if (elapsed % 180 === 0 && elapsed > 0) {
         try {
           const eventsResult = await execa('kubectl', ['get', 'events', '-n', ns, '--sort-by=.lastTimestamp', '--field-selector=type=Warning', '--no-headers'], { stdio: 'pipe' });
-          const warningEvents = eventsResult.stdout.trim().split('\n').filter(line => line.trim()).slice(-5); // Last 5 warnings
+            const warningEvents = eventsResult.stdout.trim().split('\n').filter(line => line.trim()).slice(-3); // Last 3 warnings
           if (warningEvents.length > 0) {
-            logWarn(`Recent warning events:`);
+              logWarn(`⚠️  Recent warning events:`);
             warningEvents.forEach(event => logWarn(`  ${event}`));
           }
         } catch (error) {
-          // Ignore errors here as this is just for debugging
-        }
-      }
-      
-      // Check ProxySQL issues (every 2 minutes)
-      if (elapsed % 120 === 0 && elapsed > 0) {
-        logInfo('=== Checking ProxySQL status ===');
-        await checkProxySQLIssues(ns, name);
-      }
-      
-      // Check ProxySQL pod logs if there are issues (every 3 minutes)
-      if (elapsed % 180 === 0 && elapsed > 0) {
-        try {
-          const proxysqlPodsResult = await execa('kubectl', ['get', 'pods', '-n', ns, '-l', 'app.kubernetes.io/name=proxysql', '--no-headers', '-o', 'custom-columns=NAME:.metadata.name'], { stdio: 'pipe' });
-          const proxysqlPodNames = proxysqlPodsResult.stdout.trim().split('\n').filter(name => name.trim());
-          
-          for (const podName of proxysqlPodNames.slice(0, 2)) { // Check first 2 ProxySQL pods
-            try {
-              const logsResult = await execa('kubectl', ['logs', podName, '-n', ns, '--tail=10', '--since=2m'], { stdio: 'pipe' });
-              const logs = logsResult.stdout.trim();
-              if (logs) {
-                logInfo(`ProxySQL pod ${podName} recent logs:`);
-                logs.split('\n').forEach(line => {
-                  if (line.trim()) {
-                    logInfo(`  ${line}`);
-                  }
-                });
-              }
-            } catch (logError) {
-              logWarn(`Could not get logs from ProxySQL pod ${podName}: ${logError}`);
-            }
+            // Ignore errors
           }
-        } catch (error) {
-          logWarn(`Error checking ProxySQL pod logs: ${error}`);
         }
       }
+      
+      // Check if cluster is ready
+      try {
+        const podsResult = await execa('kubectl', ['get', 'pods', '-n', ns, '-l', 'app.kubernetes.io/name=percona-xtradb-cluster', '--no-headers'], { stdio: 'pipe' });
+        const podLines = podsResult.stdout.trim().split('\n').filter(line => line.includes(`${pxcResourceName}-pxc-`));
       
               if (podLines.length >= nodes) {
                 const allReady = podLines.every(line => {
@@ -1228,13 +1710,16 @@ async function waitForClusterReady(ns: string, name: string, nodes: number) {
                                    (pxcCount >= nodes && pxc.status?.proxysql?.status === 'ready');
                 
                 if (allReady && clusterReady) {
-                  logSuccess(`🎉 Percona cluster ${pxcResourceName} is ready with ${nodes} PXC nodes and 3 ProxySQL pods!`);
+            logSuccess(`🎉 Percona cluster ${pxcResourceName} is ready with ${nodes} PXC nodes and ${proxysqlCount} ProxySQL pods!`);
                   logSuccess(`📊 Final Status: PXC ${pxcCount}/${nodes}, ProxySQL ${proxysqlCount}/3, State: ${pxc.status?.state || status}`);
                   return;
                 }
+        }
+      } catch (error) {
+        // Ignore errors, will check again next iteration
               }
       
-      await new Promise(resolve => setTimeout(resolve, 30000)); // Wait 30 seconds
+      await new Promise(resolve => setTimeout(resolve, 15000)); // Wait 15 seconds before next check
     } catch (error) {
       const elapsed = Math.round((Date.now() - startTime) / 1000);
       logWarn(`Error checking cluster status (${elapsed}s): ${error}`);
@@ -1458,6 +1943,7 @@ async function uninstall(ns: string, name: string) {
       secret.includes('pxc') || 
       secret.includes('proxysql') ||
       secret.includes('backup') ||
+      secret.includes('minio') ||
       secret.includes('ssl') ||
       secret.includes('internal')
     );
@@ -1509,6 +1995,115 @@ async function uninstall(ns: string, name: string) {
     }
   } catch (error) {
     logWarn(`Error deleting Percona-related ConfigMaps: ${error}`);
+  }
+  
+  // Delete storage class (if we created it)
+  // Note: We only created it if it didn't exist, but we'll try to clean it up
+  // This will fail if other resources are using it, which is fine
+  logInfo('Cleaning up storage class...');
+  try {
+    // Check if storage class exists and if we can safely delete it
+    const { execa } = await import('execa');
+    try {
+      await execa('kubectl', ['get', 'storageclass', 'gp3'], { stdio: 'pipe' });
+      // Storage class exists - try to delete it
+      logInfo('Attempting to delete gp3 storage class...');
+      try {
+        await run('kubectl', ['delete', 'storageclass', 'gp3'], { stdio: 'pipe' });
+        logSuccess('Storage class gp3 deleted successfully');
+      } catch (deleteError) {
+        // This is expected if storage class is in use by other resources
+        if (deleteError.toString().includes('cannot be deleted') || deleteError.toString().includes('in use')) {
+          logInfo('Storage class gp3 is in use by other resources - leaving it in place');
+        } else {
+          logWarn(`Could not delete storage class gp3: ${deleteError}`);
+        }
+      }
+      
+      // Try to restore gp2 as default if it exists (we may have removed it during install)
+      try {
+        await run('kubectl', ['patch', 'storageclass', 'gp2', '-p', '{"metadata":{"annotations":{"storageclass.kubernetes.io/is-default-class":"true"}}}']);
+        logInfo('Restored gp2 as default storage class');
+      } catch (gp2Error) {
+        // gp2 might not exist or already be default - that's fine
+        logInfo('Note: Could not restore gp2 as default storage class (may not exist or already default)');
+      }
+    } catch (getError) {
+      logInfo('Storage class gp3 not found - may not have been created by this installation');
+    }
+  } catch (error) {
+    logWarn(`Error during storage class cleanup: ${error}`);
+  }
+  
+  // Uninstall MinIO (if installed)
+  logInfo('Uninstalling MinIO...');
+  try {
+    const { execa } = await import('execa');
+    // Check if MinIO Helm release exists
+    try {
+      const minioListResult = await execa('helm', ['list', '-n', 'minio', '--output', 'json'], { stdio: 'pipe' });
+      const minioReleases = JSON.parse(minioListResult.stdout);
+      const minioRelease = minioReleases.find((r: any) => r.name === 'minio');
+      
+      if (minioRelease) {
+        logInfo('Uninstalling MinIO Helm release...');
+        await run('helm', ['uninstall', 'minio', '-n', 'minio']);
+        logSuccess('MinIO Helm release uninstalled successfully');
+        
+        // Wait a bit for resources to be cleaned up
+        await new Promise(resolve => setTimeout(resolve, 5000));
+        
+        // Delete MinIO PVCs (they won't be automatically deleted)
+        try {
+          logInfo('Deleting MinIO PVCs...');
+          await run('kubectl', ['delete', 'pvc', '--all', '-n', 'minio', '--timeout=60s'], { stdio: 'pipe' });
+          logSuccess('MinIO PVCs deleted successfully');
+        } catch (pvcError) {
+          if (!pvcError.toString().includes('NotFound') && !pvcError.toString().includes('no resources found')) {
+            logWarn(`Error deleting MinIO PVCs: ${pvcError}`);
+          }
+        }
+        
+        // Delete MinIO namespace
+        try {
+          logInfo('Deleting MinIO namespace...');
+          await run('kubectl', ['delete', 'namespace', 'minio', '--timeout=60s'], { stdio: 'pipe' });
+          logSuccess('MinIO namespace deleted successfully');
+        } catch (nsError) {
+          if (!nsError.toString().includes('NotFound')) {
+            logWarn(`Error deleting MinIO namespace: ${nsError}`);
+            // Try force delete if regular delete fails
+            try {
+              await run('kubectl', ['patch', 'namespace', 'minio', '-p', '{"metadata":{"finalizers":[]}}', '--type=merge'], { stdio: 'pipe' });
+              await run('kubectl', ['delete', 'namespace', 'minio', '--force', '--grace-period=0'], { stdio: 'pipe' });
+              logSuccess('MinIO namespace force deleted successfully');
+            } catch (forceError) {
+              logWarn(`Error force deleting MinIO namespace: ${forceError}`);
+            }
+          } else {
+            logInfo('MinIO namespace not found or already deleted');
+          }
+        }
+      } else {
+        logInfo('MinIO Helm release not found - skipping MinIO cleanup');
+      }
+    } catch (error) {
+      // MinIO namespace might not exist
+      if (error.toString().includes('NotFound') || error.toString().includes('does not exist')) {
+        logInfo('MinIO namespace not found - MinIO may not be installed');
+      } else {
+        logWarn(`Error checking MinIO installation: ${error}`);
+        // Try to uninstall anyway
+        try {
+          await run('helm', ['uninstall', 'minio', '-n', 'minio'], { stdio: 'pipe' });
+          logSuccess('MinIO Helm release uninstalled successfully');
+        } catch (uninstallError) {
+          logInfo('MinIO Helm release not found or already deleted');
+        }
+      }
+    }
+  } catch (error) {
+    logWarn(`Error during MinIO cleanup: ${error}`);
   }
   
   // Uninstall Helm releases
@@ -1761,8 +2356,8 @@ async function verifyCleanup(ns: string, name: string) {
       logSuccess('✓ No Percona-related ConfigMaps found');
     }
     
-    // 8. Check for remaining Helm releases
-    logInfo('Checking for remaining Helm releases...');
+    // 8. Check for remaining Helm releases (Percona namespace)
+    logInfo('Checking for remaining Helm releases in Percona namespace...');
     try {
       const helmResult = await execa('helm', ['list', '-n', ns, '--output', 'json'], { stdio: 'pipe' });
       const releases = JSON.parse(helmResult.stdout);
@@ -1774,14 +2369,47 @@ async function verifyCleanup(ns: string, name: string) {
       if (perconaReleases.length > 0) {
         cleanupIssues.push(`Found ${perconaReleases.length} remaining Helm releases: ${perconaReleases.map((r: any) => r.name).join(', ')}`);
       } else {
-        logSuccess('✓ No Helm releases found');
+        logSuccess('✓ No Helm releases found in Percona namespace');
       }
     } catch (error) {
-      logSuccess('✓ No Helm releases found');
+      logSuccess('✓ No Helm releases found in Percona namespace');
     }
     
+    // 8b. Check for remaining MinIO Helm releases
+    logInfo('Checking for remaining MinIO Helm releases...');
+    try {
+      const minioHelmResult = await execa('helm', ['list', '-n', 'minio', '--output', 'json'], { stdio: 'pipe' });
+      const minioReleases = JSON.parse(minioHelmResult.stdout);
+      const minioReleasesFound = minioReleases.filter((r: any) => r.name === 'minio');
+      if (minioReleasesFound.length > 0) {
+        cleanupIssues.push(`Found MinIO Helm release still installed: ${minioReleasesFound.map((r: any) => r.name).join(', ')}`);
+      } else {
+        logSuccess('✓ No MinIO Helm releases found');
+      }
+    } catch (error) {
+      // MinIO namespace might not exist, which is fine
+      logSuccess('✓ No MinIO Helm releases found (or MinIO namespace does not exist)');
+    }
     
-    // 9. Check if namespace still exists
+    // 8c. Check for storage class cleanup
+    logInfo('Checking storage class...');
+    try {
+      await execa('kubectl', ['get', 'storageclass', 'gp3'], { stdio: 'pipe' });
+      cleanupIssues.push('Storage class gp3 still exists (may be in use by other resources)');
+    } catch (error) {
+      logSuccess('✓ Storage class gp3 has been deleted or does not exist');
+    }
+    
+    // 9. Check if MinIO namespace still exists
+    logInfo('Checking if MinIO namespace still exists...');
+    try {
+      await execa('kubectl', ['get', 'namespace', 'minio'], { stdio: 'pipe' });
+      cleanupIssues.push('MinIO namespace still exists');
+    } catch (error) {
+      logSuccess('✓ MinIO namespace has been deleted');
+    }
+    
+    // 10. Check if Percona namespace still exists
     logInfo('Checking if Percona namespace still exists...');
     try {
       await execa('kubectl', ['get', 'namespace', ns], { stdio: 'pipe' });
@@ -1790,7 +2418,7 @@ async function verifyCleanup(ns: string, name: string) {
       logSuccess('✓ Percona namespace has been deleted');
     }
     
-    // 10. Summary
+    // 11. Summary
     logInfo('=== Cleanup Verification Summary ===');
     if (cleanupIssues.length > 0) {
       logWarn('⚠️  Cleanup issues found:');

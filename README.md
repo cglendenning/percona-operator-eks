@@ -168,6 +168,140 @@ This script:
 
 After running, refresh the AWS Console to view nodes, pods, and services.
 
+### Running Tests
+
+The project includes a comprehensive test suite to validate Percona XtraDB Cluster deployment, configuration, and best practices.
+
+#### Prerequisites for Testing
+
+```bash
+# Install Python 3.9+ if not already installed
+python3 --version
+
+# Ensure kubectl is configured and can access your cluster
+kubectl cluster-info
+kubectl get nodes
+```
+
+#### Quick Start - Run All Tests
+
+Use the provided test runner script:
+
+```bash
+./tests/run_tests.sh
+```
+
+This script will:
+- Check prerequisites (Python, kubectl, helm)
+- Set up a Python virtual environment
+- Install test dependencies
+- Run all tests with clear output
+
+#### Manual Test Execution
+
+**1. Set up Python environment:**
+
+```bash
+# Create virtual environment
+python3 -m venv venv
+source venv/bin/activate
+
+# Install dependencies
+pip install -r tests/requirements.txt
+```
+
+**2. Configure test environment (optional):**
+
+```bash
+export TEST_NAMESPACE=percona
+export TEST_CLUSTER_NAME=pxc-cluster
+export TEST_EXPECTED_NODES=6
+export TEST_BACKUP_TYPE=minio  # or 's3'
+```
+
+**3. Run tests:**
+
+```bash
+# Run all tests
+pytest tests/ -v
+
+# Run specific test module
+pytest tests/test_cluster_versions.py -v
+
+# Run specific test class
+pytest tests/test_pvcs_storage.py::TestPVCsAndStorage -v
+
+# Run specific test
+pytest tests/test_cluster_versions.py::TestClusterVersions::test_kubernetes_version_compatibility -v
+
+# Generate HTML report
+pytest tests/ --html=tests/report.html --self-contained-html
+```
+
+#### Test Coverage
+
+The test suite validates:
+- ✅ Cluster versions and component versions
+- ✅ Kubernetes version compatibility (>= 1.24)
+- ✅ Helm chart rendering and configuration
+- ✅ Persistent Volume Claims (PVCs) and storage
+- ✅ StatefulSets configuration
+- ✅ Anti-affinity rules and multi-AZ pod distribution
+- ✅ Resource limits and requests
+- ✅ Pod Disruption Budgets (PDB)
+- ✅ Backup configuration (MinIO/S3)
+- ✅ Kubernetes Services and endpoints
+- ✅ Cluster health and readiness
+
+#### Running Tests Before/After Changes
+
+**Before making changes:**
+```bash
+# Validate current cluster state
+pytest tests/ -v
+```
+
+**After deployment:**
+```bash
+# Verify everything is correctly configured
+pytest tests/ -v
+```
+
+**After cluster changes:**
+```bash
+# Ensure nothing broke
+pytest tests/ -v
+```
+
+#### Troubleshooting Tests
+
+**Tests fail with "Cannot connect to Kubernetes cluster":**
+```bash
+# Verify kubectl access
+kubectl cluster-info
+kubectl get nodes
+```
+
+**Tests fail with "Namespace not found":**
+```bash
+# Ensure Percona cluster is deployed
+kubectl get pxc -n percona
+kubectl get pods -n percona
+```
+
+**Tests fail with "No matching resources":**
+```bash
+# Check cluster name and namespace match your deployment
+kubectl get pxc -n percona
+kubectl get statefulset -n percona
+
+# Set environment variables if different
+export TEST_NAMESPACE=your-namespace
+export TEST_CLUSTER_NAME=your-cluster-name
+```
+
+For more detailed test documentation, see [`tests/README.md`](tests/README.md).
+
 ### Notes
 - EKS control plane incurs ~$0.10/hr while the cluster exists; delete when done.
 - Check for orphaned LoadBalancers and EBS volumes after uninstall/delete.
