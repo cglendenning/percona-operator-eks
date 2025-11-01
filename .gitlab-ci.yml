@@ -1,0 +1,105 @@
+# GitLab CI configuration for Percona XtraDB Cluster tests
+
+stages:
+  - test
+
+variables:
+  TEST_NAMESPACE: "percona"
+  TEST_CLUSTER_NAME: "pxc-cluster"
+  TEST_EXPECTED_NODES: "6"
+  TEST_BACKUP_TYPE: "s3"
+  PYTHON_VERSION: "3.11"
+
+# Base image with required tools
+.test_base: &test_base
+  image: python:${PYTHON_VERSION}
+  before_script:
+    - apt-get update -qq && apt-get install -y -qq curl kubectl helm jq
+    - pip install --quiet --upgrade pip
+    - pip install --quiet -r tests/requirements.txt
+    - kubectl version --client
+    - helm version
+
+# Test job
+test:percona-cluster:
+  <<: *test_base
+  stage: test
+  script:
+    - echo "Configuring kubectl for GitLab CI..."
+    # Configure kubectl to connect to your cluster
+    # Adjust these commands based on your cluster setup
+    - |
+      if [ -n "$KUBECONFIG_DATA" ]; then
+        echo "$KUBECONFIG_DATA" | base64 -d > $HOME/.kube/config
+        chmod 600 $HOME/.kube/config
+      elif [ -n "$KUBE_SERVER" ] && [ -n "$KUBE_TOKEN" ]; then
+        kubectl config set-cluster ci-cluster --server=$KUBE_SERVER
+        kubectl config set-credentials ci-user --token=$KUBE_TOKEN
+        kubectl config set-context ci-context --cluster=ci-cluster --user=ci-user
+        kubectl config use-context ci-context
+      fi
+    - kubectl cluster-info || echo "Warning: Could not connect to cluster"
+    - |
+      pytest -v \
+        --tb=short \
+        --color=yes \
+        --html=tests/report.html \
+        --self-contained-html \
+        tests/
+  artifacts:
+    when: always
+    paths:
+      - tests/report.html
+    reports:
+      junit: tests/report.xml  # If using pytest-junit
+    expire_in: 1 week
+  only:
+    - main
+    - merge_requests
+  tags:
+    - kubernetes
+
+# Test job with AWS S3 backup validation (optional)
+test:backup-s3:
+  <<: *test_base
+  stage: test
+  variables:
+    TEST_BACKUP_BUCKET: "${PERCONA_BACKUP_BUCKET:-}"
+  before_script:
+    - *test_base.before_script
+    - apt-get install -y -qq awscli
+    - |
+      if [ -n "$AWS_ACCESS_KEY_ID" ]; then
+        aws configure set aws_access_key_id "$AWS_ACCESS_KEY_ID"
+        aws configure set aws_secret_access_key "$AWS_SECRET_ACCESS_KEY"
+        aws configure set default.region "${AWS_REGION:-us-east-1}"
+      fi
+  script:
+    - kubectl cluster-info || echo "Warning: Could not connect to cluster"
+    - |
+      pytest -v \
+        --tb=short \
+        --color=yes \
+        tests/test_backups.py::TestBackupConfiguration::test_s3_bucket_accessible \
+        -m "not slow"
+  only:
+    - main
+    - schedules
+  when: manual
+  tags:
+    - kubernetes
+
+# Lint job (optional)
+lint:python:
+  image: python:${PYTHON_VERSION}
+  stage: test
+  before_script:
+    - pip install --quiet flake8 black mypy
+  script:
+    - echo "Running Python linting..."
+    - flake8 tests/ --max-line-length=120 --ignore=E501,W503 || true
+    - black --check tests/ || true
+  only:
+    - merge_requests
+  allow_failure: true
+

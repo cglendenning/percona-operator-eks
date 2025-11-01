@@ -1,7 +1,39 @@
+# Node.js / TypeScript
 node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+package-lock.json.bak
+
+# Python
+venv/
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+*.egg-info/
 dist/
-.DS_Store
-.env
+build/
+
+# Test artifacts
+tests/report.html
+tests/report.xml
+.pytest_cache/
+.coverage
+htmlcov/
+
+# IDE
+.vscode/
+.idea/
 *.swp
+*.swo
 
+# OS
+.DS_Store
+Thumbs.db
 
+# Kubernetes
+kubeconfig
+*.kubeconfig
