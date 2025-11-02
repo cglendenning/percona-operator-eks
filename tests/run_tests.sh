@@ -384,11 +384,35 @@ if [ "$VERBOSE" != "true" ] && [ "$SHOW_WARNINGS" != "true" ]; then
     pytest "${PYTEST_OPTS[@]}" > "$TEMP_OUTPUT" 2>&1
     TEST_RESULT=$?
     
-    # Display only test names and PASSED/FAILED status
-    grep -E "^tests/.*::.*(PASSED|FAILED|ERROR)" "$TEMP_OUTPUT" | \
-        sed -E 's/Note:.*PASSED/PASSED/' | \
-        sed -E 's/Helm chart rendered:.*PASSED/PASSED/' | \
-        sed 's/[[:space:]]*$//' || true
+    # Display only test names and PASSED/FAILED/ERROR status
+    # Use awk to handle both single-line and multi-line test results (with color codes)
+    awk '
+    /^tests\/.*::/ {
+        test_name = $1
+        # Check if PASSED/FAILED/ERROR is on the same line (with or without color codes)
+        if (match($0, /PASSED|FAILED|ERROR/)) {
+            # Extract just PASSED/FAILED/ERROR without color codes
+            status_line = $0
+            if (match(status_line, /PASSED/)) status = "PASSED"
+            else if (match(status_line, /FAILED/)) status = "FAILED"
+            else if (match(status_line, /ERROR/)) status = "ERROR"
+            print test_name " " status
+        } else {
+            # Store for next line check
+            pending_test = test_name
+        }
+    }
+    /PASSED|FAILED|ERROR/ {
+        if (pending_test != "" && !/^tests\//) {
+            # Extract status without color codes
+            if (match($0, /PASSED/)) status = "PASSED"
+            else if (match($0, /FAILED/)) status = "FAILED"
+            else if (match($0, /ERROR/)) status = "ERROR"
+            print pending_test " " status
+            pending_test = ""
+        }
+    }
+    ' "$TEMP_OUTPUT"
     
     rm -f "$TEMP_OUTPUT"
 else
