@@ -45,8 +45,16 @@ def get_chaos_engine_result(chaos_namespace: str, engine_name: str) -> Optional[
             name=engine_name
         )
         
-        # Get ChaosResult
-        result_name = engine.get('metadata', {}).get('name', engine_name) + '-result'
+        # Get experiment name from the engine
+        experiments = engine.get('spec', {}).get('experiments', [])
+        if experiments:
+            exp_name = experiments[0].get('name', 'pod-delete')
+            # ChaosResult naming pattern is: {engine_name}-{experiment_name}
+            result_name = f"{engine_name}-{exp_name}"
+        else:
+            # Fallback to old pattern
+            result_name = engine.get('metadata', {}).get('name', engine_name) + '-result'
+        
         result = custom_objects_v1.get_namespaced_custom_object(
             group='litmuschaos.io',
             version='v1alpha1',
@@ -57,7 +65,9 @@ def get_chaos_engine_result(chaos_namespace: str, engine_name: str) -> Optional[
         
         return result
     except client.exceptions.ApiException as e:
-        console.print(f"[yellow]Could not get chaos result: {e}[/yellow]")
+        # 404 is expected while experiment is initializing - don't spam logs
+        if e.status != 404:
+            console.print(f"[yellow]Could not get chaos result: {e}[/yellow]")
         return None
 
 
@@ -82,7 +92,113 @@ def wait_for_chaos_completion(chaos_namespace: str, engine_name: str, timeout: i
         # Print progress every 30 seconds or on first check
         if check_count % 6 == 0 or check_count == 1:
             console.print(f"[dim]  Check #{check_count} at {elapsed}s: Checking chaos experiment status...[/dim]")
+            
+            # Get detailed status information
+            try:
+                custom_objects_v1 = client.CustomObjectsApi()
+                core_v1 = client.CoreV1Api()
+                batch_v1 = client.BatchV1Api()
+                
+                # Check ChaosEngine status
+                try:
+                    engine = custom_objects_v1.get_namespaced_custom_object(
+                        group='litmuschaos.io',
+                        version='v1alpha1',
+                        namespace=chaos_namespace,
+                        plural='chaosengines',
+                        name=engine_name
+                    )
+                    engine_status = engine.get('status', {}).get('engineStatus', 'not-started')
+                    experiments = engine.get('status', {}).get('experiments', [])
+                    
+                    console.print(f"[dim]    → ChaosEngine status: {engine_status}[/dim]")
+                    
+                    if experiments:
+                        for exp in experiments:
+                            exp_name = exp.get('name', 'unknown')
+                            exp_status = exp.get('status', 'unknown')
+                            exp_verdict = exp.get('verdict', 'Awaited')
+                            runner_pod = exp.get('runner', 'none')
+                            console.print(f"[dim]    → Experiment '{exp_name}': status={exp_status}, verdict={exp_verdict}[/dim]")
+                            if runner_pod and runner_pod != 'none':
+                                console.print(f"[dim]    → Runner pod: {runner_pod}[/dim]")
+                except Exception:
+                    console.print(f"[dim]    → ChaosEngine: Unable to get status[/dim]")
+                
+                # Check for runner pods
+                try:
+                    pods = core_v1.list_namespaced_pod(
+                        namespace=chaos_namespace,
+                        label_selector=f'chaosUID={engine.get("metadata", {}).get("uid", "")}'
+                    )
+                    if pods.items:
+                        for pod in pods.items:
+                            pod_status = pod.status.phase
+                            console.print(f"[dim]    → Runner pod {pod.metadata.name}: {pod_status}[/dim]")
+                except Exception:
+                    pass
+                
+                # Check for experiment jobs
+                try:
+                    jobs = batch_v1.list_namespaced_job(
+                        namespace=chaos_namespace,
+                        label_selector=f'name={engine_name}'
+                    )
+                    if jobs.items:
+                        for job in jobs.items:
+                            succeeded = job.status.succeeded or 0
+                            failed = job.status.failed or 0
+                            active = job.status.active or 0
+                            console.print(f"[dim]    → Job {job.metadata.name}: active={active}, succeeded={succeeded}, failed={failed}[/dim]")
+                            
+                            # Get job pod logs to see what's happening
+                            try:
+                                job_pods = core_v1.list_namespaced_pod(
+                                    namespace=chaos_namespace,
+                                    label_selector=f'job-name={job.metadata.name}'
+                                )
+                                for pod in job_pods.items:
+                                    if pod.status.phase == 'Running' or pod.status.phase == 'Succeeded':
+                                        # Get last few log lines
+                                        try:
+                                            logs = core_v1.read_namespaced_pod_log(
+                                                name=pod.metadata.name,
+                                                namespace=chaos_namespace,
+                                                tail_lines=3,
+                                                timestamps=False
+                                            )
+                                            if logs:
+                                                log_lines = logs.strip().split('\n')
+                                                console.print(f"[dim]      Job pod logs (last 3 lines):[/dim]")
+                                                for line in log_lines:
+                                                    console.print(f"[dim]        {line}[/dim]")
+                                        except Exception:
+                                            pass
+                            except Exception:
+                                pass
+                    else:
+                        console.print(f"[dim]    → No experiment jobs found yet[/dim]")
+                except Exception:
+                    pass
+                    
+            except Exception:
+                pass
         
+        # Check if experiment is complete based on ChaosEngine status (not just ChaosResult)
+        if engine:
+            experiments = engine.get('status', {}).get('experiments', [])
+            if experiments:
+                for exp in experiments:
+                    exp_status = exp.get('status', '')
+                    exp_verdict = exp.get('verdict', '')
+                    
+                    # If experiment is completed, we can exit
+                    if exp_status == 'Completed' and exp_verdict in ['Pass', 'Fail']:
+                        console.print(f"[green]✓ Chaos experiment completed with verdict: {exp_verdict} (after {elapsed}s)[/green]")
+                        console.print(f"[dim]  Experiment status from ChaosEngine: {exp_status}[/dim]")
+                        return exp_verdict == 'Pass'
+        
+        # Also check ChaosResult (for compatibility)
         result = get_chaos_engine_result(chaos_namespace, engine_name)
         
         if result:
@@ -90,14 +206,55 @@ def wait_for_chaos_completion(chaos_namespace: str, engine_name: str, timeout: i
             phase = result.get('status', {}).get('experimentStatus', {}).get('phase', 'unknown')
             
             if check_count % 6 == 0 or check_count == 1:
-                console.print(f"[dim]    Current status: phase={phase}, verdict={verdict}[/dim]")
+                console.print(f"[dim]    → ChaosResult: phase={phase}, verdict={verdict}[/dim]")
             
             if verdict in ['Pass', 'Fail']:
                 console.print(f"[green]✓ Chaos experiment completed with verdict: {verdict} (after {elapsed}s)[/green]")
                 return verdict == 'Pass'
         else:
             if check_count % 6 == 0:
-                console.print(f"[dim]    Chaos result not yet available (experiment may still be initializing)...[/dim]")
+                console.print(f"[dim]    → ChaosResult: Not yet created (waiting for experiment to start)[/dim]")
+                
+                # Show additional diagnostics when result isn't ready
+                try:
+                    # Check target application pods
+                    target_app_ns = engine.get('spec', {}).get('appinfo', {}).get('appns', 'unknown')
+                    target_app_label = engine.get('spec', {}).get('appinfo', {}).get('applabel', '')
+                    
+                    if target_app_label and target_app_ns != 'unknown':
+                        console.print(f"[dim]    → Target app: namespace={target_app_ns}, label={target_app_label}[/dim]")
+                        try:
+                            target_pods = core_v1.list_namespaced_pod(
+                                namespace=target_app_ns,
+                                label_selector=target_app_label
+                            )
+                            running_count = sum(1 for p in target_pods.items if p.status.phase == 'Running')
+                            total_count = len(target_pods.items)
+                            console.print(f"[dim]    → Target pods: {running_count}/{total_count} running[/dim]")
+                            
+                            # Show any pods not in Running state
+                            for pod in target_pods.items:
+                                if pod.status.phase != 'Running':
+                                    console.print(f"[dim]      • {pod.metadata.name}: {pod.status.phase}[/dim]")
+                        except Exception:
+                            pass
+                    
+                    # Check for recent events in chaos namespace
+                    try:
+                        events = core_v1.list_namespaced_event(
+                            namespace=chaos_namespace,
+                            field_selector=f'involvedObject.name={engine_name}'
+                        )
+                        if events.items:
+                            # Get most recent event
+                            sorted_events = sorted(events.items, key=lambda e: e.last_timestamp or e.event_time, reverse=True)
+                            recent_event = sorted_events[0]
+                            console.print(f"[dim]    → Recent event: {recent_event.reason} - {recent_event.message}[/dim]")
+                    except Exception:
+                        pass
+                        
+                except Exception:
+                    pass
         
         time.sleep(5)
         elapsed = time.time() - start_time
