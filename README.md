@@ -1,4 +1,4 @@
-## Percona EKS Automation
+## Percona Operator For XtraDB Cluster On EKS 
 
 Automated deployment of EKS cluster with Percona XtraDB Cluster operator via CloudFormation and TypeScript.
 
@@ -63,12 +63,6 @@ Or with verbose output:
 ./deploy.sh -vv
 ```
 
-Delete cluster:
-```bash
-aws cloudformation delete-stack --stack-name percona-eks-cluster --region us-east-1
-aws cloudformation wait stack-delete-complete --stack-name percona-eks-cluster --region us-east-1
-```
-
 The deployment script:
 - Creates VPC with 3 public + 3 private subnets across us-east-1a, us-east-1c, us-east-1d
 - Deploys 3 EKS managed node groups (1 per AZ) with m5.large On-Demand instances
@@ -87,7 +81,7 @@ Uninstall and cleanup PVCs:
 npm run percona -- uninstall --namespace percona --name pxc-cluster
 ```
 
-### Cost-saving: Tear Down When Not in Use
+### Cost-saving: Tear Down EKS When Not in Use
 Delete the entire stack to avoid charges (can be recreated quickly):
 ```bash
 aws cloudformation delete-stack --stack-name percona-eks-cluster --region us-east-1
@@ -104,7 +98,7 @@ To recreate the cluster when needed:
 npm run percona -- install  # Installs Percona (~10-15 min)
 ```
 
-Total recreation time: ~30-35 minutes
+Total recreation time: ~25-35 minutes
 
 **Note:** If you need to preserve data between teardowns, ensure Percona backups to MinIO are completed before deleting the stack.
 
@@ -174,14 +168,45 @@ The project includes a comprehensive test suite to validate Percona XtraDB Clust
 
 #### Prerequisites for Testing
 
-```bash
-# Install Python 3.9+ if not already installed
-python3 --version
+**Required:**
+- **Python 3.9+**
+  ```bash
+  python3 --version
+  ```
 
-# Ensure kubectl is configured and can access your cluster
-kubectl cluster-info
-kubectl get nodes
-```
+- **kubectl** - configured to connect to your Kubernetes cluster
+  ```bash
+  kubectl version --client
+  kubectl cluster-info
+  kubectl get nodes
+  ```
+
+- **Helm 3.x**
+  ```bash
+  helm version
+  ```
+
+- **Percona cluster deployed** in your Kubernetes cluster
+  ```bash
+  kubectl get pxc -n percona
+  ```
+
+**Optional (for backup tests):**
+- **AWS CLI** (for S3 backup tests)
+- **MinIO client** (for MinIO backup tests)
+
+#### Installation
+
+1. **Create Python virtual environment** (recommended)
+   ```bash
+   python3 -m venv venv
+   source venv/bin/activate
+   ```
+
+2. **Install dependencies**
+   ```bash
+   pip install -r tests/requirements.txt
+   ```
 
 #### Quick Start - Run All Tests
 
@@ -197,34 +222,301 @@ This script will:
 - Install test dependencies
 - Run all tests with clear output
 
-#### Manual Test Execution
+**CI Pipeline Execution Order:**
+1. Unit tests first (fast, fail-fast): `pytest tests/unit/ -v -m unit`
+2. Integration tests (after unit tests pass): `pytest tests/integration/ -v -m integration`
+3. Resiliency tests (only triggered by LitmusChaos, not in standard CI)
 
-**1. Set up Python environment:**
+#### Test Categories
 
+Tests are organized into three distinct categories based on their purpose and dependencies:
+
+**1. Unit Tests** (`tests/unit/`)
+
+**Purpose**: Test one specific unit of functionality within the Percona infrastructure.
+
+**Characteristics**:
+- Run with **no dependency on running infrastructure**
+- May use **mocks or fakes** to replicate responses from APIs or other interfaces
+- **Fast execution** (typically < 5 seconds per test)
+- **Deterministic** - same input always produces same output
+
+**When to run**:
+- ✅ **First in CI pipeline** during merge requests
+- ✅ **Fail-fast** - if any unit test fails, merge fails immediately
+- ✅ Run on every code change
+- ✅ Can run locally without cluster
+
+**Current Tests**:
+- `tests/unit/test_helm_charts.py` - Helm chart template rendering validation
+
+**2. Integration Tests** (`tests/integration/`)
+
+**Purpose**: Verify that services the Percona ecosystem depends on behave correctly.
+
+**Characteristics**:
+- Require **access to running infrastructure** (Kubernetes cluster, Helm, etc.)
+- Verify **dependency versions and configuration** are correct
+- Test that **external services** (MinIO, K8s APIs) respond as expected
+- May take longer than unit tests (typically 10-60 seconds)
+
+**When to run**:
+- ✅ After unit tests pass
+- ✅ Before resiliency tests
+- ✅ On merge requests after successful unit tests
+- ✅ After infrastructure changes (K8s version upgrades, etc.)
+
+**Examples**:
+- Kubernetes version compatibility check (>= 1.24)
+- StorageClass exists and has correct configuration
+- Helm repository availability
+- Node zone labels for multi-AZ
+- Backup secret existence
+
+**Current Tests**:
+- `tests/integration/test_dependencies.py` - K8s, Helm, StorageClass, backup dependencies
+
+**3. Resiliency Tests** (`tests/resiliency/`)
+
+**Purpose**: Verify that the system recovers correctly after chaos events triggered by LitmusChaos.
+
+**Characteristics**:
+- Run **in concert with LitmusChaos** disaster scenarios
+- **Automatically triggered** after chaos events complete
+- **Polling-based** - check recovery state every 15 seconds
+- **MTTR timeout** - default 2 minutes (configurable)
+- Test **system recovery**, not just failure
+
+**When to run**:
+- ✅ After chaos experiments complete
+- ✅ Continuously in production (via scheduled chaos)
+- ✅ As part of resilience testing workflows
+- ✅ Not run during normal CI pipeline (too slow/expensive)
+
+**Recovery Scenarios**:
+- Pod deletion → verify pod returns to Running
+- StatefulSet pod loss → verify all replicas recover
+- Service disruption → verify endpoints restore
+- Cluster status → verify cluster returns to 'ready'
+
+**MTTR Configuration**:
+- Default timeout: 120 seconds (2 minutes)
+- Poll interval: 15 seconds
+- Configurable via `RESILIENCY_MTTR_TIMEOUT_SECONDS` environment variable
+
+**Current Tests**:
+- `tests/resiliency/test_pod_recovery.py` - Pod, StatefulSet, Service, Cluster recovery tests
+- `tests/resiliency/helpers.py` - Polling and MTTR helper functions
+- `tests/resiliency/chaos_integration.py` - LitmusChaos integration
+
+#### Running Tests by Category
+
+Each test category can be run individually:
+
+**Unit Tests** (fast, no cluster required):
 ```bash
-# Create virtual environment
-python3 -m venv venv
-source venv/bin/activate
+# Option 1: Run by directory
+pytest tests/unit/ -v
 
-# Install dependencies
-pip install -r tests/requirements.txt
+# Option 2: Run by marker (useful if tests are in multiple locations)
+pytest tests/ -v -m unit
+
+# Option 3: Both directory and marker (most explicit)
+pytest tests/unit/ -v -m unit
 ```
 
-**2. Configure test environment (optional):**
+**Integration Tests** (requires cluster access):
+```bash
+# Option 1: Run by directory
+pytest tests/integration/ -v
+
+# Option 2: Run by marker
+pytest tests/ -v -m integration
+
+# Option 3: Both directory and marker
+pytest tests/integration/ -v -m integration
+```
+
+**Resiliency Tests** (triggered by LitmusChaos or run manually):
+```bash
+# Run resiliency tests manually (usually auto-triggered by LitmusChaos)
+pytest tests/resiliency/ -v -m resiliency
+
+# Run with custom MTTR timeout (default: 120 seconds)
+RESILIENCY_MTTR_TIMEOUT_SECONDS=300 pytest tests/resiliency/ -v -m resiliency
+
+# Run with custom poll interval (default: 15 seconds)
+RESILIENCY_POLL_INTERVAL_SECONDS=10 RESILIENCY_MTTR_TIMEOUT_SECONDS=180 pytest tests/resiliency/ -v -m resiliency
+```
+
+**Combined Categories**:
+```bash
+# Unit + Integration (all non-resiliency tests)
+pytest tests/ -v -m "unit or integration"
+
+# Exclude resiliency tests
+pytest tests/ -v -m "not resiliency"
+
+# Run all tests
+pytest tests/ -v
+```
+
+**Quick Reference**:
+- `pytest tests/unit/ -v` - Unit tests only (fast)
+- `pytest tests/integration/ -v` - Integration tests only
+- `pytest tests/resiliency/ -v` - Resiliency tests only
+- `pytest tests/ -v -m unit` - All unit tests by marker
+- `pytest tests/ -v -m integration` - All integration tests by marker
+- `pytest tests/ -v -m resiliency` - All resiliency tests by marker
+
+#### Test Organization Structure
+
+```
+tests/
+├── unit/              # Unit tests (fast, no cluster)
+│   ├── __init__.py
+│   └── test_helm_charts.py
+│
+├── integration/       # Integration tests (verify dependencies)
+│   ├── __init__.py
+│   └── test_dependencies.py
+│
+├── resiliency/        # Resiliency tests (chaos recovery)
+│   ├── __init__.py
+│   ├── helpers.py          # Polling and MTTR helpers
+│   ├── chaos_integration.py # LitmusChaos integration
+│   └── test_pod_recovery.py
+│
+├── conftest.py        # Shared fixtures
+├── run_tests.sh       # Test runner script
+└── requirements.txt   # Python dependencies
+```
+
+#### Test Modules and Coverage
+
+The test suite validates:
+
+**Unit Tests**:
+- Helm chart template rendering validation
+- YAML structure validation
+- Configuration parsing
+
+**Integration Tests**:
+- Kubernetes version compatibility (>= 1.24)
+- StorageClass exists and has correct parameters
+- Helm repository availability
+- Node zone labels for multi-AZ deployment
+- Backup secret existence
+- Operator version and status
+- PXC and ProxySQL image versions
+- Cluster custom resource existence
+- Resource requests and limits configuration
+- StatefulSet configuration (service names, update strategies, volume claim templates)
+- Anti-affinity rules in specifications
+- PVC size, storage class, and access modes
+- Backup storage configuration and schedules
+
+**Resiliency Tests**:
+- Pod recovery after deletion
+- StatefulSet replica recovery
+- Service endpoint restoration
+- Cluster status recovery to 'ready'
+
+#### Resiliency Test Polling Mechanism
+
+All resiliency tests use the polling mechanism from `tests/resiliency/helpers.py`:
+
+**Default Configuration**:
+- **MTTR timeout**: 120 seconds (2 minutes)
+- **Poll interval**: 15 seconds
+- **Configurable**: Via `RESILIENCY_MTTR_TIMEOUT_SECONDS` and `RESILIENCY_POLL_INTERVAL_SECONDS` environment variables
+
+**Polling Flow**:
+1. **Chaos event occurs** (e.g., pod deleted by LitmusChaos)
+2. **LitmusChaos completes** (verdict: Pass/Fail)
+3. **Resiliency test triggered** automatically
+4. **Polling starts**:
+   - Check recovery condition every 15 seconds
+   - Continue until condition met or timeout
+   - Fail if timeout reached without recovery
+
+**Recovery Check Functions**:
+- `wait_for_pod_recovery()` - Pod returns to Running state
+- `wait_for_statefulset_recovery()` - All replicas ready
+- `wait_for_service_recovery()` - Endpoints restored
+- `wait_for_cluster_recovery()` - Cluster status 'ready'
+
+#### LitmusChaos Integration
+
+LitmusChaos automatically triggers resiliency tests after chaos events complete:
+
+1. **ChaosEngine** runs chaos experiment
+2. **ChaosResult** indicates completion (verdict: Pass/Fail)
+3. **Resiliency test job** is triggered automatically
+4. **Polling test** verifies recovery within MTTR timeout
+
+See `chaos-experiments/pod-delete-pxc-with-resiliency.yaml` for example configuration.
+
+#### Configuration
+
+Set environment variables to customize test behavior:
 
 ```bash
 export TEST_NAMESPACE=percona
 export TEST_CLUSTER_NAME=pxc-cluster
 export TEST_EXPECTED_NODES=6
-export TEST_BACKUP_TYPE=minio  # or 's3'
+export TEST_BACKUP_TYPE=minio  # or 's3' (default: minio for on-prem replication)
+export TEST_BACKUP_BUCKET=my-backup-bucket
+export RESILIENCY_MTTR_TIMEOUT_SECONDS=120  # Default: 120 seconds
+export RESILIENCY_POLL_INTERVAL_SECONDS=15  # Default: 15 seconds
 ```
 
-**3. Run tests:**
+#### Running Tests Before/After Changes
+
+**Before making changes:**
+```bash
+# Run unit tests first (fast, no cluster needed)
+pytest tests/unit/ -v -m unit
+
+# If unit tests pass, run integration tests
+pytest tests/integration/ -v -m integration
+
+# Or run all non-resiliency tests
+pytest tests/ -v -m "unit or integration"
+```
+
+**After deployment:**
+```bash
+# Verify everything is correctly configured
+# Run integration tests to verify dependencies
+pytest tests/integration/ -v -m integration
+
+# Or run all non-resiliency tests
+pytest tests/ -v -m "unit or integration"
+```
+
+**After cluster changes:**
+```bash
+# Ensure nothing broke - run integration tests
+pytest tests/integration/ -v -m integration
+
+# For comprehensive validation, run all non-resiliency tests
+pytest tests/ -v -m "unit or integration"
+```
+
+**For resiliency testing (after chaos events):**
+```bash
+# Resiliency tests are usually auto-triggered by LitmusChaos
+# To run manually after a chaos event:
+pytest tests/resiliency/ -v -m resiliency
+
+# With custom timeout:
+RESILIENCY_MTTR_TIMEOUT_SECONDS=300 pytest tests/resiliency/ -v -m resiliency
+```
+
+#### Running Specific Tests
 
 ```bash
-# Run all tests
-pytest tests/ -v
-
 # Run specific test module
 pytest tests/test_cluster_versions.py -v
 
@@ -238,40 +530,13 @@ pytest tests/test_cluster_versions.py::TestClusterVersions::test_kubernetes_vers
 pytest tests/ --html=tests/report.html --self-contained-html
 ```
 
-#### Test Coverage
+#### Test Output
 
-The test suite validates:
-- ✅ Cluster versions and component versions
-- ✅ Kubernetes version compatibility (>= 1.24)
-- ✅ Helm chart rendering and configuration
-- ✅ Persistent Volume Claims (PVCs) and storage
-- ✅ StatefulSets configuration
-- ✅ Anti-affinity rules and multi-AZ pod distribution
-- ✅ Resource limits and requests
-- ✅ Pod Disruption Budgets (PDB)
-- ✅ Backup configuration (MinIO/S3)
-- ✅ Kubernetes Services and endpoints
-- ✅ Cluster health and readiness
-
-#### Running Tests Before/After Changes
-
-**Before making changes:**
-```bash
-# Validate current cluster state
-pytest tests/ -v
-```
-
-**After deployment:**
-```bash
-# Verify everything is correctly configured
-pytest tests/ -v
-```
-
-**After cluster changes:**
-```bash
-# Ensure nothing broke
-pytest tests/ -v
-```
+The test suite uses `rich` for console output:
+- ✅ Green checkmarks for passing tests
+- ❌ Red X marks for failing tests
+- ⚠️ Yellow warnings for skipped tests
+- 📊 Cyan informational messages
 
 #### Troubleshooting Tests
 
@@ -300,7 +565,26 @@ export TEST_NAMESPACE=your-namespace
 export TEST_CLUSTER_NAME=your-cluster-name
 ```
 
-For more detailed test documentation, see [`tests/README.md`](tests/README.md).
+**Import errors:**
+```bash
+# Ensure all dependencies are installed
+pip install -r tests/requirements.txt
+```
+
+#### Test Markers
+
+All tests use pytest markers for categorization:
+
+- `@pytest.mark.unit` - Unit tests
+- `@pytest.mark.integration` - Integration tests
+- `@pytest.mark.resiliency` - Resiliency tests
+
+Run specific category:
+```bash
+pytest -m unit       # Only unit tests
+pytest -m integration # Only integration tests
+pytest -m resiliency # Only resiliency tests
+```
 
 ### Chaos Engineering with LitmusChaos
 

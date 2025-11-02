@@ -19,6 +19,17 @@ except (ImportError, AttributeError):
 
 console = Console()
 
+# Add custom pytest option for MTTR timeout
+def pytest_addoption(parser):
+    """Add custom command-line options"""
+    parser.addoption(
+        '--mttr-timeout',
+        action='store',
+        default=os.getenv('RESILIENCY_MTTR_TIMEOUT_SECONDS', '120'),
+        type=int,
+        help='MTTR timeout in seconds for resiliency tests (default: 120)'
+    )
+
 # Pytest markers for test categorization
 pytest_plugins = []
 
