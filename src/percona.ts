@@ -1811,50 +1811,99 @@ async function installLitmusChaos() {
         await execa('kubectl', ['get', 'crd', 'chaosengines.litmuschaos.io'], { stdio: 'pipe' });
         logInfo('✓ LitmusChaos CRDs already installed');
       } catch {
-        // CRDs don't exist, download chart and extract CRDs
-        logInfo('Downloading chart and extracting CRDs...');
-        const fs = await import('fs');
-        const path = await import('path');
-        const os = await import('os');
+        // CRDs don't exist, try multiple methods to install them
+        logInfo('Attempting to install CRDs using multiple methods...');
+        let crdsInstalled = false;
         
-        const tempDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'litmus-crds-'));
-        
+        // Method 1: Try helm show crds (Helm 3.11+)
         try {
-          // Pull the chart
-          await run('helm', [
-            'pull', 'litmuschaos/litmus',
-            '--version', '3.1.0',
-            '--untar',
-            '--untardir', tempDir
-          ], { stdio: 'pipe' });
-          
-          // Find and apply CRDs
-          const crdsDir = path.join(tempDir, 'litmus', 'crds');
-          const crdsFile = path.join(tempDir, 'litmus', 'crds.yaml');
-          
+          const { stdout } = await execa('helm', ['show', 'crds', 'litmuschaos/litmus', '--version', '3.1.0'], { stdio: 'pipe' });
+          if (stdout && stdout.trim().length > 0) {
+            await run('kubectl', ['apply', '-f', '-'], { input: stdout, stdio: 'pipe' });
+            crdsInstalled = true;
+            logInfo('✓ CRDs installed using helm show crds');
+          }
+        } catch {
+          // Method not available or failed, try next
+        }
+        
+        // Method 2: Try helm template with --include-crds
+        if (!crdsInstalled) {
           try {
-            const stats = await fs.promises.stat(crdsDir);
-            if (stats.isDirectory()) {
-              logInfo('Applying CRDs from crds/ directory...');
-              await run('kubectl', ['apply', '-f', crdsDir], { stdio: 'inherit' });
+            const { stdout } = await execa('helm', [
+              'template', 'litmus', 'litmuschaos/litmus',
+              '--version', '3.1.0',
+              '--include-crds',
+              '--namespace', 'litmus'
+            ], { stdio: 'pipe' });
+            
+            // Extract CRD manifests from output
+            const lines = stdout.split('\n');
+            const crdManifests: string[] = [];
+            let inCrd = false;
+            let crdBlock: string[] = [];
+            
+            for (let i = 0; i < lines.length; i++) {
+              const line = lines[i];
+              if (line.trim() === '---') {
+                if (inCrd && crdBlock.length > 0) {
+                  crdManifests.push(crdBlock.join('\n'));
+                }
+                crdBlock = [];
+                inCrd = false;
+              } else if (line.includes('kind: CustomResourceDefinition')) {
+                inCrd = true;
+                crdBlock.push(line);
+              } else if (inCrd) {
+                crdBlock.push(line);
+              }
+            }
+            
+            if (inCrd && crdBlock.length > 0) {
+              crdManifests.push(crdBlock.join('\n'));
+            }
+            
+            if (crdManifests.length > 0) {
+              for (const crdManifest of crdManifests) {
+                await run('kubectl', ['apply', '-f', '-'], { input: crdManifest, stdio: 'pipe' }).catch(() => {});
+              }
+              crdsInstalled = true;
+              logInfo('✓ CRDs installed from helm template');
             }
           } catch {
+            // Method failed, try next
+          }
+        }
+        
+        // Method 3: Try direct installation from GitHub using curl
+        if (!crdsInstalled) {
+          const crdUrls = [
+            'https://raw.githubusercontent.com/litmuschaos/litmus/master/litmus-portal/litmus-portal-crds.yaml',
+            'https://raw.githubusercontent.com/litmuschaos/litmus/v3.1.0/litmus-portal/litmus-portal-crds.yaml',
+            'https://raw.githubusercontent.com/litmuschaos/litmus/master/mkdocs/docs/3.1.0/litmus-portal-crds-3.1.0.yml',
+            'https://raw.githubusercontent.com/litmuschaos/litmus/v3.1.0/mkdocs/docs/3.1.0/litmus-portal-crds-3.1.0.yml',
+            'https://raw.githubusercontent.com/litmuschaos/litmus/master/mkdocs/docs/2.13.0/litmus-portal-crds-2.13.0.yml'
+          ];
+          
+          for (const url of crdUrls) {
             try {
-              const stats = await fs.promises.stat(crdsFile);
-              if (stats.isFile()) {
-                logInfo('Applying CRDs from crds.yaml file...');
-                await run('kubectl', ['apply', '-f', crdsFile], { stdio: 'inherit' });
-              } else {
-                logWarn('Could not find CRDs in chart directory structure');
-                logWarn('Chart may not include CRDs or structure has changed');
+              logInfo(`Trying CRD URL: ${url}...`);
+              // Use curl to download and pipe to kubectl
+              const result = await execa('sh', ['-c', `curl -sfL "${url}" | kubectl apply -f -`], { stdio: 'pipe' });
+              if (result.exitCode === 0) {
+                crdsInstalled = true;
+                logInfo(`✓ CRDs installed from GitHub (${url})`);
+                break;
               }
             } catch {
-              logWarn('Could not find CRDs in chart directory structure');
-              logWarn('Chart may not include CRDs or structure has changed');
+              // Try next URL
+              continue;
             }
           }
-          
-          // Wait for CRDs to be established
+        }
+        
+        // Wait for CRDs to be established if installed
+        if (crdsInstalled) {
           logInfo('Waiting for CRDs to be ready...');
           await run('kubectl', ['wait', '--for=condition=Established', '--timeout=60s', 
             'crd/chaosengines.litmuschaos.io', 'crd/chaosexperiments.litmuschaos.io', 
@@ -1862,29 +1911,140 @@ async function installLitmusChaos() {
             .catch(() => {
               logInfo('Some CRDs may still be installing, continuing...');
             });
-          
-          logInfo('✓ LitmusChaos CRDs installed');
-        } finally {
-          // Clean up temp directory
-          await fs.promises.rm(tempDir, { recursive: true, force: true }).catch(() => {});
+        }
+        
+        // Verify CRDs are actually installed
+        try {
+          await execa('kubectl', ['get', 'crd', 'chaosengines.litmuschaos.io'], { stdio: 'pipe' });
+          logInfo('✓ LitmusChaos CRDs installed and verified');
+        } catch {
+          logWarn('⚠ Could not install CRDs automatically.');
+          logWarn('Chaos experiments (ChaosEngine) require CRDs to be installed.');
+          logWarn('Please install CRDs manually or check LitmusChaos documentation.');
         }
       }
     } catch (crdError) {
       logWarn(`CRD installation had issues, but continuing: ${crdError}`);
     }
     
-    // Install LitmusChaos Portal via Helm
-    logInfo('Installing LitmusChaos Portal (this may take a few minutes)...');
-    await run('helm', [
-      'upgrade', '--install', 'litmus', 'litmuschaos/litmus',
-      '--version', '3.1.0',
-      '--namespace', 'litmus',
-      '--set', 'adminConfig.DBUSER=admin',
-      '--set', 'adminConfig.DBPASSWORD=litmus',
-      '--set', 'image.imageTag=3.1.0',
-      '--wait',
-      '--timeout', '10m'
-    ]);
+    // Install LitmusChaos Portal via Helm - EXACT command from official docs
+    // Reference: https://docs.litmuschaos.io/docs/getting-started/installation
+    // Exact command from docs: helm install chaos litmuschaos/litmus --namespace=litmus --set portal.frontend.service.type=NodePort
+    logInfo('Installing LitmusChaos Portal...');
+    logInfo('Using EXACT command from LitmusChaos documentation...');
+    
+    try {
+      await run('helm', [
+        'install', 'chaos', 'litmuschaos/litmus',
+        '--namespace', 'litmus',
+        '--set', 'portal.frontend.service.type=NodePort',
+        '--wait',
+        '--timeout', '10m'
+      ]);
+    } catch (helmError) {
+      logError('Helm installation failed or timed out!');
+      logError('Checking pod status...');
+      try {
+        const podStatus = await execa('kubectl', ['get', 'pods', '-n', 'litmus'], { stdio: 'pipe' });
+        logError(podStatus.stdout);
+      } catch {
+        // Ignore kubectl errors
+      }
+      throw helmError;
+    }
+    
+    logInfo('Helm installation completed. Waiting for all pods to be ready...');
+    
+    // Wait and monitor pods with explicit ImagePullBackOff detection
+    const maxWait = 600; // 10 minutes
+    const interval = 10; // 10 seconds
+    let elapsed = 0;
+    
+    while (elapsed < maxWait) {
+      try {
+        const pods = await execa('kubectl', ['get', 'pods', '-n', 'litmus', '-o', 'json'], { stdio: 'pipe' });
+        const podList = JSON.parse(pods.stdout);
+        
+        // Check for ImagePullBackOff or ErrImagePull
+        const errorPods = podList.items.filter((pod: any) => {
+          const phase = pod.status.phase;
+          const waitingReason = pod.status.containerStatuses?.[0]?.state?.waiting?.reason || '';
+          return phase === 'ImagePullBackOff' || 
+                 phase === 'ErrImagePull' || 
+                 waitingReason === 'ImagePullBackOff' || 
+                 waitingReason === 'ErrImagePull';
+        });
+        
+        if (errorPods.length > 0) {
+          logError('❌ CRITICAL: ImagePullBackOff detected!');
+          logError('Failing pods:');
+          for (const pod of errorPods) {
+            const image = pod.spec.containers?.[0]?.image || 'unknown';
+            const reason = pod.status.containerStatuses?.[0]?.state?.waiting?.reason || pod.status.phase;
+            logError(`  - ${pod.metadata.name}: ${reason}`);
+            logError(`    Image: ${image}`);
+          }
+          logError('');
+          logError('Installation FAILED due to image pull errors!');
+          throw new Error('ImagePullBackOff detected - installation failed');
+        }
+        
+        // Check if all pods are running
+        const totalPods = podList.items.length;
+        const runningPods = podList.items.filter((p: any) => p.status.phase === 'Running');
+        
+        if (totalPods > 0 && runningPods.length === totalPods) {
+          logSuccess(`✓ All ${runningPods.length} pods are running!`);
+          break;
+        }
+        
+        // Show progress every 30 seconds
+        if (elapsed % 30 === 0 || runningPods.length > 0) {
+          logInfo(`[${elapsed}s] Pod status: ${runningPods.length}/${totalPods} running`);
+          for (const pod of podList.items) {
+            if (pod.status.phase !== 'Running') {
+              const reason = pod.status.containerStatuses?.[0]?.state?.waiting?.reason || '';
+              logInfo(`  - ${pod.metadata.name}: ${pod.status.phase} ${reason ? `(${reason})` : ''}`);
+            }
+          }
+        }
+      } catch (checkError: any) {
+        if (checkError.message && checkError.message.includes('ImagePullBackOff')) {
+          throw checkError; // Re-throw ImagePullBackOff errors
+        }
+        logInfo(`[${elapsed}s] Waiting for pods to appear...`);
+      }
+      
+      await new Promise(resolve => setTimeout(resolve, interval * 1000));
+      elapsed += interval;
+    }
+    
+    // Final verification
+    logInfo('');
+    logInfo('=== FINAL POD STATUS ===');
+    try {
+      const finalPods = await execa('kubectl', ['get', 'pods', '-n', 'litmus'], { stdio: 'pipe' });
+      logInfo(finalPods.stdout);
+      
+      if (finalPods.stdout.includes('ImagePullBackOff') || finalPods.stdout.includes('ErrImagePull')) {
+        logError('❌ Installation FAILED: Pods still in ImagePullBackOff state!');
+        throw new Error('ImagePullBackOff detected in final check');
+      }
+      
+      // Verify all pods are ready
+      const readyCheck = await execa('kubectl', ['get', 'pods', '-n', 'litmus', '--field-selector=status.phase=Running', '--no-headers'], { stdio: 'pipe' });
+      const readyCount = readyCheck.stdout.split('\n').filter(l => l.trim()).length;
+      const totalCheck = await execa('kubectl', ['get', 'pods', '-n', 'litmus', '--no-headers'], { stdio: 'pipe' });
+      const totalCount = totalCheck.stdout.split('\n').filter(l => l.trim()).length;
+      
+      if (readyCount < totalCount) {
+        logWarn(`⚠ Not all pods are running yet (${readyCount}/${totalCount})`);
+      } else {
+        logSuccess(`✓ All ${totalCount} pods are ready!`);
+      }
+    } catch (finalCheckError) {
+      logWarn(`Could not verify final pod status: ${finalCheckError}`);
+    }
     
     // Verify CRDs are installed
     logInfo('Verifying LitmusChaos CRDs...');
@@ -2050,6 +2210,33 @@ async function uninstall(ns: string, name: string) {
   } catch (error) {
     if (error.toString().includes('NotFound') || error.toString().includes('no resources found')) {
       logInfo('No Pods found or already deleted');
+    } else if (error.toString().includes('timeout') || error.toString().includes('timed out')) {
+      logWarn('Pod deletion timed out, checking for remaining pods and force deleting individually...');
+      try {
+        // Get list of remaining pods
+        const podResult = await execa('kubectl', ['get', 'pods', '-n', ns, '--no-headers', '-o', 'custom-columns=NAME:.metadata.name'], { stdio: 'pipe' });
+        const podNames = podResult.stdout.trim().split('\n').filter(name => name.trim());
+        
+        if (podNames.length === 0) {
+          logInfo('✓ All pods were actually deleted (none remain)');
+        } else {
+          logInfo(`Force deleting ${podNames.length} remaining pod(s)...`);
+          for (const podName of podNames) {
+            try {
+              await run('kubectl', ['delete', 'pod', podName, '-n', ns, '--force', '--grace-period=0'], { stdio: 'pipe' });
+              logInfo(`✓ Pod ${podName} force deleted`);
+            } catch (podError) {
+              if (podError.toString().includes('NotFound') || podError.toString().includes('not found')) {
+                logInfo(`✓ Pod ${podName} already deleted (not found)`);
+              } else {
+                logWarn(`Warning: Could not delete pod ${podName}: ${podError}`);
+              }
+            }
+          }
+        }
+      } catch (forceError) {
+        logWarn(`Error during pod force deletion: ${forceError}`);
+      }
     } else {
       logWarn(`Error deleting Pods: ${error}`);
     }
@@ -2085,13 +2272,76 @@ async function uninstall(ns: string, name: string) {
         
         for (const pvcName of pvcNames) {
           try {
-            logInfo(`Force deleting PVC: ${pvcName}`);
-            // Remove finalizers first
-            await run('kubectl', ['patch', 'pvc', pvcName, '-n', ns, '-p', '{"metadata":{"finalizers":[]}}', '--type=merge'], { stdio: 'pipe' });
-            // Force delete with immediate termination
-            await run('kubectl', ['delete', 'pvc', pvcName, '-n', ns, '--force', '--grace-period=0'], { stdio: 'pipe' });
+            logInfo(`Force deleting PVC: ${pvcName}...`);
+            
+            // Check PVC status first
+            try {
+              const pvcStatus = await execa('kubectl', ['get', 'pvc', pvcName, '-n', ns, '-o', 'jsonpath={.status.phase}'], { stdio: 'pipe' });
+              if (pvcStatus.stdout === 'Bound' || pvcStatus.stdout === 'Terminating') {
+                logInfo(`PVC ${pvcName} is in ${pvcStatus.stdout} state`);
+              }
+            } catch {
+              // Ignore status check errors
+            }
+            
+            // Remove finalizers first - this is critical for stuck PVCs
+            try {
+              logInfo(`Removing finalizers from PVC ${pvcName}...`);
+              await run('kubectl', ['patch', 'pvc', pvcName, '-n', ns, '-p', '{"metadata":{"finalizers":[]}}', '--type=merge'], { stdio: 'pipe' });
+              logInfo(`✓ Finalizers removed from PVC ${pvcName}`);
+              
+              // Wait a moment for the change to propagate
+              await new Promise(resolve => setTimeout(resolve, 1000));
+            } catch (patchError) {
+              // If patching fails because PVC doesn't exist, that's fine
+              if (patchError.toString().includes('NotFound') || patchError.toString().includes('not found')) {
+                logInfo(`✓ PVC ${pvcName} not found during patch (already deleted)`);
+                continue; // Skip to next PVC
+              } else {
+                logWarn(`Warning: Could not patch finalizers for PVC ${pvcName}, trying direct delete: ${patchError}`);
+              }
+            }
+            
+            // Try normal delete first
+            try {
+              await run('kubectl', ['delete', 'pvc', pvcName, '-n', ns, '--timeout=10s'], { stdio: 'pipe' });
+              logInfo(`✓ PVC ${pvcName} deleted`);
+            } catch (deleteError) {
+              // If normal delete fails, try force delete
+              if (deleteError.toString().includes('timeout') || deleteError.toString().includes('Terminating')) {
+                logInfo(`PVC ${pvcName} still terminating, trying force delete...`);
+                try {
+                  await run('kubectl', ['delete', 'pvc', pvcName, '-n', ns, '--force', '--grace-period=0'], { stdio: 'pipe' });
+                  logInfo(`✓ PVC ${pvcName} force deleted`);
+                  
+                  // Wait a moment and verify it's actually gone
+                  await new Promise(resolve => setTimeout(resolve, 2000));
+                  try {
+                    await execa('kubectl', ['get', 'pvc', pvcName, '-n', ns], { stdio: 'pipe' });
+                    logWarn(`Warning: PVC ${pvcName} still exists after force delete`);
+                  } catch {
+                    logInfo(`✓ PVC ${pvcName} confirmed deleted`);
+                  }
+                } catch (forceError) {
+                  if (forceError.toString().includes('NotFound') || forceError.toString().includes('not found')) {
+                    logInfo(`✓ PVC ${pvcName} already deleted (not found)`);
+                  } else {
+                    logWarn(`Failed to force delete PVC ${pvcName}: ${forceError}`);
+                  }
+                }
+              } else if (deleteError.toString().includes('NotFound') || deleteError.toString().includes('not found')) {
+                logInfo(`✓ PVC ${pvcName} already deleted (not found)`);
+              } else {
+                throw deleteError;
+              }
+            }
           } catch (pvcError) {
-            logWarn(`Failed to force delete PVC ${pvcName}: ${pvcError}`);
+            // NotFound errors mean the PVC is already deleted - that's success!
+            if (pvcError.toString().includes('NotFound') || pvcError.toString().includes('not found')) {
+              logInfo(`✓ PVC ${pvcName} already deleted (not found)`);
+            } else {
+              logWarn(`Failed to delete PVC ${pvcName}: ${pvcError}`);
+            }
           }
         }
         logSuccess('PVCs force deleted successfully');
@@ -2688,8 +2938,8 @@ async function main() {
       logSuccess('Volume expansion completed.');
     } else {
       await uninstall(parsed.namespace, parsed.name);
-      // Optionally uninstall LitmusChaos (commented out to preserve for other uses)
-      // await uninstallLitmusChaos();
+      // Uninstall LitmusChaos as well
+      await uninstallLitmusChaos();
       logSuccess('Uninstall completed.');
     }
   } catch (err) {

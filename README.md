@@ -664,16 +664,22 @@ kubectl describe chaosengine pxc-pod-delete -n percona
 
 **4. Access LitmusChaos UI:**
 ```bash
-kubectl port-forward -n litmus svc/litmus-portal-frontend 8080:9091
+# Port-forward the frontend service
+kubectl port-forward -n litmus svc/chaos-litmus-frontend-service 8080:9091
 # Open http://localhost:8080 in your browser
+# Default credentials: Username: admin, Password: litmus
 ```
 
 #### Running Continuous Chaos (Daemon Mode)
 
 To run chaos experiments continuously and randomly:
 
-**1. Install LitmusChaos manually (if not already installed):**
+**1. Ensure LitmusChaos is installed:**
 ```bash
+# Check if LitmusChaos is installed
+kubectl get pods -n litmus
+
+# If not installed, install it:
 ./install-litmus.sh
 ```
 
@@ -739,13 +745,55 @@ kubectl delete chaosengine pxc-pod-delete -n percona
 
 # Stop all chaos experiments
 kubectl delete chaosengines --all -n percona
+```
 
-# Uninstall LitmusChaos completely
-npm run percona -- uninstall --namespace percona --name pxc-cluster
-# Or manually:
-helm uninstall litmus -n litmus
+#### Installing and Uninstalling LitmusChaos
+
+LitmusChaos is automatically installed when you run `npm run percona -- install`. However, you can also install, uninstall, and reinstall it manually:
+
+**Install LitmusChaos:**
+```bash
+# Option 1: Use the installation script
+./install-litmus.sh
+
+# Option 2: Manual installation (exact command from official docs)
+helm repo add litmuschaos https://litmuschaos.github.io/litmus-helm/
+kubectl create ns litmus
+helm install chaos litmuschaos/litmus --namespace=litmus --set portal.frontend.service.type=NodePort
+```
+
+**Verify Installation:**
+```bash
+# Check that all pods are running
+kubectl get pods -n litmus
+
+# Expected output should show all pods in Running state:
+# chaos-litmus-auth-server-*
+# chaos-litmus-frontend-*
+# chaos-litmus-server-*
+# chaos-mongodb-*
+```
+
+**Uninstall LitmusChaos:**
+```bash
+# Uninstall the Helm release (release name is "chaos")
+helm uninstall chaos -n litmus
+
+# Delete the namespace (this removes all resources including CRDs)
 kubectl delete namespace litmus
 ```
+
+**Reinstall LitmusChaos:**
+```bash
+# Simply run the install command again
+./install-litmus.sh
+
+# Or manually:
+kubectl create ns litmus
+helm install chaos litmuschaos/litmus --namespace=litmus --set portal.frontend.service.type=NodePort
+```
+
+**Note:** If you uninstall Percona using `npm run percona -- uninstall`, LitmusChaos will also be automatically uninstalled along with it.
 
 #### Chaos Engineering Best Practices
 
@@ -855,5 +903,6 @@ This project uses **LitmusChaos** for chaos engineering. Below is a comparison w
 - EKS control plane incurs ~$0.10/hr while the cluster exists; delete when done.
 - Check for orphaned LoadBalancers and EBS volumes after uninstall/delete.
 - CloudFormation template uses On-Demand instances by default (set `UseSpotInstances=true` for Spot, not recommended for databases).
+
 
 

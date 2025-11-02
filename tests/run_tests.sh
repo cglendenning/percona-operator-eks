@@ -43,6 +43,9 @@ show_usage() {
     echo -e "  ${GREEN}--run-resiliency-tests${NC}"
     echo "      [Legacy flag] Explicitly run resiliency tests (now included by default)"
     echo ""
+    echo -e "  ${GREEN}--verbose, -v${NC}"
+    echo "      Show verbose output including setup, Python version, configuration, etc."
+    echo ""
     echo -e "${BLUE}Examples:${NC}"
     echo "  # Run all tests (unit, integration, resiliency with chaos)"
     echo "  $0"
@@ -71,23 +74,37 @@ show_usage() {
     echo ""
 }
 
-# Check for help flag immediately (before any setup work)
+# Parse arguments for help and verbose flags (before any setup work)
+VERBOSE=false
 for arg in "$@"; do
     case $arg in
         -h|--help)
             show_usage
             exit 0
             ;;
+        --verbose|-v)
+            VERBOSE=true
+            ;;
     esac
 done
 
-echo -e "${BLUE}========================================${NC}"
-echo -e "${BLUE}Percona XtraDB Cluster Test Suite${NC}"
-echo -e "${BLUE}========================================${NC}"
-echo ""
+# Verbose output function
+verbose_echo() {
+    if [ "$VERBOSE" = "true" ]; then
+        echo "$@"
+    fi
+}
 
-# Check prerequisites
-echo -e "${BLUE}Checking prerequisites...${NC}"
+# Always show header, but minimal
+if [ "$VERBOSE" = "true" ]; then
+    echo -e "${BLUE}========================================${NC}"
+    echo -e "${BLUE}Percona XtraDB Cluster Test Suite${NC}"
+    echo -e "${BLUE}========================================${NC}"
+    echo ""
+fi
+
+# Check prerequisites (always check, but only show output if verbose)
+verbose_echo -e "${BLUE}Checking prerequisites...${NC}"
 
 command -v python3 >/dev/null 2>&1 || { echo -e "${RED}✗ python3 not found${NC}" >&2; exit 1; }
 command -v kubectl >/dev/null 2>&1 || { echo -e "${RED}✗ kubectl not found${NC}" >&2; exit 1; }
@@ -100,53 +117,72 @@ if ! kubectl cluster-info >/dev/null 2>&1; then
     exit 1
 fi
 
-echo -e "${GREEN}✓ Prerequisites met${NC}"
-echo ""
+verbose_echo -e "${GREEN}✓ Prerequisites met${NC}"
+verbose_echo ""
 
 # Install/update Python dependencies
-echo -e "${BLUE}Installing Python dependencies...${NC}"
+verbose_echo -e "${BLUE}Installing Python dependencies...${NC}"
 
-# Prefer Python 3.12+ for OpenSSL 3.x support (required for urllib3 2.5.0+)
+# Find and use the LATEST Python version available
 PYTHON_CMD="python3"
-if command -v python3.12 >/dev/null 2>&1; then
-    PYTHON_CMD="python3.12"
-    echo -e "${BLUE}Using Python 3.12 for OpenSSL 3.x support${NC}"
-elif command -v python3.11 >/dev/null 2>&1; then
-    PYTHON_CMD="python3.11"
-    echo -e "${BLUE}Using Python 3.11${NC}"
-fi
 
-# Check if venv exists and was created with the right Python version
-RECREATE_VENV=false
-if [ -d "venv" ]; then
-    if [ -f "venv/bin/python" ]; then
-        VENV_PYTHON_VERSION=$("venv/bin/python" --version 2>&1 | grep -oE "[0-9]+\.[0-9]+" | head -1)
-        TARGET_VERSION=$($PYTHON_CMD --version 2>&1 | grep -oE "[0-9]+\.[0-9]+" | head -1)
-        # Recreate venv if Python version doesn't match or is < 3.11
-        if [ "$VENV_PYTHON_VERSION" != "$TARGET_VERSION" ] || [ "${VENV_PYTHON_VERSION%.*}" -lt 3 ] || [ "${VENV_PYTHON_VERSION#*.}" -lt 11 ]; then
-            echo -e "${YELLOW}⚠ Existing venv uses Python ${VENV_PYTHON_VERSION}, recreating with ${TARGET_VERSION}${NC}"
-            RECREATE_VENV=true
-        fi
-    else
-        RECREATE_VENV=true
+# Check for latest Python versions in order: 3.14, 3.13, 3.12, 3.11
+LATEST_VERSION=""
+LATEST_CMD=""
+
+for version in 3.14 3.13 3.12 3.11; do
+    # Check in PATH first
+    if command -v "python${version}" >/dev/null 2>&1 && "python${version}" --version >/dev/null 2>&1; then
+        LATEST_CMD="python${version}"
+        LATEST_VERSION="$version"
+        break
     fi
+    # Check Homebrew Cellar (common location for macOS)
+    # Look for python3.X in bin directories under Cellar
+    CELLAR_PYTHON=$(find /opt/homebrew/Cellar/python@${version} -path "*/bin/python${version}" -type f 2>/dev/null | sort -V | tail -1)
+    if [ -n "$CELLAR_PYTHON" ] && [ -x "$CELLAR_PYTHON" ] && "$CELLAR_PYTHON" --version >/dev/null 2>&1; then
+        LATEST_CMD="$CELLAR_PYTHON"
+        LATEST_VERSION="$version"
+        break
+    fi
+done
+
+if [ -n "$LATEST_CMD" ]; then
+    PYTHON_CMD="$LATEST_CMD"
+    PYTHON_VERSION=$($PYTHON_CMD --version 2>&1 | grep -oE "[0-9]+\.[0-9]+\.[0-9]+" | head -1)
+    verbose_echo -e "${BLUE}Using latest Python ${PYTHON_VERSION}${NC}"
 else
-    RECREATE_VENV=true
+    # Fallback to default python3
+    PYTHON_VERSION=$(python3 --version 2>&1 | grep -oE "[0-9]+\.[0-9]+\.[0-9]+" | head -1)
+    verbose_echo -e "${YELLOW}Using default python3 (${PYTHON_VERSION}) - consider installing Python 3.12+ for better OpenSSL support${NC}"
 fi
 
-if [ "$RECREATE_VENV" == "true" ]; then
-    if [ -d "venv" ]; then
-        rm -rf venv
-    fi
+# Remove ALL old virtual environments before creating a new one
+verbose_echo -e "${BLUE}Cleaning up old virtual environments...${NC}"
+find . -maxdepth 2 -type d \( -name "venv" -o -name "venv_*" -o -name ".venv*" \) ! -path "./.git/*" -exec rm -rf {} + 2>/dev/null || true
+
+# Always recreate venv with the latest Python version (old venvs were already cleaned up above)
+if [ ! -d "venv" ]; then
+    verbose_echo -e "${BLUE}Creating new virtual environment with ${PYTHON_VERSION}...${NC}"
     $PYTHON_CMD -m venv venv
+else
+    # Double-check the venv is using the correct Python version
+    VENV_PYTHON_VERSION=$("venv/bin/python" --version 2>&1 | grep -oE "[0-9]+\.[0-9]+\.[0-9]+" | head -1)
+    if [ "$VENV_PYTHON_VERSION" != "$PYTHON_VERSION" ]; then
+        verbose_echo -e "${YELLOW}⚠ Existing venv uses Python ${VENV_PYTHON_VERSION}, recreating with ${PYTHON_VERSION}${NC}"
+        rm -rf venv
+        $PYTHON_CMD -m venv venv
+    else
+        verbose_echo -e "${GREEN}✓ Virtual environment already exists with Python ${PYTHON_VERSION}${NC}"
+    fi
 fi
 
 source venv/bin/activate
 pip install --upgrade pip >/dev/null 2>&1
 pip install -q -r tests/requirements.txt
 
-echo -e "${GREEN}✓ Dependencies installed${NC}"
-echo ""
+verbose_echo -e "${GREEN}✓ Dependencies installed${NC}"
+verbose_echo ""
 
 # Set default environment variables if not set
 export TEST_NAMESPACE=${TEST_NAMESPACE:-percona}
@@ -164,33 +200,34 @@ if [ -z "${TEST_EXPECTED_NODES:-}" ]; then
         PXC_STS=$(kubectl get statefulset "$PXC_STS_NAME" -n "$TEST_NAMESPACE" -o jsonpath='{.spec.replicas}' 2>/dev/null)
         if [ -n "$PXC_STS" ] && [ "$PXC_STS" != "null" ] && [ "$PXC_STS" -gt 0 ] 2>/dev/null; then
             export TEST_EXPECTED_NODES=$PXC_STS
-            echo -e "${BLUE}Auto-detected node count: ${GREEN}$TEST_EXPECTED_NODES${NC} (from PXC StatefulSet: $PXC_STS_NAME)"
         fi
     fi
     
     # If auto-detection failed, use default
     if [ -z "${TEST_EXPECTED_NODES:-}" ]; then
         export TEST_EXPECTED_NODES=6
-        echo -e "${YELLOW}⚠ Could not auto-detect node count, using default: 6${NC}"
-        echo -e "${YELLOW}   Set TEST_EXPECTED_NODES environment variable to override${NC}"
+        verbose_echo -e "${BLUE}Auto-detected node count: ${YELLOW}6${NC} (default - could not detect)"
     fi
+else
+    # Show detected node count even if not verbose
+    verbose_echo -e "${BLUE}Auto-detected node count: ${GREEN}$TEST_EXPECTED_NODES${NC} (from PXC StatefulSet: $PXC_STS_NAME)"
 fi
 
-echo -e "${BLUE}Test Configuration:${NC}"
-echo "  Namespace: $TEST_NAMESPACE"
-echo "  Cluster Name: $TEST_CLUSTER_NAME"
-echo "  Expected Nodes: $TEST_EXPECTED_NODES"
-echo "  Backup Type: $TEST_BACKUP_TYPE"
+verbose_echo -e "${BLUE}Test Configuration:${NC}"
+verbose_echo "  Namespace: $TEST_NAMESPACE"
+verbose_echo "  Cluster Name: $TEST_CLUSTER_NAME"
+verbose_echo "  Expected Nodes: $TEST_EXPECTED_NODES"
+verbose_echo "  Backup Type: $TEST_BACKUP_TYPE"
 if [ -n "$TEST_BACKUP_BUCKET" ]; then
-    echo "  Backup Bucket: $TEST_BACKUP_BUCKET"
+    verbose_echo "  Backup Bucket: $TEST_BACKUP_BUCKET"
 fi
-echo ""
+verbose_echo ""
 
 # Check if namespace exists
 if ! kubectl get namespace "$TEST_NAMESPACE" >/dev/null 2>&1; then
-    echo -e "${YELLOW}⚠ Warning: Namespace '$TEST_NAMESPACE' does not exist${NC}"
-    echo "Some tests may fail. Create the namespace and deploy Percona cluster first."
-    echo ""
+    verbose_echo -e "${YELLOW}⚠ Warning: Namespace '$TEST_NAMESPACE' does not exist${NC}"
+    verbose_echo "Some tests may fail. Create the namespace and deploy Percona cluster first."
+    verbose_echo ""
 fi
 
 # Parse command-line arguments
@@ -228,6 +265,9 @@ for arg in "$@"; do
             EXPLICIT_FLAGS=true
             shift
             ;;
+        --verbose|-v)
+            VERBOSE=true
+            ;;
         *)
             # Unknown option - pass through to pytest if needed
             ;;
@@ -235,13 +275,26 @@ for arg in "$@"; do
 done
 
 # Initialize pytest options
-PYTEST_OPTS=(
-    "-v"
-    "-s"  # Disable output capturing so console.print works immediately
-    "--tb=short"
-    "--color=yes"
-    "tests/"
-)
+# Default: minimal output (just test names and PASS/FAIL)
+# Verbose: detailed output with traces
+if [ "$VERBOSE" = "true" ]; then
+    PYTEST_OPTS=(
+        "-v"
+        "-s"  # Disable output capturing so console.print works immediately
+        "--tb=short"
+        "--color=yes"
+        "tests/"
+    )
+else
+    # Minimal output: show test names with PASS/FAIL status
+    PYTEST_OPTS=(
+        "-v"  # Verbose: show test names (but we'll suppress other verbose output)
+        "--tb=line"  # Minimal traceback (one line) for failures only
+        "--color=yes"
+        "-rN"  # No extra summary details for passed tests
+        "tests/"
+    )
+fi
 
 # Default behavior: Run ALL tests (unit, integration, and resiliency)
 # Only disable resiliency if explicitly excluded
@@ -276,31 +329,33 @@ if [ -n "$MARKER_EXPR" ]; then
     PYTEST_OPTS+=("-m" "$MARKER_EXPR")
 fi
 
-# Run tests
-echo -e "${BLUE}Running tests...${NC}"
+# Run tests (only show category info if verbose)
+verbose_echo -e "${BLUE}Running tests...${NC}"
 
-# Display test categories being run
-if [ "$EXPLICIT_FLAGS" == "true" ]; then
-    echo -e "${BLUE}Test categories:${NC}"
-    if [ "$NO_UNIT" == "false" ]; then
-        echo -e "  ${GREEN}✓${NC} Unit tests"
+# Display test categories being run (only if verbose)
+if [ "$VERBOSE" = "true" ]; then
+    if [ "$EXPLICIT_FLAGS" == "true" ]; then
+        echo -e "${BLUE}Test categories:${NC}"
+        if [ "$NO_UNIT" == "false" ]; then
+            echo -e "  ${GREEN}✓${NC} Unit tests"
+        else
+            echo -e "  ${YELLOW}⊘${NC} Unit tests (excluded)"
+        fi
+        if [ "$NO_INTEGRATION" == "false" ]; then
+            echo -e "  ${GREEN}✓${NC} Integration tests"
+        else
+            echo -e "  ${YELLOW}⊘${NC} Integration tests (excluded)"
+        fi
+        if [ "$NO_RESILIENCY" == "false" ]; then
+            echo -e "  ${GREEN}✓${NC} Resiliency tests (with chaos)"
+        else
+            echo -e "  ${YELLOW}⊘${NC} Resiliency tests (excluded)"
+        fi
     else
-        echo -e "  ${YELLOW}⊘${NC} Unit tests (excluded)"
+        echo -e "${BLUE}Running all test categories (unit, integration, resiliency with chaos)${NC}"
     fi
-    if [ "$NO_INTEGRATION" == "false" ]; then
-        echo -e "  ${GREEN}✓${NC} Integration tests"
-    else
-        echo -e "  ${YELLOW}⊘${NC} Integration tests (excluded)"
-    fi
-    if [ "$NO_RESILIENCY" == "false" ]; then
-        echo -e "  ${GREEN}✓${NC} Resiliency tests (with chaos)"
-    else
-        echo -e "  ${YELLOW}⊘${NC} Resiliency tests (excluded)"
-    fi
-else
-    echo -e "${BLUE}Running all test categories (unit, integration, resiliency with chaos)${NC}"
+    echo ""
 fi
-echo ""
 
 # Add warning display if requested
 if [ "$SHOW_WARNINGS" == "true" ]; then
@@ -321,15 +376,30 @@ fi
 
 # Run pytest and capture output
 set +e
-if [ "$SHOW_WARNINGS" == "true" ]; then
-    # Show warnings directly
+
+# In non-verbose mode, show only test names and PASS/FAIL
+if [ "$VERBOSE" != "true" ] && [ "$SHOW_WARNINGS" != "true" ]; then
+    # Run pytest and capture output to temp file (don't display it)
+    TEMP_OUTPUT=$(mktemp)
+    pytest "${PYTEST_OPTS[@]}" > "$TEMP_OUTPUT" 2>&1
+    TEST_RESULT=$?
+    
+    # Display only test names and PASSED/FAILED status
+    grep -E "^tests/.*::.*(PASSED|FAILED|ERROR)" "$TEMP_OUTPUT" | \
+        sed -E 's/Note:.*PASSED/PASSED/' | \
+        sed -E 's/Helm chart rendered:.*PASSED/PASSED/' | \
+        sed 's/[[:space:]]*$//' || true
+    
+    rm -f "$TEMP_OUTPUT"
+else
+    # Verbose mode: show everything
     pytest "${PYTEST_OPTS[@]}"
     TEST_RESULT=$?
+fi
+
+if [ "$SHOW_WARNINGS" == "true" ]; then
     WARNING_COUNT=0
 else
-    # Run tests with warnings suppressed
-    pytest "${PYTEST_OPTS[@]}"
-    TEST_RESULT=$?
     
     # Count warnings by running again with warnings enabled (quietly, just to get count)
     # Replace -W ignore with -W default in the options
