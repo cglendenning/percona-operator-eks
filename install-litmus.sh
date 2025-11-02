@@ -62,13 +62,59 @@ install_litmus() {
         kubectl create namespace "${LITMUS_NAMESPACE}"
     fi
     
-    # Add LitmusChaos Helm repo
+    # Add LitmusChaos Helm repo first
     log_info "Adding LitmusChaos Helm repository..."
-    helm repo add litmuschaos https://litmuschaos.github.io/litmus-helm/
+    helm repo add litmuschaos https://litmuschaos.github.io/litmus-helm/ 2>/dev/null || true
     helm repo update
     
-    # Install LitmusChaos
-    log_info "Installing LitmusChaos (this may take a few minutes)..."
+    # Install LitmusChaos CRDs first (required for chaos experiments)
+    log_info "Installing LitmusChaos CRDs..."
+    if kubectl get crd chaosengines.litmuschaos.io &> /dev/null; then
+        log_info "✓ LitmusChaos CRDs already installed"
+    else
+        log_info "Downloading chart and extracting CRDs..."
+        # Create temporary directory for chart
+        TEMP_DIR=$(mktemp -d)
+        trap "rm -rf ${TEMP_DIR}" EXIT
+        
+        # Pull the chart
+        helm pull litmuschaos/litmus --version="${LITMUS_VERSION}" --untar --untardir="${TEMP_DIR}"
+        
+        # Apply CRDs from the chart's crds/ directory
+        if [ -d "${TEMP_DIR}/litmus/crds" ]; then
+            log_info "Applying CRDs from chart..."
+            kubectl apply -f "${TEMP_DIR}/litmus/crds/" || {
+                log_error "Failed to apply CRDs from chart."
+                log_error "Please check that the chart was downloaded correctly."
+                exit 1
+            }
+        elif [ -f "${TEMP_DIR}/litmus/crds.yaml" ]; then
+            log_info "Applying CRDs from single file..."
+            kubectl apply -f "${TEMP_DIR}/litmus/crds.yaml" || {
+                log_error "Failed to apply CRDs file."
+                exit 1
+            }
+        else
+            log_error "Could not find CRDs in chart. Chart structure may have changed."
+            log_error "Please check the LitmusChaos documentation for manual CRD installation."
+            exit 1
+        fi
+        
+        # Clean up temp directory
+        rm -rf "${TEMP_DIR}"
+        
+        log_info "Waiting for CRDs to be established..."
+        kubectl wait --for=condition=Established --timeout=60s \
+            crd/chaosengines.litmuschaos.io \
+            crd/chaosexperiments.litmuschaos.io \
+            crd/chaosresults.litmuschaos.io 2>/dev/null || {
+            log_warn "Some CRDs may still be installing, continuing..."
+        }
+        log_info "✓ LitmusChaos CRDs installed"
+    fi
+    
+    # Install LitmusChaos Portal via Helm
+    log_info "Installing LitmusChaos Portal (this may take a few minutes)..."
     helm upgrade --install litmus litmuschaos/litmus \
         --namespace="${LITMUS_NAMESPACE}" \
         --version="${LITMUS_VERSION}" \
@@ -107,8 +153,21 @@ verify_installation() {
     # Check if CRDs are installed
     if kubectl get crd chaosengines.litmuschaos.io &> /dev/null; then
         log_info "✓ LitmusChaos CRDs are installed"
+        log_info "  - chaosengines.litmuschaos.io"
+        
+        if kubectl get crd chaosexperiments.litmuschaos.io &> /dev/null; then
+            log_info "  - chaosexperiments.litmuschaos.io"
+        fi
+        
+        if kubectl get crd chaosresults.litmuschaos.io &> /dev/null; then
+            log_info "  - chaosresults.litmuschaos.io"
+        fi
     else
-        log_warn "LitmusChaos CRDs may still be installing..."
+        log_error "✗ LitmusChaos CRDs are NOT installed!"
+        log_error "Chaos experiments will not work without CRDs."
+        log_error "Please install CRDs manually:"
+        log_error "  kubectl apply -f https://raw.githubusercontent.com/litmuschaos/litmus/master/litmus-portal/litmus-portal-crds.yaml"
+        return 1
     fi
 }
 

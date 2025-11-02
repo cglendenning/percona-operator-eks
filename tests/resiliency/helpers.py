@@ -47,7 +47,8 @@ def poll_until_condition(
     
     while elapsed < timeout_seconds:
         poll_count += 1
-        console.print(f"[dim]Poll #{poll_count} at {elapsed:.0f}s: Checking {description}...[/dim]")
+        if poll_count % 4 == 0 or poll_count == 1:  # Print every 4th poll or first poll
+            console.print(f"[dim]Poll #{poll_count} at {elapsed:.0f}s: Checking {description}...[/dim]")
         
         try:
             if condition_func():

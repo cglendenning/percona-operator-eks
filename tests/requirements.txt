@@ -4,6 +4,9 @@ pytest-xdist>=3.3.0
 kubernetes>=28.1.0
 pyyaml>=6.0.1
 requests>=2.31.0
+urllib3>=2.5.0  # Latest secure version (fixes CVE-2025-50181). Requires Python 3.11+ compiled with OpenSSL 1.1.1+
+                 # Note: kubernetes package declares <2.4.0 but works with 2.5.0+ in practice.
+                 # The test runner script will use Python 3.12+ if available for OpenSSL 3.x support.
 colorama>=0.4.6
 rich>=13.5.0
 

@@ -1770,16 +1770,22 @@ async function installLitmusChaos() {
   const { execa } = await import('execa');
   
   try {
-    // Check if LitmusChaos is already installed
+    // Check if LitmusChaos is already installed and CRDs exist
     try {
       await execa('kubectl', ['get', 'namespace', 'litmus'], { stdio: 'pipe' });
       logInfo('LitmusChaos namespace already exists, checking installation...');
       
-      const helmCheck = await execa('helm', ['list', '-n', 'litmus', '--output', 'json'], { stdio: 'pipe' });
-      const releases = JSON.parse(helmCheck.stdout);
-      if (releases && releases.length > 0 && releases.some((r: any) => r.name === 'litmus')) {
-        logSuccess('✓ LitmusChaos is already installed');
-        return;
+      // Check if CRDs are installed
+      try {
+        await execa('kubectl', ['get', 'crd', 'chaosengines.litmuschaos.io'], { stdio: 'pipe' });
+        const helmCheck = await execa('helm', ['list', '-n', 'litmus', '--output', 'json'], { stdio: 'pipe' });
+        const releases = JSON.parse(helmCheck.stdout);
+        if (releases && releases.length > 0 && releases.some((r: any) => r.name === 'litmus')) {
+          logSuccess('✓ LitmusChaos is already installed with CRDs');
+          return;
+        }
+      } catch (crdError) {
+        logInfo('LitmusChaos CRDs not found, will install them...');
       }
     } catch (error) {
       // Namespace doesn't exist, proceed with installation
@@ -1791,16 +1797,87 @@ async function installLitmusChaos() {
     await run('kubectl', ['create', 'namespace', 'litmus'], { stdio: 'pipe' })
       .catch(() => {}); // Ignore if already exists
     
-    // Add Helm repo
+    // Add Helm repo first
     logInfo('Adding LitmusChaos Helm repository...');
     await run('helm', ['repo', 'add', 'litmuschaos', 'https://litmuschaos.github.io/litmus-helm/'], { stdio: 'pipe' })
       .catch(() => {}); // Ignore if already exists
     await run('helm', ['repo', 'update'], { stdio: 'pipe' });
     
-    // Install LitmusChaos
-    logInfo('Installing LitmusChaos (this may take a few minutes)...');
+    // Install LitmusChaos CRDs first (required for chaos experiments)
+    logInfo('Installing LitmusChaos CRDs...');
+    try {
+      // Check if CRDs already exist
+      try {
+        await execa('kubectl', ['get', 'crd', 'chaosengines.litmuschaos.io'], { stdio: 'pipe' });
+        logInfo('✓ LitmusChaos CRDs already installed');
+      } catch {
+        // CRDs don't exist, download chart and extract CRDs
+        logInfo('Downloading chart and extracting CRDs...');
+        const fs = await import('fs');
+        const path = await import('path');
+        const os = await import('os');
+        
+        const tempDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'litmus-crds-'));
+        
+        try {
+          // Pull the chart
+          await run('helm', [
+            'pull', 'litmuschaos/litmus',
+            '--version', '3.1.0',
+            '--untar',
+            '--untardir', tempDir
+          ], { stdio: 'pipe' });
+          
+          // Find and apply CRDs
+          const crdsDir = path.join(tempDir, 'litmus', 'crds');
+          const crdsFile = path.join(tempDir, 'litmus', 'crds.yaml');
+          
+          try {
+            const stats = await fs.promises.stat(crdsDir);
+            if (stats.isDirectory()) {
+              logInfo('Applying CRDs from crds/ directory...');
+              await run('kubectl', ['apply', '-f', crdsDir], { stdio: 'inherit' });
+            }
+          } catch {
+            try {
+              const stats = await fs.promises.stat(crdsFile);
+              if (stats.isFile()) {
+                logInfo('Applying CRDs from crds.yaml file...');
+                await run('kubectl', ['apply', '-f', crdsFile], { stdio: 'inherit' });
+              } else {
+                logWarn('Could not find CRDs in chart directory structure');
+                logWarn('Chart may not include CRDs or structure has changed');
+              }
+            } catch {
+              logWarn('Could not find CRDs in chart directory structure');
+              logWarn('Chart may not include CRDs or structure has changed');
+            }
+          }
+          
+          // Wait for CRDs to be established
+          logInfo('Waiting for CRDs to be ready...');
+          await run('kubectl', ['wait', '--for=condition=Established', '--timeout=60s', 
+            'crd/chaosengines.litmuschaos.io', 'crd/chaosexperiments.litmuschaos.io', 
+            'crd/chaosresults.litmuschaos.io'], { stdio: 'pipe' })
+            .catch(() => {
+              logInfo('Some CRDs may still be installing, continuing...');
+            });
+          
+          logInfo('✓ LitmusChaos CRDs installed');
+        } finally {
+          // Clean up temp directory
+          await fs.promises.rm(tempDir, { recursive: true, force: true }).catch(() => {});
+        }
+      }
+    } catch (crdError) {
+      logWarn(`CRD installation had issues, but continuing: ${crdError}`);
+    }
+    
+    // Install LitmusChaos Portal via Helm
+    logInfo('Installing LitmusChaos Portal (this may take a few minutes)...');
     await run('helm', [
       'upgrade', '--install', 'litmus', 'litmuschaos/litmus',
+      '--version', '3.1.0',
       '--namespace', 'litmus',
       '--set', 'adminConfig.DBUSER=admin',
       '--set', 'adminConfig.DBPASSWORD=litmus',
@@ -1808,6 +1885,17 @@ async function installLitmusChaos() {
       '--wait',
       '--timeout', '10m'
     ]);
+    
+    // Verify CRDs are installed
+    logInfo('Verifying LitmusChaos CRDs...');
+    try {
+      await execa('kubectl', ['get', 'crd', 'chaosengines.litmuschaos.io'], { stdio: 'pipe' });
+      logSuccess('✓ LitmusChaos CRDs verified');
+    } catch (verifyError) {
+      logWarn('⚠ CRDs may still be installing. If chaos experiments fail, ensure CRDs are installed.');
+      logWarn('   You can manually install CRDs with:');
+      logWarn('   kubectl apply -f https://raw.githubusercontent.com/litmuschaos/litmus/master/litmus-portal/litmus-portal-crds.yaml');
+    }
     
     logSuccess('✓ LitmusChaos installed successfully');
   } catch (error) {
