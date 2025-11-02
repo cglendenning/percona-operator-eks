@@ -88,6 +88,13 @@ aws cloudformation delete-stack --stack-name percona-eks-cluster --region us-eas
 aws cloudformation wait stack-delete-complete --stack-name percona-eks-cluster --region us-east-1
 ```
 
+**Verify the stack is completely deleted:**
+```bash
+aws cloudformation describe-stacks --stack-name percona-eks-cluster --region us-east-1
+# Expected output: "Stack with id percona-eks-cluster does not exist"
+# OR: An error indicating the stack was not found
+```
+
 This deletes everything (cluster, nodes, network). EBS volumes with data are also deleted.
 
 **Costs while deleted: $0**
