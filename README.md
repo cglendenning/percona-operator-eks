@@ -104,7 +104,7 @@ Total recreation time: ~25-35 minutes
 
 ### Backup Configuration
 
-By default, the Percona installation uses **MinIO** for backups to replicate on-premises environments where external access (like AWS S3) is restricted. The installation script automatically:
+By default, the Percona installation uses **MinIO** for backups to replicate on-premises environments where external access (like AWS S3) is restricted. The `npm run percona -- install ...` installation script automatically:
 - Installs MinIO using Helm in the `minio` namespace
 - Creates a `percona-backups` bucket in MinIO
 - Sets up credentials and Kubernetes secrets for backup access
