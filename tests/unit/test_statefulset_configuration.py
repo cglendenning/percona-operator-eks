@@ -8,31 +8,12 @@ import pytest
 import subprocess
 
 
-def _ensure_internal_repo():
-    """Ensure internal ChartMuseum repo is available."""
-    chartmuseum_url = os.getenv('CHARTMUSEUM_URL', 'http://chartmuseum.chartmuseum.svc.cluster.local')
-    
-    repo_list = subprocess.run(
-        ['helm', 'repo', 'list'],
-        capture_output=True,
-        text=True
-    )
-    if 'internal' not in repo_list.stdout:
-        subprocess.run(
-            ['helm', 'repo', 'add', 'internal', chartmuseum_url],
-            capture_output=True,
-            text=True
-        )
-        subprocess.run(['helm', 'repo', 'update'], capture_output=True, text=True)
-
-
 @pytest.mark.unit
-def test_statefulset_uses_ordered_ready_pod_management():
+def test_statefulset_uses_ordered_ready_pod_management(chartmuseum_port_forward):
     """Test that StatefulSets use OrderedReady pod management policy (default and recommended)."""
     # This would be tested via Helm template rendering
     # OrderedReady ensures pods start/stop in order, which is important for PXC quorum
-    
-    _ensure_internal_repo()
+    # chartmuseum_port_forward fixture handles repo setup
     
     result = subprocess.run(
         ['helm', 'template', 'test', 'internal/pxc-db', '--namespace', 'test'],
@@ -45,25 +26,24 @@ def test_statefulset_uses_ordered_ready_pod_management():
         pytest.skip(f"Local ChartMuseum chart not available: {result.stderr}")
     
     manifests = []
-        for doc in yaml.safe_load_all(result.stdout):
-            if doc and doc.get('kind') == 'StatefulSet':
-                manifests.append(doc)
-        
-        if manifests:
-            for sts in manifests:
-                pod_management_policy = sts.get('spec', {}).get('podManagementPolicy', 'OrderedReady')
-                # OrderedReady is the default and recommended for PXC
-                # Parallel is also acceptable but OrderedReady is safer for quorum
-                assert pod_management_policy in ['OrderedReady', 'Parallel'], \
-                    f"Pod management policy should be OrderedReady or Parallel, not {pod_management_policy}"
+    for doc in yaml.safe_load_all(result.stdout):
+        if doc and doc.get('kind') == 'StatefulSet':
+            manifests.append(doc)
+    
+    if manifests:
+        for sts in manifests:
+            pod_management_policy = sts.get('spec', {}).get('podManagementPolicy', 'OrderedReady')
+            # OrderedReady is the default and recommended for PXC
+            # Parallel is also acceptable but OrderedReady is safer for quorum
+            assert pod_management_policy in ['OrderedReady', 'Parallel'], \
+                f"Pod management policy should be OrderedReady or Parallel, not {pod_management_policy}"
 
 
 @pytest.mark.unit
-def test_statefulset_uses_ondelete_update_strategy():
+def test_statefulset_uses_ondelete_update_strategy(chartmuseum_port_forward):
     """Test that StatefulSets use OnDelete update strategy for PXC (recommended)."""
     # PXC StatefulSets should use OnDelete strategy to ensure proper quorum during updates
-    
-    _ensure_internal_repo()
+    # chartmuseum_port_forward fixture handles repo setup
     
     result = subprocess.run(
         ['helm', 'template', 'test', 'internal/pxc-db', '--namespace', 'test'],
@@ -76,22 +56,22 @@ def test_statefulset_uses_ondelete_update_strategy():
         pytest.skip(f"Local ChartMuseum chart not available: {result.stderr}")
     
     manifests = []
-        for doc in yaml.safe_load_all(result.stdout):
-            if doc and doc.get('kind') == 'StatefulSet':
-                # Check if it's a PXC StatefulSet
-                labels = doc.get('metadata', {}).get('labels', {})
-                if labels.get('app.kubernetes.io/component') == 'pxc':
-                    update_strategy = doc.get('spec', {}).get('updateStrategy', {}).get('type', 'RollingUpdate')
-                    # OnDelete is recommended for PXC to maintain quorum
-                    # RollingUpdate is also acceptable but requires careful coordination
-                    assert update_strategy in ['OnDelete', 'RollingUpdate'], \
-                        f"PXC update strategy should be OnDelete or RollingUpdate, not {update_strategy}"
+    for doc in yaml.safe_load_all(result.stdout):
+        if doc and doc.get('kind') == 'StatefulSet':
+            # Check if it's a PXC StatefulSet
+            labels = doc.get('metadata', {}).get('labels', {})
+            if labels.get('app.kubernetes.io/component') == 'pxc':
+                update_strategy = doc.get('spec', {}).get('updateStrategy', {}).get('type', 'RollingUpdate')
+                # OnDelete is recommended for PXC to maintain quorum
+                # RollingUpdate is also acceptable but requires careful coordination
+                assert update_strategy in ['OnDelete', 'RollingUpdate'], \
+                    f"PXC update strategy should be OnDelete or RollingUpdate, not {update_strategy}"
 
 
 @pytest.mark.unit
-def test_statefulset_volume_claim_templates():
+def test_statefulset_volume_claim_templates(chartmuseum_port_forward):
     """Test that StatefulSets use volume claim templates (required for persistence)."""
-    _ensure_internal_repo()
+    # chartmuseum_port_forward fixture handles repo setup
     
     result = subprocess.run(
         ['helm', 'template', 'test', 'internal/pxc-db', '--namespace', 'test'],
@@ -104,21 +84,21 @@ def test_statefulset_volume_claim_templates():
         pytest.skip(f"Local ChartMuseum chart not available: {result.stderr}")
     
     manifests = []
-        for doc in yaml.safe_load_all(result.stdout):
-            if doc and doc.get('kind') == 'StatefulSet':
-                volume_claim_templates = doc.get('spec', {}).get('volumeClaimTemplates', [])
-                
-                # PXC StatefulSet should have volume claim templates
-                labels = doc.get('metadata', {}).get('labels', {})
-                if labels.get('app.kubernetes.io/component') == 'pxc':
-                    assert len(volume_claim_templates) > 0, \
+    for doc in yaml.safe_load_all(result.stdout):
+        if doc and doc.get('kind') == 'StatefulSet':
+            volume_claim_templates = doc.get('spec', {}).get('volumeClaimTemplates', [])
+            
+            # PXC StatefulSet should have volume claim templates
+            labels = doc.get('metadata', {}).get('labels', {})
+            if labels.get('app.kubernetes.io/component') == 'pxc':
+                assert len(volume_claim_templates) > 0, \
                         "PXC StatefulSet must have volume claim templates for data persistence"
 
 
 @pytest.mark.unit
-def test_statefulset_service_name_matches():
+def test_statefulset_service_name_matches(chartmuseum_port_forward):
     """Test that StatefulSet serviceName matches the headless service."""
-    _ensure_internal_repo()
+    # chartmuseum_port_forward fixture handles repo setup
     
     result = subprocess.run(
         ['helm', 'template', 'test', 'internal/pxc-db', '--namespace', 'test'],
@@ -154,8 +134,10 @@ def test_statefulset_service_name_matches():
 
 
 @pytest.mark.unit
-def test_statefulset_replicas_match_cluster_size():
+def test_statefulset_replicas_match_cluster_size(chartmuseum_port_forward):
     """Test that StatefulSet replicas match the configured cluster size."""
+    # chartmuseum_port_forward fixture handles repo setup
+    
     path = os.path.join(os.path.dirname(__file__), '..', '..', 'templates', 'percona-values.yaml')
     
     for node_count in [3, 6]:
@@ -169,8 +151,6 @@ def test_statefulset_replicas_match_cluster_size():
         assert values['proxysql']['size'] == node_count
         
         # Helm should render StatefulSets with matching replicas
-        _ensure_internal_repo()
-        
         result = subprocess.run(
             ['helm', 'template', 'test', 'internal/pxc-db', 
              '--namespace', 'test', '--set', f'pxc.size={node_count}', 

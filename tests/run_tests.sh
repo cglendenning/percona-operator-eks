@@ -476,67 +476,12 @@ if [ "$NO_RESILIENCY" == "false" ]; then
     fi
 fi
 
-# Skip warning counting if verbose (warnings already visible) or if explicitly showing warnings
-if [ "$SHOW_WARNINGS" == "true" ] || [ "$VERBOSE" == "true" ]; then
-    WARNING_COUNT=0
-else
-    # Count warnings by running again with warnings enabled (quietly, just to get count)
-    # Only count warnings if we haven't excluded all categories (which would re-run everything)
-    # Build the same test paths/markers that were actually run
-    WARNING_OPTS=()
-    SKIP_NEXT=false
-    for opt in "${PYTEST_OPTS[@]}"; do
-        if [ "$SKIP_NEXT" == "true" ]; then
-            SKIP_NEXT=false
-            WARNING_OPTS+=("default")
-        elif [ "$opt" == "-W" ]; then
-            SKIP_NEXT=true
-            WARNING_OPTS+=("-W")
-        elif [ "$opt" == "-s" ]; then
-            # Skip -s (output capturing disabled) - causes issues when piping
-            continue
-        else
-            WARNING_OPTS+=("$opt")
-        fi
-    done
-    
-    # Build test paths based on what was actually run
-    WARNING_PATHS=()
-    if [ "$NO_UNIT" == "false" ]; then
-        WARNING_PATHS+=("tests/unit")
-    fi
-    if [ "$NO_INTEGRATION" == "false" ]; then
-        WARNING_PATHS+=("tests/integration")
-    fi
-    if [ "$NO_RESILIENCY" == "false" ]; then
-        if [ "$NO_DR" == "false" ]; then
-            # Both resiliency and DR were run - include entire directory
-            WARNING_PATHS+=("tests/resiliency")
-        else
-            # Only non-DR resiliency was run
-            WARNING_PATHS+=("tests/resiliency")
-        fi
-    elif [ "$NO_DR" == "false" ]; then
-        # Only DR tests were run
-        WARNING_PATHS+=("tests/resiliency")
-    fi
-    
-    # Only count warnings if we have paths to check
-    # Using the same paths that were actually run prevents re-running all tests
-    if [ ${#WARNING_PATHS[@]} -gt 0 ]; then
-        # Run quietly to get warning count from summary (suppress all visible output)
-        # Only run on the same paths that were executed, which prevents hanging
-        WARNING_SUMMARY=$(pytest "${WARNING_OPTS[@]}" -q --tb=no "${WARNING_PATHS[@]}" 2>&1 | grep -oE "[0-9]+ warnings?" | grep -oE "[0-9]+" | head -1 || echo "0") 2>/dev/null
-        if [ -n "$WARNING_SUMMARY" ] && [ "$WARNING_SUMMARY" -gt 0 ] 2>/dev/null; then
-            WARNING_COUNT=$WARNING_SUMMARY
-        else
-            WARNING_COUNT=0
-        fi
-    else
-        # No tests were run, so no warnings to count
-        WARNING_COUNT=0
-    fi
-fi
+echo ""
+echo -e "${BLUE}Completing test run...${NC}"
+
+# Skip warning counting - it can hang with fixtures and isn't critical
+# Warnings are visible if user runs with --show-warnings
+WARNING_COUNT=0
 set -e
 
 echo ""
@@ -548,11 +493,10 @@ else
 fi
 echo -e "${BLUE}========================================${NC}"
 
-# Only show warning message if warnings were actually suppressed
-if [ "$SHOW_WARNINGS" == "false" ] && [ "$WARNING_COUNT" -gt 0 ]; then
+# Show warning message if warnings were suppressed
+if [ "$SHOW_WARNINGS" == "false" ]; then
     echo ""
-    echo -e "${BLUE}$WARNING_COUNT warning(s) were suppressed.${NC}"
-    echo -e "${BLUE}To see them, re-run with: ./tests/run_tests.sh --show-warnings${NC}"
+    echo -e "${BLUE}Python warnings were suppressed. To see them, run with: --show-warnings${NC}"
 fi
 
 if [ "${GENERATE_HTML_REPORT:-}" == "true" ]; then

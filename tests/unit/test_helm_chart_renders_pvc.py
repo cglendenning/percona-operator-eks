@@ -11,26 +11,10 @@ from rich.console import Console
 console = Console()
 
 @pytest.mark.unit
-def test_helm_chart_renders_pvc():
+def test_helm_chart_renders_pvc(chartmuseum_port_forward):
     """Test that Helm chart includes PVC configuration in PerconaXtraDBCluster spec
     (operator will create PVCs from volumeSpec)"""
-    # Try to ensure internal repo is available (local ChartMuseum)
-    import os
-    chartmuseum_url = os.getenv('CHARTMUSEUM_URL', 'http://chartmuseum.chartmuseum.svc.cluster.local')
-    
-    # Check if internal repo exists, add if not
-    repo_list = subprocess.run(
-        ['helm', 'repo', 'list'],
-        capture_output=True,
-        text=True
-    )
-    if 'internal' not in repo_list.stdout:
-        subprocess.run(
-            ['helm', 'repo', 'add', 'internal', chartmuseum_url],
-            capture_output=True,
-            text=True
-        )
-        subprocess.run(['helm', 'repo', 'update'], capture_output=True, text=True)
+    # chartmuseum_port_forward fixture handles repo setup
     
     result = subprocess.run(
         ['helm', 'template', 'test-chart', 'internal/pxc-db', '--namespace', TEST_NAMESPACE],
