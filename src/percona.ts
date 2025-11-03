@@ -2102,7 +2102,63 @@ async function uninstallLitmusChaos() {
       logSuccess('✓ LitmusChaos namespace deleted');
     } catch (error) {
       logWarn(`Failed to delete LitmusChaos namespace: ${error}`);
-      logWarn('You may need to delete it manually: kubectl delete namespace litmus');
+      
+      // Try to force-clean the namespace
+      try {
+        logInfo('Attempting to force-clean litmus namespace...');
+        
+        // Check namespace status
+        const nsStatusResult = await execa('kubectl', ['get', 'namespace', 'litmus', '-o', 'yaml'], { stdio: 'pipe' });
+        const nsStatus = nsStatusResult.stdout;
+        
+        if (nsStatus.includes('NamespaceContentRemaining') || nsStatus.includes('NamespaceFinalizersRemaining')) {
+          logWarn('Litmus namespace has content or finalizers remaining');
+          
+          // Remove finalizers from common LitmusChaos resources
+          const resourceTypes = ['chaosengines', 'chaosexperiments', 'chaosresults', 'workflows', 'cronworkflows', 'pods', 'statefulsets', 'deployments', 'services'];
+          
+          for (const resourceType of resourceTypes) {
+            try {
+              const resources = await execa('kubectl', ['get', resourceType, '-n', 'litmus', '-o', 'json'], { stdio: 'pipe' });
+              const resourceData = JSON.parse(resources.stdout);
+              
+              if (resourceData.items && resourceData.items.length > 0) {
+                logInfo(`Removing finalizers from ${resourceData.items.length} ${resourceType}...`);
+                for (const resource of resourceData.items) {
+                  try {
+                    await run('kubectl', ['patch', resourceType, resource.metadata.name, '-n', 'litmus', '-p', '{"metadata":{"finalizers":[]}}', '--type=merge'], { stdio: 'pipe' });
+                  } catch (patchError) {
+                    // Ignore - resource might be gone
+                  }
+                }
+              }
+            } catch (getError) {
+              // Ignore - resource type might not exist
+            }
+          }
+          
+          // Remove namespace finalizers
+          await run('kubectl', ['patch', 'namespace', 'litmus', '-p', '{"metadata":{"finalizers":[]}}', '--type=merge'], { stdio: 'pipe' });
+          logInfo('✓ LitmusChaos namespace finalizers removed');
+          
+          // Wait for cleanup
+          await new Promise(resolve => setTimeout(resolve, 3000));
+        }
+        
+        // Try delete again
+        try {
+          await execa('kubectl', ['get', 'namespace', 'litmus'], { stdio: 'pipe' });
+          // Still exists, force delete
+          await run('kubectl', ['delete', 'namespace', 'litmus', '--force', '--grace-period=0'], { stdio: 'pipe' });
+          logSuccess('✓ LitmusChaos namespace force deleted');
+        } catch (checkError) {
+          // Namespace is gone
+          logSuccess('✓ LitmusChaos namespace deleted');
+        }
+      } catch (forceError) {
+        logWarn(`Could not force-clean litmus namespace: ${forceError}`);
+        logWarn('You may need to delete it manually: kubectl delete namespace litmus --force');
+      }
     }
   } catch (error) {
     logWarn(`Error during LitmusChaos uninstall: ${error}`);
@@ -2607,7 +2663,36 @@ async function uninstall(ns: string, name: string) {
       // Check if namespace still exists
       const nsCheck = await execa('kubectl', ['get', 'namespace', ns], { stdio: 'pipe' });
       if (nsCheck.exitCode === 0) {
-        logWarn('Namespace still exists, performing aggressive cleanup...');
+        logWarn('Namespace still exists, checking status...');
+        
+        // Check namespace status to diagnose what's blocking deletion
+        try {
+          const nsStatusResult = await execa('kubectl', ['get', 'namespace', ns, '-o', 'yaml'], { stdio: 'pipe' });
+          const nsStatus = nsStatusResult.stdout;
+          
+          // Parse status to check for finalizers and stuck resources
+          if (nsStatus.includes('NamespaceContentRemaining') || nsStatus.includes('NamespaceFinalizersRemaining')) {
+            logWarn('Namespace has content or finalizers remaining');
+            
+            // Extract specific issues if possible
+            if (nsStatus.match(/Some resources are remaining: ([^\n]+)/)) {
+              const match = nsStatus.match(/Some resources are remaining: ([^\n]+)/);
+              if (match) {
+                logWarn(`  Remaining resources: ${match[1]}`);
+              }
+            }
+            if (nsStatus.match(/Some content in the namespace has finalizers remaining: ([^\n]+)/)) {
+              const match = nsStatus.match(/Some content in the namespace has finalizers remaining: ([^\n]+)/);
+              if (match) {
+                logWarn(`  Finalizers remaining: ${match[1]}`);
+              }
+            }
+          }
+        } catch (statusError) {
+          logWarn(`Could not check namespace status: ${statusError}`);
+        }
+        
+        logWarn('Performing aggressive cleanup...');
         
         // 1. Remove finalizers from all resources in the namespace
         logInfo('Removing finalizers from all resources...');
@@ -2624,25 +2709,56 @@ async function uninstall(ns: string, name: string) {
                 const resourceName = resource.metadata.name;
                 try {
                   await run('kubectl', ['patch', resourceType, resourceName, '-n', ns, '-p', '{"metadata":{"finalizers":[]}}', '--type=merge'], { stdio: 'pipe' });
-                  logInfo(`  Removed finalizers from ${resourceType}/${resourceName}`);
-                } catch (patchError) {
+                  logInfo(`  ✓ Removed finalizers from ${resourceType}/${resourceName}`);
+                } catch (patchError: any) {
                   // Ignore errors - resource might not exist anymore
+                  if (!patchError.toString().includes('NotFound')) {
+                    logWarn(`  Could not patch ${resourceType}/${resourceName}: ${patchError}`);
+                  }
                 }
               }
             }
-          } catch (getError) {
+          } catch (getError: any) {
             // Ignore errors - resource type might not exist
+            if (!getError.toString().includes('NotFound') && !getError.toString().includes('the server doesn\'t have a resource type')) {
+              logWarn(`  Could not list ${resourceType}: ${getError}`);
+            }
           }
         }
         
         // 2. Remove finalizer from namespace itself
         logInfo('Removing namespace finalizers...');
-        await run('kubectl', ['patch', 'namespace', ns, '-p', '{"metadata":{"finalizers":[]}}', '--type=merge'], { stdio: 'pipe' });
+        try {
+          await run('kubectl', ['patch', 'namespace', ns, '-p', '{"metadata":{"finalizers":[]}}', '--type=merge'], { stdio: 'pipe' });
+          logInfo('  ✓ Namespace finalizers removed');
+        } catch (patchError: any) {
+          logWarn(`  Could not remove namespace finalizers: ${patchError}`);
+        }
         
-        // 3. Force delete the namespace
-        logInfo('Force deleting namespace...');
-        await run('kubectl', ['delete', 'namespace', ns, '--force', '--grace-period=0'], { stdio: 'pipe' });
-        logInfo('Force deletion command completed, verifying...');
+        // 3. Wait a moment for Kubernetes to process the changes
+        logInfo('Waiting for Kubernetes to process finalizer removals...');
+        await new Promise(resolve => setTimeout(resolve, 3000));
+        
+        // 4. Try deleting namespace again (might not need force now)
+        try {
+          const nsCheckAfterPatch = await execa('kubectl', ['get', 'namespace', ns], { stdio: 'pipe' });
+          if (nsCheckAfterPatch.exitCode !== 0) {
+            logSuccess('✓ Namespace deleted after finalizer removal');
+            namespaceDeleted = true;
+          } else {
+            // Still exists, try force delete
+            logInfo('Namespace still exists, attempting force delete...');
+            await run('kubectl', ['delete', 'namespace', ns, '--force', '--grace-period=0'], { stdio: 'pipe' });
+            logInfo('Force deletion command completed');
+          }
+        } catch (deleteAfterError: any) {
+          if (deleteAfterError.toString().includes('NotFound')) {
+            logSuccess('✓ Namespace deleted');
+            namespaceDeleted = true;
+          } else {
+            logWarn(`Force delete failed: ${deleteAfterError}`);
+          }
+        }
         
         // Wait a moment for deletion to propagate
         await new Promise(resolve => setTimeout(resolve, 2000));
