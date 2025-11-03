@@ -55,12 +55,12 @@ npm install
 ### EKS cluster deployment
 Deploy EKS cluster with 3 node groups (one per AZ):
 ```bash
-./deploy.sh
+./scripts/deploy.sh
 ```
 
 Or with verbose output:
 ```bash
-./deploy.sh -vv
+./scripts/deploy.sh -vv
 ```
 
 The deployment script:
@@ -76,10 +76,24 @@ Install operator and 3-node cluster in namespace `percona`:
 npm run percona -- install --namespace percona --name pxc-cluster --nodes 3
 ```
 
+This command will automatically:
+- Install and configure ChartMuseum (internal Helm chart repository)
+- Mirror all required charts (Percona, MinIO, LitmusChaos) to ChartMuseum
+- Install MinIO for backup storage
+- Install the Percona operator
+- Install the Percona cluster
+- Install LitmusChaos for chaos engineering
+
 Uninstall and cleanup PVCs:
 ```bash
 npm run percona -- uninstall --namespace percona --name pxc-cluster
 ```
+
+This command will automatically uninstall:
+- Percona cluster and operator
+- MinIO
+- LitmusChaos
+- ChartMuseum
 
 ### Cost-saving: Tear Down EKS When Not in Use
 Delete the entire stack to avoid charges (can be recreated quickly):
@@ -101,7 +115,7 @@ This deletes everything (cluster, nodes, network). EBS volumes with data are als
 
 To recreate the cluster when needed:
 ```bash
-./deploy.sh              # Creates EKS cluster (~15-20 min)
+./scripts/deploy.sh              # Creates EKS cluster (~15-20 min)
 npm run percona -- install  # Installs Percona (~10-15 min)
 ```
 
@@ -254,7 +268,7 @@ export CLUSTER_NAME="percona-eks"
 export AWS_REGION="us-east-1"
 
 # Run the setup script
-./setup-chartmuseum.sh
+./scripts/setup-chartmuseum.sh
 ```
 
 This script will:
@@ -272,7 +286,7 @@ This script will:
 export CHARTMUSEUM_URL="http://chartmuseum.chartmuseum.svc.cluster.local"
 
 # Mirror all charts
-./mirror-charts.sh
+./scripts/mirror-charts.sh
 ```
 
 This will download and upload:
@@ -389,7 +403,7 @@ helm repo update
 # Create namespace
 kubectl create namespace ${NAMESPACE}
 
-# Install ChartMuseum (see setup-chartmuseum.sh for complete setup)
+# Install ChartMuseum (see scripts/setup-chartmuseum.sh for complete setup)
 helm install chartmuseum chartmuseum/chartmuseum \
     --namespace ${NAMESPACE} \
     --set env.open.DISABLE_API=false \
@@ -400,14 +414,14 @@ helm install chartmuseum chartmuseum/chartmuseum \
 
 **Mirror External Charts:**
 
-The `mirror-charts.sh` script handles downloading and uploading all required charts:
+The `scripts/mirror-charts.sh` script handles downloading and uploading all required charts:
 
 ```bash
 # Install helm-push plugin if needed
 helm plugin install https://github.com/chartmuseum/helm-push.git
 
 # Run mirror script
-./mirror-charts.sh
+./scripts/mirror-charts.sh
 ```
 
 #### Configuration
@@ -440,7 +454,7 @@ export CHARTMUSEUM_URL="http://chartmuseum.chartmuseum.svc.cluster.local"
 export SERVICE_TYPE="LoadBalancer"
 
 # Then run setup
-./setup-chartmuseum.sh
+./scripts/setup-chartmuseum.sh
 ```
 
 #### Automation: Keep Charts Updated
@@ -554,18 +568,7 @@ The following external repositories are mirrored to ChartMuseum:
    - Chart: `litmuschaos/litmus`
 
 ### AWS Console Access
-Grant your IAM user/role access to view Kubernetes resources in the AWS Console:
-```bash
-./grant-console-access.sh
-```
-
-This script:
-- Auto-detects your SSO role and node group role ARNs
-- Updates the aws-auth ConfigMap
-- Creates EKS access entries for API-based authentication
-- Associates cluster admin policy
-
-After running, refresh the AWS Console to view nodes, pods, and services.
+To grant your IAM user/role access to view Kubernetes resources in the AWS Console, you can manually update the aws-auth ConfigMap or create EKS access entries. This functionality is not currently automated in a script.
 
 ### Running Tests
 
@@ -1021,6 +1024,8 @@ LitmusChaos can break approximately **65% of the test suite** by simulating vari
 
 #### Running Chaos Experiments
 
+**Note:** ChartMuseum and chart mirroring are automatically installed and configured when you run `npm run percona -- install`.
+
 **1. View available chaos experiments:**
 ```bash
 kubectl get chaosexperiments -n litmus
@@ -1084,8 +1089,8 @@ To run chaos experiments continuously and randomly:
 # Check if LitmusChaos is installed
 kubectl get pods -n litmus
 
-# If not installed, install it:
-./install-litmus.sh
+# If not installed, install it (or it's installed automatically with npm run percona -- install):
+./scripts/install-litmus.sh
 ```
 
 **2. Create a scheduled chaos workflow:**
@@ -1159,12 +1164,14 @@ LitmusChaos is automatically installed when you run `npm run percona -- install`
 **Install LitmusChaos:**
 ```bash
 # Option 1: Use the installation script
-./install-litmus.sh
+./scripts/install-litmus.sh
 
 # Option 2: Manual installation (exact command from official docs)
 helm repo add litmuschaos https://litmuschaos.github.io/litmus-helm/
 kubectl create ns litmus
 helm install chaos litmuschaos/litmus --namespace=litmus --set portal.frontend.service.type=NodePort
+
+# Note: LitmusChaos is automatically installed when you run npm run percona -- install
 ```
 
 **Verify Installation:**
@@ -1191,7 +1198,7 @@ kubectl delete namespace litmus
 **Reinstall LitmusChaos:**
 ```bash
 # Simply run the install command again
-./install-litmus.sh
+./scripts/install-litmus.sh
 
 # Or manually:
 kubectl create ns litmus

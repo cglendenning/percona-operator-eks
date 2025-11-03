@@ -4,7 +4,7 @@ set -e
 # Setup LitmusChaos experiments and RBAC
 # This script installs the necessary components for running chaos experiments
 
-SCRIPT_DIR="${SCRIPT_DIR:-$(dirname "$(realpath "$0")")}"
+SCRIPT_DIR="${SCRIPT_DIR:-$(cd "$(dirname "$0")/.." && pwd)}"
 LITMUS_NAMESPACE="litmus"
 TARGET_NAMESPACE="percona"
 

@@ -360,7 +360,7 @@ print_summary() {
     echo "    helm repo update"
     echo ""
     echo "  To mirror external charts, run:"
-    echo "    ./mirror-charts.sh"
+    echo "    ./scripts/mirror-charts.sh"
     echo ""
     echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 }

@@ -436,14 +436,36 @@ async function ensureNamespace(ns: string) {
 }
 
 async function addRepos(repoUrl: string) {
+  const { execa } = await import('execa');
+  
   try {
     // Always use the internal ChartMuseum repo
-    await run('helm', ['repo', 'add', 'internal', repoUrl], { stdio: 'pipe' });
+    await execa('helm', ['repo', 'add', 'internal', repoUrl], { stdio: 'pipe' });
+    logInfo('Added internal Helm repo');
   } catch (err) {
     // Repo already exists, that's fine
     logInfo('Internal Helm repo already exists, continuing...');
   }
-  await run('helm', ['repo', 'update']);
+  
+  // Update repos and verify internal repo is accessible
+  try {
+    await execa('helm', ['repo', 'update'], { stdio: 'pipe' });
+    
+    // Verify internal repo is working by searching for at least one chart
+    try {
+      const searchResult = await execa('helm', ['search', 'repo', 'internal', '--max-col-width', '0'], { stdio: 'pipe', timeout: 30000 });
+      if (searchResult.stdout.includes('No results found')) {
+        logWarn('⚠️  Internal repo is empty - charts may not be mirrored yet');
+      } else {
+        logInfo('✓ Internal Helm repo is accessible and has charts');
+      }
+    } catch (searchError) {
+      logWarn('⚠️  Could not verify internal repo has charts - proceeding anyway');
+    }
+  } catch (error) {
+    logWarn(`Helm repo update had issues: ${error}`);
+    // Continue anyway - might be a transient issue
+  }
 }
 
 async function installOperator(ns: string) {
@@ -1673,6 +1695,232 @@ async function expandVolumes(ns: string, name: string, newSize: string) {
   }
 }
 
+async function verifyChartMuseumReady(): Promise<boolean> {
+  const { execa } = await import('execa');
+  
+  try {
+    // Check if ChartMuseum pod is running
+    const podsResult = await execa('kubectl', ['get', 'pods', '-n', 'chartmuseum', '-l', 'app.kubernetes.io/name=chartmuseum', '-o', 'json'], { stdio: 'pipe' });
+    const podsData = JSON.parse(podsResult.stdout);
+    const readyPods = podsData.items?.filter((pod: any) => {
+      const status = pod.status?.containerStatuses?.[0];
+      return status?.ready === true && pod.status?.phase === 'Running';
+    }) || [];
+    
+    if (readyPods.length === 0) {
+      logInfo('ChartMuseum pod is not ready yet');
+      return false;
+    }
+    
+    // Check if ChartMuseum service is accessible via port-forward test
+    // We'll verify by checking if we can list charts (which requires the service to be ready)
+    // For now, just having a ready pod is sufficient - the service will be ready too
+    return true;
+  } catch (error) {
+    return false;
+  }
+}
+
+async function installChartMuseum() {
+  logInfo('Installing ChartMuseum for internal Helm chart repository...');
+  const { execa } = await import('execa');
+  const { resolve } = await import('path');
+  
+  // Check if ChartMuseum is already installed
+  let chartmuseumInstalled = false;
+  try {
+    await execa('kubectl', ['get', 'namespace', 'chartmuseum'], { stdio: 'pipe' });
+    const helmListResult = await execa('helm', ['list', '-n', 'chartmuseum', '--output', 'json'], { stdio: 'pipe' });
+    const releases = JSON.parse(helmListResult.stdout);
+    if (releases.some((r: any) => r.name === 'chartmuseum')) {
+      chartmuseumInstalled = true;
+      logInfo('ChartMuseum appears to be installed, verifying it is ready...');
+      
+      // Wait up to 2 minutes for ChartMuseum to be ready
+      const maxWaitTime = 120000; // 2 minutes
+      const checkInterval = 5000; // 5 seconds
+      const startTime = Date.now();
+      
+      while (Date.now() - startTime < maxWaitTime) {
+        if (await verifyChartMuseumReady()) {
+          logSuccess('✓ ChartMuseum is ready');
+          return;
+        }
+        logInfo('Waiting for ChartMuseum to be ready...');
+        await new Promise(resolve => setTimeout(resolve, checkInterval));
+      }
+      
+      logWarn('ChartMuseum is installed but not ready after waiting. Will attempt to continue...');
+      return;
+    }
+  } catch (error) {
+    // ChartMuseum not installed, continue with installation
+  }
+  
+  // Run the setup script
+  try {
+    const scriptPath = resolve(process.cwd(), 'scripts', 'setup-chartmuseum.sh');
+    logInfo('Running ChartMuseum setup script...');
+    await run('bash', [scriptPath], { stdio: 'inherit' });
+    
+    // Wait for ChartMuseum to be ready after installation
+    logInfo('Waiting for ChartMuseum to be ready...');
+    const maxWaitTime = 300000; // 5 minutes
+    const checkInterval = 5000; // 5 seconds
+    const startTime = Date.now();
+    
+    while (Date.now() - startTime < maxWaitTime) {
+      if (await verifyChartMuseumReady()) {
+        logSuccess('✓ ChartMuseum installed and ready');
+        return;
+      }
+      logInfo('Waiting for ChartMuseum to be ready...');
+      await new Promise(resolve => setTimeout(resolve, checkInterval));
+    }
+    
+    logWarn('ChartMuseum installation completed but not fully ready. Proceeding anyway...');
+  } catch (error) {
+    logError(`Failed to install ChartMuseum: ${error}`);
+    logError('ChartMuseum is required for the internal Helm chart repository');
+    logError('You can install it manually with: ./scripts/setup-chartmuseum.sh');
+    throw error;
+  }
+}
+
+async function verifyChartsInChartMuseum(): Promise<boolean> {
+  const { execa } = await import('execa');
+  
+  try {
+    // Check if internal repo exists and has charts
+    const searchResult = await execa('helm', ['search', 'repo', 'internal', '--output', 'json'], { stdio: 'pipe' });
+    const charts = JSON.parse(searchResult.stdout);
+    
+    // Check for required charts: minio, pxc-operator, pxc-db
+    const requiredCharts = ['minio', 'pxc-operator', 'pxc-db'];
+    const foundCharts = charts.map((c: any) => c.name.replace('internal/', ''));
+    const missingCharts = requiredCharts.filter(chart => !foundCharts.includes(chart));
+    
+    if (missingCharts.length > 0) {
+      logInfo(`Missing charts in ChartMuseum: ${missingCharts.join(', ')}`);
+      return false;
+    }
+    
+    return true;
+  } catch (error) {
+    // If search fails, charts might not be available
+    return false;
+  }
+}
+
+async function mirrorChartsToChartMuseum() {
+  logInfo('Mirroring charts to ChartMuseum...');
+  const { resolve } = await import('path');
+  const { execa } = await import('execa');
+  
+  // First check if charts are already available
+  try {
+    // Make sure internal repo is added
+    try {
+      await execa('helm', ['repo', 'add', 'internal', 'http://chartmuseum.chartmuseum.svc.cluster.local'], { stdio: 'pipe' });
+    } catch (error) {
+      // Repo might already exist, that's fine
+    }
+    await execa('helm', ['repo', 'update'], { stdio: 'pipe' });
+    
+    if (await verifyChartsInChartMuseum()) {
+      logInfo('Required charts are already available in ChartMuseum, skipping mirroring');
+      return;
+    }
+  } catch (error) {
+    // If verification fails, proceed with mirroring
+    logInfo('Could not verify charts, proceeding with mirroring...');
+  }
+  
+  try {
+    // Run the mirror script
+    const scriptPath = resolve(process.cwd(), 'scripts', 'mirror-charts.sh');
+    logInfo('Running chart mirroring script...');
+    await run('bash', [scriptPath], { stdio: 'inherit' });
+    
+    // Verify charts are now available
+    await execa('helm', ['repo', 'update'], { stdio: 'pipe' });
+    if (await verifyChartsInChartMuseum()) {
+      logSuccess('✓ Charts mirrored to ChartMuseum successfully');
+    } else {
+      logWarn('Charts were mirrored but verification failed. Proceeding anyway...');
+    }
+  } catch (error) {
+    logError(`Failed to mirror charts: ${error}`);
+    logError('Chart mirroring is required for the internal Helm chart repository');
+    logError('You can run it manually with: ./scripts/mirror-charts.sh');
+    throw error;
+  }
+}
+
+async function uninstallChartMuseum() {
+  logInfo('Uninstalling ChartMuseum...');
+  const { execa } = await import('execa');
+  
+  try {
+    // Check if ChartMuseum is installed
+    try {
+      await execa('kubectl', ['get', 'namespace', 'chartmuseum'], { stdio: 'pipe' });
+    } catch (error) {
+      logInfo('ChartMuseum namespace not found - already uninstalled');
+      return;
+    }
+    
+    // Uninstall Helm release (non-fatal if not installed)
+    try {
+      await run('helm', ['uninstall', 'chartmuseum', '-n', 'chartmuseum'], { stdio: 'pipe' });
+      logSuccess('✓ ChartMuseum Helm release uninstalled');
+    } catch (error: any) {
+      const msg = error?.toString?.() || '';
+      if (msg.includes('release: not found') || msg.includes('Release not loaded') || msg.includes('not found')) {
+        logInfo('ChartMuseum Helm release not found; continuing uninstall.');
+      } else {
+        logWarn(`Failed to uninstall ChartMuseum Helm release: ${msg}`);
+      }
+    }
+    
+    // Delete namespace (will also delete all resources)
+    try {
+      await run('kubectl', ['delete', 'namespace', 'chartmuseum', '--timeout=60s'], { stdio: 'pipe' });
+      logSuccess('✓ ChartMuseum namespace deleted');
+    } catch (error) {
+      logWarn(`Failed to delete ChartMuseum namespace: ${error}`);
+      
+      // Try to force-clean the namespace
+      try {
+        logInfo('Attempting to force-clean chartmuseum namespace...');
+        
+        // Remove namespace finalizers
+        await run('kubectl', ['patch', 'namespace', 'chartmuseum', '-p', '{"metadata":{"finalizers":[]}}', '--type=merge'], { stdio: 'pipe' });
+        logInfo('✓ ChartMuseum namespace finalizers removed');
+        
+        // Wait for cleanup
+        await new Promise(resolve => setTimeout(resolve, 3000));
+        
+        // Try delete again
+        try {
+          await execa('kubectl', ['get', 'namespace', 'chartmuseum'], { stdio: 'pipe' });
+          // Still exists, force delete
+          await run('kubectl', ['delete', 'namespace', 'chartmuseum', '--force', '--grace-period=0'], { stdio: 'pipe' });
+          logSuccess('✓ ChartMuseum namespace force deleted');
+        } catch (checkError) {
+          // Namespace is gone
+          logSuccess('✓ ChartMuseum namespace deleted');
+        }
+      } catch (forceError) {
+        logWarn(`Could not force-clean chartmuseum namespace: ${forceError}`);
+        logWarn('You may need to delete it manually: kubectl delete namespace chartmuseum --force');
+      }
+    }
+  } catch (error) {
+    logWarn(`Error during ChartMuseum uninstall: ${error}`);
+  }
+}
+
 async function installLitmusChaos() {
   logInfo('Installing LitmusChaos...');
   const { execa } = await import('execa');
@@ -1803,7 +2051,7 @@ async function installLitmusChaos() {
     logSuccess('✓ LitmusChaos installed successfully');
   } catch (error) {
     logWarn(`Failed to install LitmusChaos: ${error}`);
-    logWarn('You can install it manually later with: ./install-litmus.sh');
+    logWarn('You can install it manually later with: ./scripts/install-litmus.sh');
   }
 }
 
@@ -2755,6 +3003,15 @@ async function verifyCleanup(ns: string, name: string) {
       logSuccess('✓ MinIO namespace has been deleted');
     }
     
+    // 9b. Check if ChartMuseum namespace still exists
+    logInfo('Checking if ChartMuseum namespace still exists...');
+    try {
+      await execa('kubectl', ['get', 'namespace', 'chartmuseum'], { stdio: 'pipe' });
+      cleanupIssues.push('ChartMuseum namespace still exists');
+    } catch (error) {
+      logSuccess('✓ ChartMuseum namespace has been deleted');
+    }
+    
     // 10. Check if Percona namespace still exists
     logInfo('Checking if Percona namespace still exists...');
     try {
@@ -2814,6 +3071,14 @@ async function main() {
       await validateEksCluster(parsed.namespace, parsed.nodes);
       
       await ensureNamespace(parsed.namespace);
+      
+      // Install ChartMuseum first (required for internal repo)
+      await installChartMuseum();
+      
+      // Mirror charts to ChartMuseum
+      await mirrorChartsToChartMuseum();
+      
+      // Add internal repo (ChartMuseum)
       await addRepos(parsed.helmRepo);
       
       // Create storage class first
@@ -2863,6 +3128,8 @@ async function main() {
       await uninstall(parsed.namespace, parsed.name);
       // Uninstall LitmusChaos as well
       await uninstallLitmusChaos();
+      // Uninstall ChartMuseum as well
+      await uninstallChartMuseum();
       logSuccess('Uninstall completed.');
     }
   } catch (err) {

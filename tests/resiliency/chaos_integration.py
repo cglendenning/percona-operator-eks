@@ -466,7 +466,7 @@ def trigger_chaos_experiment(
             console.print(f"[red]✗ LitmusChaos CRDs not found (404)[/red]")
             console.print(f"[yellow]LitmusChaos is not installed or CRDs are missing.[/yellow]")
             console.print(f"[yellow]Please install LitmusChaos first:[/yellow]")
-            console.print(f"[cyan]  ./install-litmus.sh[/cyan]")
+            console.print(f"[cyan]  ./scripts/install-litmus.sh[/cyan]")
             console.print(f"[cyan]  OR[/cyan]")
             console.print(f"[cyan]  npm run percona -- install[/cyan]")
             return None
@@ -481,7 +481,7 @@ def trigger_chaos_experiment(
     except client.exceptions.ApiException as e:
         if e.status == 404:
             console.print(f"[red]✗ LitmusChaos namespace '{chaos_namespace}' not found[/red]")
-            console.print(f"[yellow]Please install LitmusChaos first: ./install-litmus.sh[/yellow]")
+            console.print(f"[yellow]Please install LitmusChaos first: ./scripts/install-litmus.sh[/yellow]")
             return None
         else:
             console.print(f"[red]✗ Error checking namespace: {e}[/red]")
