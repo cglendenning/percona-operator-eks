@@ -6,9 +6,6 @@ import pytest
 import subprocess
 import yaml
 from tests.conftest import TEST_NAMESPACE, TEST_CLUSTER_NAME, TEST_EXPECTED_NODES
-from rich.console import Console
-
-console = Console()
 
 @pytest.mark.unit
 def test_helm_chart_anti_affinity_rules():
@@ -36,21 +33,16 @@ def test_helm_chart_anti_affinity_rules():
     affinity = pxc_spec.get('affinity', {})
     pod_anti_affinity = affinity.get('podAntiAffinity', {})
 
-    # The chart may have affinity configured or operator may apply def aults
-    # Check if affinity exists, and if so, verify it's configured correctly
-    if pod_anti_affinity or affinity:
-        # Check for requiredDuringSchedulingIgnoredDuringExecution
-        required = pod_anti_affinity.get('requiredDuringSchedulingIgnoredDuringExecution', [])
-        if len(required) > 0:
-            # Verify topologyKey is set to zone
-            for rule in required:
-                topology_key = rule.get('topologyKey', '')
-                assert 'zone' in topology_key.lower(), \
-                    f"Anti-affinity topologyKey should contain 'zone', got: {topology_key}"
-        else:
-            # If affinity is configured differently, that's also acceptable
-            # The operator may handle affinity rules
-            console.print("[yellow]Note: Anti-affinity configured but not in expected format (operator may handle this)[/yellow]")
-    else:
-        console.print("[yellow]Note: No explicit affinity in Helm chart (operator may apply def aults)[/yellow]")
+    # If anti-affinity rules are configured, they must use zone topology
+    # If no affinity is configured, operator applies defaults (test passes)
+    required = pod_anti_affinity.get('requiredDuringSchedulingIgnoredDuringExecution', [])
+    preferred = pod_anti_affinity.get('preferredDuringSchedulingIgnoredDuringExecution', [])
+    all_rules = required + preferred
+    
+    # Only validate if rules are actually defined
+    if len(all_rules) > 0:
+        for rule in all_rules:
+            topology_key = rule.get('topologyKey', '')
+            assert topology_key and 'zone' in topology_key.lower(), \
+                f"Anti-affinity topologyKey must contain 'zone', got: {topology_key}"
 
