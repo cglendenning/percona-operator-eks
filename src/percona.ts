@@ -1370,13 +1370,15 @@ async function validatePodDistribution(ns: string, nodes: number) {
       // Categorize pods (be specific to avoid catching operator or other pods)
       // PXC pods have names like: pxc-cluster-pxc-db-pxc-0, pxc-cluster-pxc-db-pxc-1, etc.
       // ProxySQL pods have names like: pxc-cluster-pxc-db-proxysql-0, pxc-cluster-pxc-db-proxysql-1, etc.
+      // PITR pods have names like: pxc-cluster-pxc-db-pitr-... (should be excluded)
       if (component === 'proxysql' || (podName.includes('proxysql') && !podName.includes('operator'))) {
         // Check ProxySQL first since it also contains 'pxc' in the name
         if (!proxysqlPodsByZone.has(zone)) {
           proxysqlPodsByZone.set(zone, []);
         }
         proxysqlPodsByZone.get(zone)!.push(podName);
-      } else if (component === 'pxc' || (podName.includes('-pxc-') && !podName.includes('operator') && !podName.includes('proxysql'))) {
+      } else if (component === 'pxc' || (podName.includes('-pxc-') && !podName.includes('operator') && !podName.includes('proxysql') && !podName.includes('pitr'))) {
+        // Only include actual PXC database pods, not PITR or other auxiliary pods
         if (!pxcPodsByZone.has(zone)) {
           pxcPodsByZone.set(zone, []);
         }
