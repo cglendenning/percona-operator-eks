@@ -25,7 +25,7 @@ log_error() {
 }
 
 # Configuration
-CHARTMUSEUM_URL="${CHARTMUSEUM_URL:-http://chartmuseum.chartmuseum.svc.cluster.local}"
+CHARTMUSEUM_URL="${CHARTMUSEUM_URL:-http://chartmuseum.chartmuseum.svc.cluster.local:8080}"
 REPO_NAME="${REPO_NAME:-internal}"
 TEMP_DIR="${TEMP_DIR:-/tmp/chart-mirror-$(date +%s)}"
 
@@ -102,12 +102,23 @@ mirror_all_charts() {
     mkdir -p "${TEMP_DIR}"
     cd "${TEMP_DIR}"
     
-    # Add internal repo
+    # Add internal repo (ChartMuseum)
     log_info "Adding ChartMuseum repo..."
-    helm repo add "${REPO_NAME}" "${CHARTMUSEUM_URL}" 2>/dev/null || {
-        log_warn "Repo ${REPO_NAME} may already exist, updating..."
-    }
-    helm repo update "${REPO_NAME}"
+    if helm repo add "${REPO_NAME}" "${CHARTMUSEUM_URL}" 2>/dev/null; then
+        log_info "✓ Added ChartMuseum repo: ${REPO_NAME}"
+    else
+        # Check if repo already exists
+        if helm repo list | grep -q "^${REPO_NAME}"; then
+            log_info "ChartMuseum repo ${REPO_NAME} already exists"
+        else
+            log_error "Failed to add ChartMuseum repo"
+            exit 1
+        fi
+    fi
+    
+    # Update all repos
+    log_info "Updating Helm repositories..."
+    helm repo update
     
     # Mirror Percona charts
     log_info ""

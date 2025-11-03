@@ -2820,8 +2820,15 @@ async function uninstall(ns: string, name: string) {
         logInfo('Namespace not found - deletion successful');
         namespaceDeleted = true;
       }
-    } catch (forceError) {
-      logWarn(`Error during aggressive cleanup: ${forceError}`);
+    } catch (forceError: any) {
+      // Check if the error is just that the namespace doesn't exist (which is what we want)
+      const errorStr = forceError?.toString?.() || '';
+      if (errorStr.includes('NotFound') || errorStr.includes('not found')) {
+        logInfo('Namespace not found during cleanup - already deleted');
+        namespaceDeleted = true;
+      } else {
+        logWarn(`Error during aggressive cleanup: ${errorStr}`);
+      }
     }
   }
   
