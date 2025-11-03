@@ -40,6 +40,9 @@ show_usage() {
     echo -e "  ${GREEN}--no-integration-tests${NC}"
     echo "      Exclude integration tests from execution"
     echo ""
+    echo -e "  ${GREEN}--no-dr-tests${NC}"
+    echo "      Exclude disaster recovery scenario tests from execution"
+    echo ""
     echo -e "  ${GREEN}--run-resiliency-tests${NC}"
     echo "      [Legacy flag] Explicitly run resiliency tests (now included by default)"
     echo ""
@@ -47,20 +50,23 @@ show_usage() {
     echo "      Show verbose output including setup, Python version, configuration, etc."
     echo ""
     echo -e "${BLUE}Examples:${NC}"
-    echo "  # Run all tests (unit, integration, resiliency with chaos)"
+    echo "  # Run all tests (unit, integration, resiliency, DR scenarios)"
     echo "  $0"
     echo ""
     echo "  # Run only unit and integration tests"
-    echo "  $0 --no-resiliency-tests"
+    echo "  $0 --no-resiliency-tests --no-dr-tests"
     echo ""
     echo "  # Run only resiliency tests with chaos"
     echo "  $0 --no-unit-tests --no-integration-tests"
+    echo ""
+    echo "  # Run only DR scenario tests"
+    echo "  $0 --no-unit-tests --no-integration-tests --no-resiliency-tests"
     echo ""
     echo "  # Run all tests and show warnings"
     echo "  $0 --show-warnings"
     echo ""
     echo "  # Run only integration tests"
-    echo "  $0 --no-unit-tests --no-resiliency-tests"
+    echo "  $0 --no-unit-tests --no-resiliency-tests --no-dr-tests"
     echo ""
     echo -e "${BLUE}Environment Variables:${NC}"
     echo "  TEST_NAMESPACE          Kubernetes namespace (default: percona)"
@@ -235,6 +241,7 @@ SHOW_WARNINGS=false
 NO_RESILIENCY=false
 NO_UNIT=false
 NO_INTEGRATION=false
+NO_DR=false
 EXPLICIT_FLAGS=false
 
 for arg in "$@"; do
@@ -262,6 +269,11 @@ for arg in "$@"; do
             ;;
         --no-integration-tests)
             NO_INTEGRATION=true
+            EXPLICIT_FLAGS=true
+            shift
+            ;;
+        --no-dr-tests)
+            NO_DR=true
             EXPLICIT_FLAGS=true
             shift
             ;;
@@ -323,6 +335,13 @@ if [ "$NO_RESILIENCY" == "true" ]; then
         MARKER_EXPR="not resiliency"
     fi
 fi
+if [ "$NO_DR" == "true" ]; then
+    if [ -n "$MARKER_EXPR" ]; then
+        MARKER_EXPR="${MARKER_EXPR} and not dr"
+    else
+        MARKER_EXPR="not dr"
+    fi
+fi
 
 # Add marker expression to pytest options if any exclusions specified
 if [ -n "$MARKER_EXPR" ]; then
@@ -350,6 +369,11 @@ if [ "$VERBOSE" = "true" ]; then
             echo -e "  ${GREEN}✓${NC} Resiliency tests (with chaos)"
         else
             echo -e "  ${YELLOW}⊘${NC} Resiliency tests (excluded)"
+        fi
+        if [ "$NO_DR" == "false" ]; then
+            echo -e "  ${GREEN}✓${NC} DR scenario tests"
+        else
+            echo -e "  ${YELLOW}⊘${NC} DR scenario tests (excluded)"
         fi
     else
         echo -e "${BLUE}Running all test categories (unit, integration, resiliency with chaos)${NC}"
