@@ -28,6 +28,20 @@ htmlcov/
 # IDE
 .vscode/
 .idea/
+
+# Secrets and credentials
+secrets/
+*.key
+*.pem
+*.crt
+*.p12
+*.pfx
+.env
+.env.*
+!.env.example
+credentials.json
+*credentials*.yaml
+*credentials*.yml
 *.swp
 *.swo
 

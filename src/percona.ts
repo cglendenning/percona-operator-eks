@@ -552,7 +552,7 @@ backup:
       s3:
         bucket: percona-backups
         region: us-east-1
-        endpoint: http://minio.minio.svc.cluster.local:9000
+        endpointUrl: http://minio.minio.svc.cluster.local:9000
         credentialsSecret: percona-backup-minio-credentials
   schedule:
     - name: "daily-backup"
