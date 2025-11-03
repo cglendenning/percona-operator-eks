@@ -398,51 +398,88 @@ if [ "${GENERATE_COVERAGE:-}" == "true" ]; then
     PYTEST_OPTS+=("--cov=tests" "--cov-report=term-missing")
 fi
 
-# Run pytest and capture output
-set +e
+# Helper to run one category with its own marker
+run_category() {
+    local category_name="$1"   # pretty name
+    local marker_expr="$2"     # pytest -m expression
+    local trigger_chaos="$3"   # true/false
 
-# In non-verbose mode, show only test names and PASS/FAIL
-if [ "$VERBOSE" != "true" ] && [ "$SHOW_WARNINGS" != "true" ]; then
-    # Run pytest and capture output to temp file (don't display it)
-    TEMP_OUTPUT=$(mktemp)
-    pytest "${PYTEST_OPTS[@]}" > "$TEMP_OUTPUT" 2>&1
-    TEST_RESULT=$?
-    
-    # Display only test names and PASSED/FAILED/ERROR status
-    # Use awk to handle both single-line and multi-line test results (with color codes)
-    awk '
-    /^tests\/.*::/ {
-        test_name = $1
-        # Check if PASSED/FAILED/ERROR is on the same line (with or without color codes)
-        if (match($0, /PASSED|FAILED|ERROR/)) {
-            # Extract just PASSED/FAILED/ERROR without color codes
-            status_line = $0
-            if (match(status_line, /PASSED/)) status = "PASSED"
-            else if (match(status_line, /FAILED/)) status = "FAILED"
-            else if (match(status_line, /ERROR/)) status = "ERROR"
-            print test_name " " status
-        } else {
-            # Store for next line check
-            pending_test = test_name
+    local OPTS=("${PYTEST_OPTS[@]}")
+    # Replace any previous -m with category-specific marker
+    # Build new opts without existing -m
+    local CLEAN_OPTS=()
+    local SKIP_NEXT=false
+    for opt in "${OPTS[@]}"; do
+        if [ "$SKIP_NEXT" = true ]; then SKIP_NEXT=false; continue; fi
+        if [ "$opt" = "-m" ]; then SKIP_NEXT=true; continue; fi
+        CLEAN_OPTS+=("$opt")
+    done
+    OPTS=("${CLEAN_OPTS[@]}")
+    if [ -n "$marker_expr" ]; then
+        OPTS+=("-m" "$marker_expr")
+    fi
+    if [ "$trigger_chaos" = "true" ]; then
+        OPTS+=("--trigger-chaos")
+    fi
+
+    if [ "$VERBOSE" = "true" ]; then
+        echo -e "${BLUE}=== ${category_name} ===${NC}"
+        pytest "${OPTS[@]}"
+        return $?
+    else
+        TEMP_OUTPUT=$(mktemp)
+        pytest "${OPTS[@]}" > "$TEMP_OUTPUT" 2>&1
+        local rc=$?
+        awk '
+        /^tests\/.*::/ {
+            test_name = $1
+            if (match($0, /PASSED|FAILED|ERROR/)) {
+                status_line = $0
+                if (match(status_line, /PASSED/)) status = "PASSED"
+                else if (match(status_line, /FAILED/)) status = "FAILED"
+                else if (match(status_line, /ERROR/)) status = "ERROR"
+                print test_name " " status
+            } else {
+                pending_test = test_name
+            }
         }
-    }
-    /PASSED|FAILED|ERROR/ {
-        if (pending_test != "" && !/^tests\//) {
-            # Extract status without color codes
-            if (match($0, /PASSED/)) status = "PASSED"
-            else if (match($0, /FAILED/)) status = "FAILED"
-            else if (match($0, /ERROR/)) status = "ERROR"
-            print pending_test " " status
-            pending_test = ""
+        /PASSED|FAILED|ERROR/ {
+            if (pending_test != "" && !/^tests\//) {
+                if (match($0, /PASSED/)) status = "PASSED"
+                else if (match($0, /FAILED/)) status = "FAILED"
+                else if (match($0, /ERROR/)) status = "ERROR"
+                print pending_test " " status
+                pending_test = ""
+            }
         }
-    }
-    ' "$TEMP_OUTPUT"
-    
-    rm -f "$TEMP_OUTPUT"
-else
-    # Verbose mode: show everything
-    pytest "${PYTEST_OPTS[@]}"
-    TEST_RESULT=$?
+        ' "$TEMP_OUTPUT"
+        rm -f "$TEMP_OUTPUT"
+        return $rc
+    fi
+}
+
+# Run categories in order: unit -> integration -> resiliency (incl. DR)
+set +e
+TEST_RESULT=0
+
+if [ "$NO_UNIT" == "false" ]; then
+    run_category "Unit tests" "unit" false
+    [ $? -ne 0 ] && TEST_RESULT=1
+fi
+
+if [ "$NO_INTEGRATION" == "false" ]; then
+    run_category "Integration tests" "integration" false
+    [ $? -ne 0 ] && TEST_RESULT=1
+fi
+
+if [ "$NO_RESILIENCY" == "false" ]; then
+    # Run resiliency (non-DR) first, then DR scenarios
+    run_category "Resiliency tests" "resiliency and not dr" true
+    [ $? -ne 0 ] && TEST_RESULT=1
+    if [ "$NO_DR" == "false" ]; then
+        run_category "DR scenario tests" "dr" true
+        [ $? -ne 0 ] && TEST_RESULT=1
+    fi
 fi
 
 if [ "$SHOW_WARNINGS" == "true" ]; then
