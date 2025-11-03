@@ -435,16 +435,72 @@ async function ensureNamespace(ns: string) {
   }
 }
 
+// Global port-forward process for ChartMuseum access
+let globalPortForwardProcess: any = null;
+const CHARTMUSEUM_LOCAL_PORT = 8765;
+
+async function ensureChartMuseumPortForward() {
+  const { execa } = await import('execa');
+  
+  // Check if port-forward is already running
+  if (globalPortForwardProcess) {
+    return `http://localhost:${CHARTMUSEUM_LOCAL_PORT}`;
+  }
+  
+  // Start new port-forward
+  logInfo(`Setting up port-forward to ChartMuseum on localhost:${CHARTMUSEUM_LOCAL_PORT}...`);
+  try {
+    globalPortForwardProcess = execa('kubectl', [
+      'port-forward',
+      '-n', 'chartmuseum',
+      'svc/chartmuseum',
+      `${CHARTMUSEUM_LOCAL_PORT}:8080`
+    ], { stdio: 'pipe' });
+    
+    // Wait for port-forward to be established
+    await new Promise(resolve => setTimeout(resolve, 2000));
+    
+    logInfo('✓ Port-forward to ChartMuseum established');
+    return `http://localhost:${CHARTMUSEUM_LOCAL_PORT}`;
+  } catch (error) {
+    logWarn(`Could not set up port-forward: ${error}`);
+    throw error;
+  }
+}
+
+async function cleanupChartMuseumPortForward() {
+  if (globalPortForwardProcess) {
+    try {
+      globalPortForwardProcess.kill('SIGTERM');
+      await globalPortForwardProcess.catch((killError: any) => {
+        // Ignore SIGTERM errors - expected when we kill the port-forward
+        if (!killError?.isTerminated || killError?.signal !== 'SIGTERM') {
+          logWarn(`Unexpected error closing port-forward: ${killError}`);
+        }
+      });
+      globalPortForwardProcess = null;
+      logInfo('Port-forward to ChartMuseum closed');
+    } catch (error) {
+      // Ignore cleanup errors
+    }
+  }
+}
+
 async function addRepos(repoUrl: string) {
   const { execa } = await import('execa');
   
+  // Ensure port-forward is active for accessing ChartMuseum
+  const chartmuseumUrl = await ensureChartMuseumPortForward();
+  
   try {
-    // Always use the internal ChartMuseum repo
-    await execa('helm', ['repo', 'add', 'internal', repoUrl], { stdio: 'pipe' });
-    logInfo('Added internal Helm repo');
+    // Remove any existing internal repo
+    await execa('helm', ['repo', 'remove', 'internal'], { stdio: 'pipe' }).catch(() => {});
+    
+    // Add internal ChartMuseum repo using localhost (via port-forward)
+    await execa('helm', ['repo', 'add', 'internal', chartmuseumUrl], { stdio: 'pipe' });
+    logInfo('Added internal Helm repo via port-forward');
   } catch (err) {
-    // Repo already exists, that's fine
-    logInfo('Internal Helm repo already exists, continuing...');
+    logWarn(`Could not add internal Helm repo: ${err}`);
   }
   
   // Update repos and verify internal repo is accessible
@@ -1020,6 +1076,26 @@ async function installMinIO(ns: string) {
     
     if (finalAccessKey === minioAccessKey && finalSecretKey === minioSecretKey) {
       logInfo('Using provided/default MinIO credentials');
+    }
+    
+    // Create percona-backups bucket for PITR
+    logInfo('Creating percona-backups bucket in MinIO...');
+    try {
+      const minioPod = await execa('kubectl', ['get', 'pod', '-n', 'minio', '-l', 'app=minio', '-o', 'jsonpath={.items[0].metadata.name}'], { stdio: 'pipe' });
+      const podName = minioPod.stdout.trim();
+      
+      if (podName) {
+        await execa('kubectl', ['exec', '-n', 'minio', podName, '--', 'sh', '-c',
+          `mc alias set local http://localhost:9000 ${finalAccessKey} ${finalSecretKey} && mc mb local/percona-backups --ignore-existing`
+        ], { stdio: 'pipe' });
+        logSuccess('✓ percona-backups bucket created in MinIO');
+      } else {
+        logWarn('Could not find MinIO pod to create bucket - PITR may fail until bucket is created manually');
+      }
+    } catch (bucketError) {
+      logWarn(`Could not create percona-backups bucket: ${bucketError}`);
+      logWarn('PITR may fail - you can create the bucket manually with:');
+      logWarn('kubectl exec -n minio <minio-pod> -- sh -c "mc alias set local http://localhost:9000 minioadmin minioadmin && mc mb local/percona-backups"');
     }
     
     return { accessKey: finalAccessKey, secretKey: finalSecretKey };
@@ -1827,32 +1903,50 @@ async function mirrorChartsToChartMuseum() {
   const { resolve } = await import('path');
   const { execa } = await import('execa');
   
-  // First check if charts are already available
+  // Remove any existing internal repo to start fresh
   try {
-    // Make sure internal repo is added
-    try {
-      await execa('helm', ['repo', 'add', 'internal', 'http://chartmuseum.chartmuseum.svc.cluster.local'], { stdio: 'pipe' });
-    } catch (error) {
-      // Repo might already exist, that's fine
-    }
-    await execa('helm', ['repo', 'update'], { stdio: 'pipe' });
-    
-    if (await verifyChartsInChartMuseum()) {
-      logInfo('Required charts are already available in ChartMuseum, skipping mirroring');
-      return;
-    }
+    await execa('helm', ['repo', 'remove', 'internal'], { stdio: 'pipe' });
   } catch (error) {
-    // If verification fails, proceed with mirroring
-    logInfo('Could not verify charts, proceeding with mirroring...');
+    // Repo might not exist, that's fine
   }
   
+  // Set up port-forward to ChartMuseum so we can access it from local machine
+  logInfo('Setting up port-forward to ChartMuseum...');
+  let portForwardProcess: any = null;
+  const localPort = 8765; // Use a different port to avoid conflicts
+  
   try {
-    // Run the mirror script
+    // Start port-forward in the background
+    portForwardProcess = execa('kubectl', [
+      'port-forward',
+      '-n', 'chartmuseum',
+      'svc/chartmuseum',
+      `${localPort}:8080`
+    ], { stdio: 'pipe' });
+    
+    // Wait a few seconds for port-forward to be established
+    await new Promise(resolve => setTimeout(resolve, 3000));
+    
+    // Verify port-forward is working
+    try {
+      await execa('curl', ['-s', '-f', `http://localhost:${localPort}/health`], { stdio: 'pipe', timeout: 5000 });
+      logInfo('✓ Port-forward to ChartMuseum established');
+    } catch (curlError) {
+      logWarn('Could not verify port-forward, continuing anyway...');
+    }
+    
+    // Run the mirror script with localhost URL
     const scriptPath = resolve(process.cwd(), 'scripts', 'mirror-charts.sh');
     logInfo('Running chart mirroring script...');
-    await run('bash', [scriptPath], { stdio: 'inherit' });
+    await run('bash', [scriptPath], { 
+      stdio: 'inherit',
+      env: {
+        ...process.env,
+        CHARTMUSEUM_URL: `http://localhost:${localPort}`
+      }
+    });
     
-    // Verify charts are now available
+    // Verify charts are now available (after stopping port-forward)
     await execa('helm', ['repo', 'update'], { stdio: 'pipe' });
     if (await verifyChartsInChartMuseum()) {
       logSuccess('✓ Charts mirrored to ChartMuseum successfully');
@@ -1864,6 +1958,25 @@ async function mirrorChartsToChartMuseum() {
     logError('Chart mirroring is required for the internal Helm chart repository');
     logError('You can run it manually with: ./scripts/mirror-charts.sh');
     throw error;
+  } finally {
+    // Clean up port-forward after mirroring
+    if (portForwardProcess) {
+      try {
+        portForwardProcess.kill('SIGTERM');
+        // Wait for the process to exit and suppress the SIGTERM error
+        await portForwardProcess.catch((killError: any) => {
+          // Ignore SIGTERM errors - this is expected when we kill the port-forward
+          if (killError?.isTerminated && killError?.signal === 'SIGTERM') {
+            // This is expected - we intentionally terminated the port-forward
+          } else {
+            logWarn(`Unexpected error closing port-forward: ${killError}`);
+          }
+        });
+        logInfo('Port-forward to ChartMuseum closed');
+      } catch (killError) {
+        // Ignore errors when killing port-forward
+      }
+    }
   }
 }
 
@@ -3151,9 +3264,16 @@ async function main() {
       await uninstallLitmusChaos();
       // Uninstall ChartMuseum as well
       await uninstallChartMuseum();
+      
+      // Clean up port-forward if it's still running
+      await cleanupChartMuseumPortForward();
+      
       logSuccess('Uninstall completed.');
     }
   } catch (err) {
+    // Clean up port-forward on error
+    await cleanupChartMuseumPortForward();
+    
     logError('Percona script failed', err);
     process.exitCode = 1;
   }
