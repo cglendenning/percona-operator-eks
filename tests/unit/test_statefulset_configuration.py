@@ -15,7 +15,7 @@ def test_statefulset_uses_ordered_ready_pod_management():
     # OrderedReady ensures pods start/stop in order, which is important for PXC quorum
     
     result = subprocess.run(
-        ['helm', 'template', 'test', 'percona/pxc-db', '--namespace', 'test'],
+        ['helm', 'template', 'test', 'internal/pxc-db', '--namespace', 'test'],
         capture_output=True,
         text=True,
         timeout=30
@@ -42,7 +42,7 @@ def test_statefulset_uses_ondelete_update_strategy():
     # PXC StatefulSets should use OnDelete strategy to ensure proper quorum during updates
     
     result = subprocess.run(
-        ['helm', 'template', 'test', 'percona/pxc-db', '--namespace', 'test'],
+        ['helm', 'template', 'test', 'internal/pxc-db', '--namespace', 'test'],
         capture_output=True,
         text=True,
         timeout=30
@@ -66,7 +66,7 @@ def test_statefulset_uses_ondelete_update_strategy():
 def test_statefulset_volume_claim_templates():
     """Test that StatefulSets use volume claim templates (required for persistence)."""
     result = subprocess.run(
-        ['helm', 'template', 'test', 'percona/pxc-db', '--namespace', 'test'],
+        ['helm', 'template', 'test', 'internal/pxc-db', '--namespace', 'test'],
         capture_output=True,
         text=True,
         timeout=30
@@ -136,7 +136,7 @@ def test_statefulset_replicas_match_cluster_size():
         
         # Helm should render StatefulSets with matching replicas
         result = subprocess.run(
-            ['helm', 'template', 'test', 'percona/pxc-db', 
+            ['helm', 'template', 'test', 'internal/pxc-db', 
              '--namespace', 'test', '--set', f'pxc.size={node_count}', 
              '--set', f'proxysql.size={node_count}'],
             capture_output=True,

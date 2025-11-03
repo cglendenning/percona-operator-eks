@@ -115,7 +115,7 @@ def kubectl_cmd(cmd_list):
 
 def helm_template(chart_name, namespace, values_file=None, values_dict=None):
     """Render Helm chart template"""
-    cmd = ['helm', 'template', chart_name, 'percona/pxc-db', '-n', namespace]
+    cmd = ['helm', 'template', chart_name, 'internal/pxc-db', '-n', namespace]
     
     if values_file:
         cmd.extend(['-f', values_file])

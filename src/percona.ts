@@ -7,7 +7,7 @@ const Args = z.object({
   action: z.enum(['install', 'uninstall', 'expand']),
   namespace: z.string().default('percona'),
   name: z.string().default('pxc-cluster'),
-  helmRepo: z.string().default('https://percona.github.io/percona-helm-charts/'),
+  helmRepo: z.string().default('http://chartmuseum.chartmuseum.svc.cluster.local'),
   chart: z.string().default('percona/pxc-operator'),
   clusterChart: z.string().default('percona/pxc-db'),
   nodes: z.coerce.number().int().positive().default(3),
@@ -437,10 +437,11 @@ async function ensureNamespace(ns: string) {
 
 async function addRepos(repoUrl: string) {
   try {
-    await run('helm', ['repo', 'add', 'percona', repoUrl], { stdio: 'pipe' });
+    // Always use the internal ChartMuseum repo
+    await run('helm', ['repo', 'add', 'internal', repoUrl], { stdio: 'pipe' });
   } catch (err) {
     // Repo already exists, that's fine
-    logInfo('Percona repo already exists, continuing...');
+    logInfo('Internal Helm repo already exists, continuing...');
   }
   await run('helm', ['repo', 'update']);
 }
@@ -448,7 +449,7 @@ async function addRepos(repoUrl: string) {
 async function installOperator(ns: string) {
   logInfo('Installing Percona operator via Helm...');
   try {
-    await run('helm', ['upgrade', '--install', 'percona-operator', 'percona/pxc-operator', '-n', ns]);
+    await run('helm', ['upgrade', '--install', 'percona-operator', 'internal/pxc-operator', '-n', ns]);
     logSuccess('Percona operator Helm chart installed successfully');
   } catch (error) {
     logError(`Failed to install Percona operator: ${error}`);
@@ -636,22 +637,7 @@ async function installMinIO(ns: string) {
   const { execa } = await import('execa');
   
   try {
-    // Check if MinIO Helm repo exists, add if not
-    try {
-      await run('helm', ['repo', 'list'], { stdio: 'pipe' });
-      const repoListResult = await execa('helm', ['repo', 'list'], { stdio: 'pipe' });
-      if (!repoListResult.stdout.includes('minio')) {
-        await run('helm', ['repo', 'add', 'minio', 'https://charts.min.io/']);
-        await run('helm', ['repo', 'update']);
-        logInfo('Added MinIO Helm repository');
-      }
-    } catch (error) {
-      // Add repo if it doesn't exist
-      await run('helm', ['repo', 'add', 'minio', 'https://charts.min.io/']);
-      await run('helm', ['repo', 'update']);
-      logInfo('Added MinIO Helm repository');
-    }
-    
+    // Use internal ChartMuseum repository; external repos are not allowed
     // Create MinIO namespace if it doesn't exist
     try {
       await run('kubectl', ['create', 'namespace', 'minio'], { stdio: 'pipe' });
@@ -713,7 +699,7 @@ async function installMinIO(ns: string) {
     logInfo('Installing MinIO Helm chart (this may take a few minutes)...');
     try {
       await run('helm', [
-        'upgrade', '--install', 'minio', 'minio/minio',
+        'upgrade', '--install', 'minio', 'internal/minio',
         '--namespace', 'minio',
         '--set', 'mode=standalone',  // Use standalone mode (single pod) instead of distributed
         '--set', 'replicas=1',  // Explicitly set to 1 replica
@@ -1042,7 +1028,7 @@ async function installCluster(ns: string, name: string, nodes: number, accountId
   logInfo('This may take a few minutes...');
   const values = await clusterValues(nodes, accountId);
   const { execa } = await import('execa');
-  const proc = execa('helm', ['upgrade', '--install', name, 'percona/pxc-db', '-n', ns, '-f', '-'], { stdio: ['pipe', 'inherit', 'inherit'] });
+  const proc = execa('helm', ['upgrade', '--install', name, 'internal/pxc-db', '-n', ns, '-f', '-'], { stdio: ['pipe', 'inherit', 'inherit'] });
   proc.stdin?.write(values);
   proc.stdin?.end();
   await proc;
@@ -1692,172 +1678,14 @@ async function installLitmusChaos() {
   const { execa } = await import('execa');
   
   try {
-    // Check if LitmusChaos is already installed and CRDs exist
-    try {
-      await execa('kubectl', ['get', 'namespace', 'litmus'], { stdio: 'pipe' });
-      logInfo('LitmusChaos namespace already exists, checking installation...');
-      
-      // Check if CRDs are installed
-      try {
-        await execa('kubectl', ['get', 'crd', 'chaosengines.litmuschaos.io'], { stdio: 'pipe' });
-        const helmCheck = await execa('helm', ['list', '-n', 'litmus', '--output', 'json'], { stdio: 'pipe' });
-        const releases = JSON.parse(helmCheck.stdout);
-        if (releases && releases.length > 0 && releases.some((r: any) => r.name === 'litmus')) {
-          logSuccess('✓ LitmusChaos is already installed with CRDs');
-          return;
-        }
-      } catch (crdError) {
-        logInfo('LitmusChaos CRDs not found, will install them...');
-      }
-    } catch (error) {
-      // Namespace doesn't exist, proceed with installation
-    }
+    // Ensure namespace exists
+    await run('kubectl', ['create', 'namespace', 'litmus'], { stdio: 'pipe' }).catch(() => {});
     
-    // Create namespace
-    await run('kubectl', ['create', 'namespace', 'litmus', '--dry-run=client', '-o', 'yaml'], { stdio: 'pipe' })
-      .catch(() => {});
-    await run('kubectl', ['create', 'namespace', 'litmus'], { stdio: 'pipe' })
-      .catch(() => {}); // Ignore if already exists
-    
-    // Add Helm repo first
-    logInfo('Adding LitmusChaos Helm repository...');
-    await run('helm', ['repo', 'add', 'litmuschaos', 'https://litmuschaos.github.io/litmus-helm/'], { stdio: 'pipe' })
-      .catch(() => {}); // Ignore if already exists
-    await run('helm', ['repo', 'update'], { stdio: 'pipe' });
-    
-    // Install LitmusChaos CRDs first (required for chaos experiments)
-    logInfo('Installing LitmusChaos CRDs...');
-    try {
-      // Check if CRDs already exist
-      try {
-        await execa('kubectl', ['get', 'crd', 'chaosengines.litmuschaos.io'], { stdio: 'pipe' });
-        logInfo('✓ LitmusChaos CRDs already installed');
-      } catch {
-        // CRDs don't exist, try multiple methods to install them
-        logInfo('Attempting to install CRDs using multiple methods...');
-        let crdsInstalled = false;
-        
-        // Method 1: Try helm show crds (Helm 3.11+)
-        try {
-          const { stdout } = await execa('helm', ['show', 'crds', 'litmuschaos/litmus', '--version', '3.1.0'], { stdio: 'pipe' });
-          if (stdout && stdout.trim().length > 0) {
-            await run('kubectl', ['apply', '-f', '-'], { input: stdout, stdio: 'pipe' });
-            crdsInstalled = true;
-            logInfo('✓ CRDs installed using helm show crds');
-          }
-        } catch {
-          // Method not available or failed, try next
-        }
-        
-        // Method 2: Try helm template with --include-crds
-        if (!crdsInstalled) {
-          try {
-            const { stdout } = await execa('helm', [
-              'template', 'litmus', 'litmuschaos/litmus',
-              '--version', '3.1.0',
-              '--include-crds',
-              '--namespace', 'litmus'
-            ], { stdio: 'pipe' });
-            
-            // Extract CRD manifests from output
-            const lines = stdout.split('\n');
-            const crdManifests: string[] = [];
-            let inCrd = false;
-            let crdBlock: string[] = [];
-            
-            for (let i = 0; i < lines.length; i++) {
-              const line = lines[i];
-              if (line.trim() === '---') {
-                if (inCrd && crdBlock.length > 0) {
-                  crdManifests.push(crdBlock.join('\n'));
-                }
-                crdBlock = [];
-                inCrd = false;
-              } else if (line.includes('kind: CustomResourceDefinition')) {
-                inCrd = true;
-                crdBlock.push(line);
-              } else if (inCrd) {
-                crdBlock.push(line);
-              }
-            }
-            
-            if (inCrd && crdBlock.length > 0) {
-              crdManifests.push(crdBlock.join('\n'));
-            }
-            
-            if (crdManifests.length > 0) {
-              for (const crdManifest of crdManifests) {
-                await run('kubectl', ['apply', '-f', '-'], { input: crdManifest, stdio: 'pipe' }).catch(() => {});
-              }
-              crdsInstalled = true;
-              logInfo('✓ CRDs installed from helm template');
-            }
-          } catch {
-            // Method failed, try next
-          }
-        }
-        
-        // Method 3: Try direct installation from GitHub using curl
-        if (!crdsInstalled) {
-          const crdUrls = [
-            'https://raw.githubusercontent.com/litmuschaos/litmus/master/litmus-portal/litmus-portal-crds.yaml',
-            'https://raw.githubusercontent.com/litmuschaos/litmus/v3.1.0/litmus-portal/litmus-portal-crds.yaml',
-            'https://raw.githubusercontent.com/litmuschaos/litmus/master/mkdocs/docs/3.1.0/litmus-portal-crds-3.1.0.yml',
-            'https://raw.githubusercontent.com/litmuschaos/litmus/v3.1.0/mkdocs/docs/3.1.0/litmus-portal-crds-3.1.0.yml',
-            'https://raw.githubusercontent.com/litmuschaos/litmus/master/mkdocs/docs/2.13.0/litmus-portal-crds-2.13.0.yml'
-          ];
-          
-          for (const url of crdUrls) {
-            try {
-              logInfo(`Trying CRD URL: ${url}...`);
-              // Use curl to download and pipe to kubectl
-              const result = await execa('sh', ['-c', `curl -sfL "${url}" | kubectl apply -f -`], { stdio: 'pipe' });
-              if (result.exitCode === 0) {
-                crdsInstalled = true;
-                logInfo(`✓ CRDs installed from GitHub (${url})`);
-                break;
-              }
-            } catch {
-              // Try next URL
-              continue;
-            }
-          }
-        }
-        
-        // Wait for CRDs to be established if installed
-        if (crdsInstalled) {
-          logInfo('Waiting for CRDs to be ready...');
-          await run('kubectl', ['wait', '--for=condition=Established', '--timeout=60s', 
-            'crd/chaosengines.litmuschaos.io', 'crd/chaosexperiments.litmuschaos.io', 
-            'crd/chaosresults.litmuschaos.io'], { stdio: 'pipe' })
-            .catch(() => {
-              logInfo('Some CRDs may still be installing, continuing...');
-            });
-        }
-        
-        // Verify CRDs are actually installed
-        try {
-          await execa('kubectl', ['get', 'crd', 'chaosengines.litmuschaos.io'], { stdio: 'pipe' });
-          logInfo('✓ LitmusChaos CRDs installed and verified');
-        } catch {
-          logWarn('⚠ Could not install CRDs automatically.');
-          logWarn('Chaos experiments (ChaosEngine) require CRDs to be installed.');
-          logWarn('Please install CRDs manually or check LitmusChaos documentation.');
-        }
-      }
-    } catch (crdError) {
-      logWarn(`CRD installation had issues, but continuing: ${crdError}`);
-    }
-    
-    // Install LitmusChaos Portal via Helm - EXACT command from official docs
-    // Reference: https://docs.litmuschaos.io/docs/getting-started/installation
-    // Exact command from docs: helm install chaos litmuschaos/litmus --namespace=litmus --set portal.frontend.service.type=NodePort
-    logInfo('Installing LitmusChaos Portal...');
-    logInfo('Using EXACT command from LitmusChaos documentation...');
-    
+    // Install LitmusChaos exclusively from internal ChartMuseum
+    logInfo('Installing LitmusChaos from internal Helm repository...');
     try {
       await run('helm', [
-        'install', 'chaos', 'litmuschaos/litmus',
+        'upgrade', '--install', 'litmus', 'internal/litmus',
         '--namespace', 'litmus',
         '--set', 'portal.frontend.service.type=NodePort',
         '--wait',
@@ -1968,16 +1796,9 @@ async function installLitmusChaos() {
       logWarn(`Could not verify final pod status: ${finalCheckError}`);
     }
     
-    // Verify CRDs are installed
+    // Optionally verify CRDs were installed by the Helm chart
     logInfo('Verifying LitmusChaos CRDs...');
-    try {
-      await execa('kubectl', ['get', 'crd', 'chaosengines.litmuschaos.io'], { stdio: 'pipe' });
-      logSuccess('✓ LitmusChaos CRDs verified');
-    } catch (verifyError) {
-      logWarn('⚠ CRDs may still be installing. If chaos experiments fail, ensure CRDs are installed.');
-      logWarn('   You can manually install CRDs with:');
-      logWarn('   kubectl apply -f https://raw.githubusercontent.com/litmuschaos/litmus/master/litmus-portal/litmus-portal-crds.yaml');
-    }
+    await execa('kubectl', ['get', 'crd', 'chaosengines.litmuschaos.io'], { stdio: 'pipe' });
     
     logSuccess('✓ LitmusChaos installed successfully');
   } catch (error) {

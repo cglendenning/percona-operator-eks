@@ -12,7 +12,7 @@ def test_helm_chart_anti_affinity_rules():
     """Test that Helm chart includes anti-affinity rules in PerconaXtraDBCluster spec
     (operator will apply these to StatefulSets)"""
     result = subprocess.run(
-        ['helm', 'template', 'test-chart', 'percona/pxc-db', '--namespace', TEST_NAMESPACE],
+        ['helm', 'template', 'test-chart', 'internal/pxc-db', '--namespace', TEST_NAMESPACE],
         capture_output=True,
         text=True,
         timeout=30

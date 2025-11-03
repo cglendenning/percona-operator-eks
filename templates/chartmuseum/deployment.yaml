@@ -1,0 +1,72 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: chartmuseum
+  namespace: chartmuseum
+  labels:
+    app.kubernetes.io/name: chartmuseum
+    app.kubernetes.io/part-of: percona-operator
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: chartmuseum
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: chartmuseum
+        app.kubernetes.io/part-of: percona-operator
+    spec:
+      serviceAccountName: chartmuseum
+      containers:
+        - name: chartmuseum
+          image: ghcr.io/helm/chartmuseum:v0.15.0
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 8080
+          env:
+            # Use S3-compatible storage pointing at in-cluster MinIO
+            - name: STORAGE
+              value: amazon
+            - name: STORAGE_AMAZON_BUCKET
+              value: charts
+            - name: STORAGE_AMAZON_REGION
+              value: us-east-1
+            - name: STORAGE_AMAZON_ENDPOINT
+              value: http://minio.minio.svc.cluster.local:9000
+            - name: STORAGE_AMAZON_S3_FORCE_PATH_STYLE
+              value: "true"
+            - name: DISABLE_API
+              value: "false"
+            # Credentials provided via existing secret keys
+            - name: AWS_ACCESS_KEY_ID
+              valueFrom:
+                secretKeyRef:
+                  name: percona-backup-minio-credentials
+                  key: AWS_ACCESS_KEY_ID
+            - name: AWS_SECRET_ACCESS_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: percona-backup-minio-credentials
+                  key: AWS_SECRET_ACCESS_KEY
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 20
+          resources:
+            requests:
+              cpu: 50m
+              memory: 128Mi
+            limits:
+              cpu: 200m
+              memory: 256Mi
+

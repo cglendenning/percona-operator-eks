@@ -15,7 +15,7 @@ def test_helm_chart_renders_statefulset():
     """Test that Helm chart renders PerconaXtraDBCluster custom resource 
     (operator will create StatefulSets from this CR)"""
     result = subprocess.run(
-        ['helm', 'template', 'test-chart', 'percona/pxc-db', '--namespace', TEST_NAMESPACE],
+        ['helm', 'template', 'test-chart', 'internal/pxc-db', '--namespace', TEST_NAMESPACE],
         capture_output=True,
         text=True,
         timeout=30

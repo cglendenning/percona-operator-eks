@@ -1,0 +1,8 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: chartmuseum
+  labels:
+    app.kubernetes.io/name: chartmuseum
+    app.kubernetes.io/part-of: percona-operator
+

@@ -9,8 +9,16 @@ import re
 
 
 def parse_resource_value(value_str):
-    """Parse Kubernetes resource value (e.g., '1Gi', '500m') to comparable format."""
+    """Parse Kubernetes resource value (e.g., '1Gi', '500m') to comparable format.
+    Returns:
+      - CPU: millicores
+      - Memory: bytes
+    Note: If a bare number is provided, callers should convert to the appropriate unit
+    based on context (e.g., cores→millicores for CPU). For memory, bare numbers are rare
+    and treated as bytes.
+    """
     if isinstance(value_str, (int, float)):
+        # Treat bare numbers as bytes for memory context or cores for CPU (handled by caller)
         return float(value_str)
     
     value_str = str(value_str).strip()
@@ -72,15 +80,22 @@ def test_pxc_resource_limits():
     pxc_resources = values['pxc']['resources']
     
     # Limits should be >= requests
-    cpu_limit = parse_resource_value(pxc_resources['limits']['cpu'])
-    cpu_request = parse_resource_value(pxc_resources['requests']['cpu'])
+    raw_cpu_limit = pxc_resources['limits']['cpu']
+    raw_cpu_request = pxc_resources['requests']['cpu']
+    cpu_limit = parse_resource_value(raw_cpu_limit)
+    cpu_request = parse_resource_value(raw_cpu_request)
+    # If limits/requests are specified as bare cores (e.g., 1), normalize to millicores
+    if isinstance(raw_cpu_limit, (int, float)):
+        cpu_limit *= 1000
+    if isinstance(raw_cpu_request, (int, float)):
+        cpu_request *= 1000
     assert cpu_limit >= cpu_request, "CPU limit must be >= request"
     
     memory_limit = parse_resource_value(pxc_resources['limits']['memory'])
     memory_request = parse_resource_value(pxc_resources['requests']['memory'])
     assert memory_limit >= memory_request, "Memory limit must be >= request"
     
-    # Recommended limits
+    # Recommended limits (at least 1 CPU)
     assert cpu_limit >= 1000, "PXC should have at least 1 CPU limit"
     min_memory_limit = 2 * 1024 * 1024 * 1024  # 2Gi
     assert memory_limit >= min_memory_limit, "PXC should have at least 2Gi memory limit"

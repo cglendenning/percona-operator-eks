@@ -13,7 +13,7 @@ console = Console()
 def test_helm_chart_values_valid():
     """Test that Helm chart can be rendered with def ault values"""
     result = subprocess.run(
-        ['helm', 'template', 'test-chart', 'percona/pxc-db', '--namespace', TEST_NAMESPACE],
+        ['helm', 'template', 'test-chart', 'internal/pxc-db', '--namespace', TEST_NAMESPACE],
         capture_output=True,
         text=True,
         timeout=30
