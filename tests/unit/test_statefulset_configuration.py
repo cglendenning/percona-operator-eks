@@ -8,11 +8,31 @@ import pytest
 import subprocess
 
 
+def _ensure_internal_repo():
+    """Ensure internal ChartMuseum repo is available."""
+    chartmuseum_url = os.getenv('CHARTMUSEUM_URL', 'http://chartmuseum.chartmuseum.svc.cluster.local')
+    
+    repo_list = subprocess.run(
+        ['helm', 'repo', 'list'],
+        capture_output=True,
+        text=True
+    )
+    if 'internal' not in repo_list.stdout:
+        subprocess.run(
+            ['helm', 'repo', 'add', 'internal', chartmuseum_url],
+            capture_output=True,
+            text=True
+        )
+        subprocess.run(['helm', 'repo', 'update'], capture_output=True, text=True)
+
+
 @pytest.mark.unit
 def test_statefulset_uses_ordered_ready_pod_management():
     """Test that StatefulSets use OrderedReady pod management policy (default and recommended)."""
     # This would be tested via Helm template rendering
     # OrderedReady ensures pods start/stop in order, which is important for PXC quorum
+    
+    _ensure_internal_repo()
     
     result = subprocess.run(
         ['helm', 'template', 'test', 'internal/pxc-db', '--namespace', 'test'],
@@ -21,8 +41,10 @@ def test_statefulset_uses_ordered_ready_pod_management():
         timeout=30
     )
     
-    if result.returncode == 0:
-        manifests = []
+    if result.returncode != 0:
+        pytest.skip(f"Local ChartMuseum chart not available: {result.stderr}")
+    
+    manifests = []
         for doc in yaml.safe_load_all(result.stdout):
             if doc and doc.get('kind') == 'StatefulSet':
                 manifests.append(doc)
@@ -41,6 +63,8 @@ def test_statefulset_uses_ondelete_update_strategy():
     """Test that StatefulSets use OnDelete update strategy for PXC (recommended)."""
     # PXC StatefulSets should use OnDelete strategy to ensure proper quorum during updates
     
+    _ensure_internal_repo()
+    
     result = subprocess.run(
         ['helm', 'template', 'test', 'internal/pxc-db', '--namespace', 'test'],
         capture_output=True,
@@ -48,8 +72,10 @@ def test_statefulset_uses_ondelete_update_strategy():
         timeout=30
     )
     
-    if result.returncode == 0:
-        manifests = []
+    if result.returncode != 0:
+        pytest.skip(f"Local ChartMuseum chart not available: {result.stderr}")
+    
+    manifests = []
         for doc in yaml.safe_load_all(result.stdout):
             if doc and doc.get('kind') == 'StatefulSet':
                 # Check if it's a PXC StatefulSet
@@ -65,6 +91,8 @@ def test_statefulset_uses_ondelete_update_strategy():
 @pytest.mark.unit
 def test_statefulset_volume_claim_templates():
     """Test that StatefulSets use volume claim templates (required for persistence)."""
+    _ensure_internal_repo()
+    
     result = subprocess.run(
         ['helm', 'template', 'test', 'internal/pxc-db', '--namespace', 'test'],
         capture_output=True,
@@ -72,8 +100,10 @@ def test_statefulset_volume_claim_templates():
         timeout=30
     )
     
-    if result.returncode == 0:
-        manifests = []
+    if result.returncode != 0:
+        pytest.skip(f"Local ChartMuseum chart not available: {result.stderr}")
+    
+    manifests = []
         for doc in yaml.safe_load_all(result.stdout):
             if doc and doc.get('kind') == 'StatefulSet':
                 volume_claim_templates = doc.get('spec', {}).get('volumeClaimTemplates', [])
@@ -88,35 +118,39 @@ def test_statefulset_volume_claim_templates():
 @pytest.mark.unit
 def test_statefulset_service_name_matches():
     """Test that StatefulSet serviceName matches the headless service."""
+    _ensure_internal_repo()
+    
     result = subprocess.run(
-        ['helm', 'template', 'test', 'percona/pxc-db', '--namespace', 'test'],
+        ['helm', 'template', 'test', 'internal/pxc-db', '--namespace', 'test'],
         capture_output=True,
         text=True,
         timeout=30
     )
     
-    if result.returncode == 0:
-        services = {}
-        statefulsets = {}
-        
-        for doc in yaml.safe_load_all(result.stdout):
-            if doc and doc.get('kind') == 'Service':
-                # Find headless services (clusterIP: None)
-                spec = doc.get('spec', {})
-                if spec.get('clusterIP') == 'None':
-                    name = doc.get('metadata', {}).get('name')
-                    services[name] = doc
-            
-            elif doc and doc.get('kind') == 'StatefulSet':
+    if result.returncode != 0:
+        pytest.skip(f"Local ChartMuseum chart not available: {result.stderr}")
+    
+    services = {}
+    statefulsets = {}
+    
+    for doc in yaml.safe_load_all(result.stdout):
+        if doc and doc.get('kind') == 'Service':
+            # Find headless services (clusterIP: None)
+            spec = doc.get('spec', {})
+            if spec.get('clusterIP') == 'None':
                 name = doc.get('metadata', {}).get('name')
-                service_name = doc.get('spec', {}).get('serviceName')
-                if service_name:
-                    statefulsets[name] = service_name
+                services[name] = doc
         
-        # Verify each StatefulSet has a matching headless service
-        for sts_name, service_name in statefulsets.items():
-            assert service_name in services, \
-                f"StatefulSet {sts_name} serviceName {service_name} must match a headless Service"
+        elif doc and doc.get('kind') == 'StatefulSet':
+            name = doc.get('metadata', {}).get('name')
+            service_name = doc.get('spec', {}).get('serviceName')
+            if service_name:
+                statefulsets[name] = service_name
+    
+    # Verify each StatefulSet has a matching headless service
+    for sts_name, service_name in statefulsets.items():
+        assert service_name in services, \
+            f"StatefulSet {sts_name} serviceName {service_name} must match a headless Service"
 
 
 @pytest.mark.unit
@@ -135,6 +169,8 @@ def test_statefulset_replicas_match_cluster_size():
         assert values['proxysql']['size'] == node_count
         
         # Helm should render StatefulSets with matching replicas
+        _ensure_internal_repo()
+        
         result = subprocess.run(
             ['helm', 'template', 'test', 'internal/pxc-db', 
              '--namespace', 'test', '--set', f'pxc.size={node_count}', 
@@ -144,17 +180,19 @@ def test_statefulset_replicas_match_cluster_size():
             timeout=30
         )
         
-        if result.returncode == 0:
-            for doc in yaml.safe_load_all(result.stdout):
-                if doc and doc.get('kind') == 'StatefulSet':
-                    labels = doc.get('metadata', {}).get('labels', {})
-                    replicas = doc.get('spec', {}).get('replicas')
-                    
-                    if labels.get('app.kubernetes.io/component') == 'pxc' and replicas is not None:
-                        assert replicas == node_count, \
-                            f"PXC StatefulSet replicas {replicas} should match cluster size {node_count}"
-                    
-                    elif labels.get('app.kubernetes.io/component') == 'proxysql' and replicas is not None:
-                        assert replicas == node_count, \
-                            f"ProxySQL StatefulSet replicas {replicas} should match cluster size {node_count}"
+        if result.returncode != 0:
+            pytest.skip(f"Local ChartMuseum chart not available: {result.stderr}")
+        
+        for doc in yaml.safe_load_all(result.stdout):
+            if doc and doc.get('kind') == 'StatefulSet':
+                labels = doc.get('metadata', {}).get('labels', {})
+                replicas = doc.get('spec', {}).get('replicas')
+                
+                if labels.get('app.kubernetes.io/component') == 'pxc' and replicas is not None:
+                    assert replicas == node_count, \
+                        f"PXC StatefulSet replicas {replicas} should match cluster size {node_count}"
+                
+                elif labels.get('app.kubernetes.io/component') == 'proxysql' and replicas is not None:
+                    assert replicas == node_count, \
+                        f"ProxySQL StatefulSet replicas {replicas} should match cluster size {node_count}"
 

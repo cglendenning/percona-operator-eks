@@ -229,6 +229,330 @@ spec:
 
 **Note:** This setup is designed to replicate on-premises environments, so MinIO (on-premises S3-compatible storage) is the default.
 
+### Internal Helm Chart Repository (ChartMuseum)
+
+This project uses **ChartMuseum** as an internal Helm chart repository to store all Helm charts locally within your EKS cluster. This eliminates dependencies on external repositories and aligns with on-premises environments where external access may be restricted.
+
+#### What is ChartMuseum?
+
+ChartMuseum is an open-source Helm Chart Repository server that stores Helm charts in S3. It's lightweight, Kubernetes-native, and perfect for EKS deployments.
+
+**Benefits:**
+- ✅ **No external dependencies**: All charts stored locally
+- ✅ **S3 backend**: Uses AWS S3 for persistent storage
+- ✅ **Kubernetes-native**: Runs in your EKS cluster
+- ✅ **Secure**: IAM-based access control (IRSA)
+- ✅ **On-premises compatible**: Matches restricted network environments
+
+#### Quick Setup (3 Steps)
+
+**Step 1: Install ChartMuseum**
+
+```bash
+# Set your cluster name (if different from default)
+export CLUSTER_NAME="percona-eks"
+export AWS_REGION="us-east-1"
+
+# Run the setup script
+./setup-chartmuseum.sh
+```
+
+This script will:
+- ✅ Create an S3 bucket for chart storage
+- ✅ Set up IAM roles for S3 access (IRSA)
+- ✅ Install ChartMuseum in your EKS cluster
+- ✅ Configure it with S3 backend
+
+**Expected output:** ChartMuseum URL (e.g., `http://chartmuseum.chartmuseum.svc.cluster.local`)
+
+**Step 2: Mirror External Charts**
+
+```bash
+# Set the ChartMuseum URL (from Step 1)
+export CHARTMUSEUM_URL="http://chartmuseum.chartmuseum.svc.cluster.local"
+
+# Mirror all charts
+./mirror-charts.sh
+```
+
+This will download and upload:
+- Percona charts (pxc-operator, pxc-db)
+- MinIO chart
+- LitmusChaos chart
+
+**Step 3: Verify Setup**
+
+```bash
+# Add your internal repo
+helm repo add internal http://chartmuseum.chartmuseum.svc.cluster.local
+helm repo update
+
+# Search for charts
+helm search repo internal
+
+# Test installing a chart (dry-run)
+helm install test-percona internal/pxc-operator --dry-run --namespace percona
+```
+
+#### Architecture Overview
+
+```
+┌─────────────────┐
+│  EKS Cluster    │
+│                 │
+│  ┌───────────┐  │
+│  │ChartMuseum│  │───┐
+│  │  Pod      │  │   │
+│  └───────────┘  │   │
+│        │        │   │
+│  ┌─────▼────┐   │   │
+│  │  S3      │   │   │
+│  │  Bucket  │◄──┘   │
+│  └──────────┘       │
+│                     │
+│  ┌──────────────┐   │
+│  │  Your Apps   │───┘
+│  │  (Percona)   │
+│  └──────────────┘
+│
+└─────────────────┘
+```
+
+#### Detailed Setup Guide
+
+**Create S3 Bucket:**
+
+```bash
+export AWS_REGION="us-east-1"
+export CHART_BUCKET_NAME="percona-helm-charts-$(date +%s)"
+export NAMESPACE="chartmuseum"
+
+# Create S3 bucket
+aws s3 mb s3://${CHART_BUCKET_NAME} --region ${AWS_REGION}
+
+# Enable versioning (optional but recommended)
+aws s3api put-bucket-versioning \
+    --bucket ${CHART_BUCKET_NAME} \
+    --versioning-configuration Status=Enabled
+
+# Block public access (security best practice)
+aws s3api put-public-access-block \
+    --bucket ${CHART_BUCKET_NAME} \
+    --public-access-block-configuration \
+    "BlockPublicAcls=true,IgnorePublicAcls=true,BlockPublicPolicy=true,RestrictPublicBuckets=true"
+```
+
+**Create IAM Role for ChartMuseum (IRSA):**
+
+```bash
+# Create IAM policy for S3 access
+cat > /tmp/chartmuseum-s3-policy.json <<EOF
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Effect": "Allow",
+      "Action": [
+        "s3:GetObject",
+        "s3:PutObject",
+        "s3:DeleteObject",
+        "s3:ListBucket"
+      ],
+      "Resource": [
+        "arn:aws:s3:::${CHART_BUCKET_NAME}",
+        "arn:aws:s3:::${CHART_BUCKET_NAME}/*"
+      ]
+    }
+  ]
+}
+EOF
+
+# Create the policy
+aws iam create-policy \
+    --policy-name ChartMuseumS3Policy \
+    --policy-document file:///tmp/chartmuseum-s3-policy.json
+
+# Get your cluster OIDC provider
+CLUSTER_NAME="percona-eks"
+OIDC_PROVIDER=$(aws eks describe-cluster --name ${CLUSTER_NAME} --query "cluster.identity.oidc.issuer" --output text | sed -e "s/^https:\/\///")
+
+# Create trust policy and role (see HELM_REPO_SETUP.md for complete script)
+```
+
+**Install ChartMuseum:**
+
+```bash
+# Add ChartMuseum Helm repo
+helm repo add chartmuseum https://chartmuseum.github.io/charts
+helm repo update
+
+# Create namespace
+kubectl create namespace ${NAMESPACE}
+
+# Install ChartMuseum (see setup-chartmuseum.sh for complete setup)
+helm install chartmuseum chartmuseum/chartmuseum \
+    --namespace ${NAMESPACE} \
+    --set env.open.DISABLE_API=false \
+    --set env.open.STORAGE=amazon \
+    --set env.open.STORAGE_AMAZON_BUCKET=${CHART_BUCKET_NAME} \
+    --set env.open.STORAGE_AMAZON_REGION=${AWS_REGION}
+```
+
+**Mirror External Charts:**
+
+The `mirror-charts.sh` script handles downloading and uploading all required charts:
+
+```bash
+# Install helm-push plugin if needed
+helm plugin install https://github.com/chartmuseum/helm-push.git
+
+# Run mirror script
+./mirror-charts.sh
+```
+
+#### Configuration
+
+The codebase is configured to use ChartMuseum by default:
+
+**`src/percona.ts`:**
+- Default Helm repo URL: `http://chartmuseum.chartmuseum.svc.cluster.local`
+- The `addRepos()` function automatically adds the internal repo
+
+**Test Files:**
+- Unit tests automatically check for and add the internal repo if needed
+- Tests gracefully skip if ChartMuseum is not available
+
+#### Configuration Options
+
+You can customize the setup with environment variables:
+
+```bash
+# Custom bucket name
+export CHART_BUCKET_NAME="my-custom-chart-bucket"
+
+# Custom namespace
+export NAMESPACE="helm-repo"
+
+# Custom ChartMuseum URL
+export CHARTMUSEUM_URL="http://chartmuseum.chartmuseum.svc.cluster.local"
+
+# Service type (LoadBalancer, ClusterIP, NodePort)
+export SERVICE_TYPE="LoadBalancer"
+
+# Then run setup
+./setup-chartmuseum.sh
+```
+
+#### Automation: Keep Charts Updated
+
+Set up a CronJob to periodically sync charts:
+
+```yaml
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: chart-sync
+  namespace: chartmuseum
+spec:
+  schedule: "0 2 * * *"  # Daily at 2 AM
+  jobTemplate:
+    spec:
+      template:
+        spec:
+          containers:
+          - name: helm
+            image: alpine/helm:latest
+            command:
+            - /bin/sh
+            - -c
+            - |
+              helm repo add internal http://chartmuseum.chartmuseum.svc.cluster.local
+              # ... mirror logic ...
+          restartPolicy: OnFailure
+```
+
+#### Troubleshooting
+
+**ChartMuseum not accessible:**
+```bash
+# Check if pod is running
+kubectl get pods -n chartmuseum
+
+# Check service
+kubectl get svc -n chartmuseum
+
+# Check logs
+kubectl logs -n chartmuseum -l app.kubernetes.io/name=chartmuseum
+```
+
+**S3 access issues:**
+```bash
+# Verify service account annotation
+kubectl get sa chartmuseum -n chartmuseum -o yaml
+
+# Check IAM role
+kubectl describe sa chartmuseum -n chartmuseum
+```
+
+**Charts not found after mirroring:**
+```bash
+# Verify charts in S3
+aws s3 ls s3://<your-bucket-name>/
+
+# Check ChartMuseum API
+curl http://chartmuseum.chartmuseum.svc.cluster.local/api/charts
+```
+
+#### Uninstall ChartMuseum
+
+To remove ChartMuseum:
+
+```bash
+# Uninstall Helm release
+helm uninstall chartmuseum -n chartmuseum
+
+# Delete namespace
+kubectl delete namespace chartmuseum
+
+# Delete S3 bucket (careful - this deletes all charts!)
+aws s3 rm s3://<your-bucket-name> --recursive
+aws s3 rb s3://<your-bucket-name>
+
+# Delete IAM resources (optional)
+aws iam detach-role-policy --role-name ChartMuseumRole-<cluster-name> --policy-arn <policy-arn>
+aws iam delete-role --role-name ChartMuseumRole-<cluster-name>
+aws iam delete-policy --policy-arn <policy-arn>
+```
+
+#### Security Considerations
+
+1. **Authentication**: Consider adding authentication to ChartMuseum for production:
+   ```bash
+   helm upgrade chartmuseum chartmuseum/chartmuseum \
+       --namespace ${NAMESPACE} \
+       --set env.open.BASIC_AUTH_USER=admin \
+       --set env.open.BASIC_AUTH_PASS=<password>
+   ```
+
+2. **Network Policies**: Restrict access to ChartMuseum namespace
+
+3. **TLS/HTTPS**: Use Ingress with TLS certificates for production
+
+4. **IAM Permissions**: Follow least privilege for S3 access
+
+#### External Repositories Being Mirrored
+
+The following external repositories are mirrored to ChartMuseum:
+
+1. **Percona**: `https://percona.github.io/percona-helm-charts/`
+   - Charts: `percona/pxc-operator`, `percona/pxc-db`
+
+2. **MinIO**: `https://charts.min.io/`
+   - Chart: `minio/minio`
+
+3. **LitmusChaos**: `https://litmuschaos.github.io/litmus-helm/`
+   - Chart: `litmuschaos/litmus`
+
 ### AWS Console Access
 Grant your IAM user/role access to view Kubernetes resources in the AWS Console:
 ```bash
