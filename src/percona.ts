@@ -2131,12 +2131,17 @@ async function uninstallLitmusChaos() {
       return;
     }
     
-    // Uninstall Helm release
+    // Uninstall Helm release (non-fatal if not installed)
     try {
       await run('helm', ['uninstall', 'litmus', '-n', 'litmus'], { stdio: 'pipe' });
       logSuccess('✓ LitmusChaos Helm release uninstalled');
-    } catch (error) {
-      logWarn(`Failed to uninstall LitmusChaos Helm release: ${error}`);
+    } catch (error: any) {
+      const msg = error?.toString?.() || '';
+      if (msg.includes('release: not found') || msg.includes('Release not loaded') || msg.includes('not found')) {
+        logInfo('LitmusChaos Helm release not found; continuing uninstall.');
+      } else {
+        logWarn(`Failed to uninstall LitmusChaos Helm release: ${msg}`);
+      }
     }
     
     // Delete namespace (will also delete all resources)
@@ -2729,8 +2734,132 @@ async function uninstall(ns: string, name: string) {
           } else {
             // Still exists, try force delete
             logInfo('Namespace still exists, attempting force delete...');
-            await run('kubectl', ['delete', 'namespace', ns, '--force', '--grace-period=0'], { stdio: 'pipe' });
-            logInfo('Force deletion command completed');
+            try {
+              await run('kubectl', ['delete', 'namespace', ns, '--force', '--grace-period=0'], { stdio: 'pipe' });
+              logInfo('Force deletion command completed');
+            } catch (forceDeleteError: any) {
+              if (!forceDeleteError.toString().includes('NotFound')) {
+                logWarn(`Force delete command error: ${forceDeleteError}`);
+              }
+            }
+            
+            // Poll for namespace deletion with diagnostics
+            logInfo('Polling namespace deletion status (checking every 3 seconds)...');
+            const maxPollAttempts = 60; // 3 minutes total
+            for (let attempt = 1; attempt <= maxPollAttempts; attempt++) {
+              await new Promise(resolve => setTimeout(resolve, 3000));
+              
+              try {
+                const pollCheck = await execa('kubectl', ['get', 'namespace', ns, '-o', 'json'], { stdio: 'pipe' });
+                const nsData = JSON.parse(pollCheck.stdout);
+                
+                // Check status conditions
+                const status = nsData.status || {};
+                const conditions = status.conditions || [];
+                
+                logInfo(`  Check ${attempt}/${maxPollAttempts}: Namespace still in '${nsData.status?.phase || 'Unknown'}' state`);
+                
+                // Parse and display blocking resources
+                for (const condition of conditions) {
+                  if (condition.type === 'NamespaceContentRemaining') {
+                    logWarn(`    → Blocking: Content remaining - ${condition.message || 'Unknown resources'}`);
+                    
+                    // Try to extract resource details from message
+                    if (condition.message) {
+                      const resourceMatch = condition.message.match(/has (\d+) resource\(s\): (.+)/);
+                      if (resourceMatch) {
+                        logWarn(`      Resources blocking deletion: ${resourceMatch[2]}`);
+                      }
+                      
+                      // Try to extract specific resource types
+                      const resourceTypesMatch = condition.message.match(/([a-z.]+)\/[a-z0-9-]+/gi);
+                      if (resourceTypesMatch) {
+                        const uniqueTypes = [...new Set(resourceTypesMatch)] as string[];
+                        logInfo(`      Attempting to remove finalizers from: ${uniqueTypes.join(', ')}`);
+                        
+                        // Try to clean up each resource type mentioned
+                        for (const resourceRef of uniqueTypes) {
+                          const [apiVersion, kind] = (resourceRef as string).split('/');
+                          if (kind) {
+                            try {
+                              // List resources of this kind in the namespace
+                              const resList = await execa('kubectl', ['get', kind.toLowerCase(), '-n', ns, '-o', 'json'], { stdio: 'pipe' }).catch(() => null);
+                              if (resList) {
+                                const resData = JSON.parse(resList.stdout);
+                                if (resData.items && resData.items.length > 0) {
+                                  for (const item of resData.items) {
+                                    try {
+                                      await run('kubectl', ['patch', kind.toLowerCase(), item.metadata.name, '-n', ns, '-p', '{"metadata":{"finalizers":[]}}', '--type=merge'], { stdio: 'pipe' });
+                                      logInfo(`        ✓ Removed finalizers from ${kind}/${item.metadata.name}`);
+                                    } catch (e) {
+                                      // Ignore individual resource errors
+                                    }
+                                  }
+                                }
+                              }
+                            } catch (e) {
+                              // Ignore errors for resource types we can't access
+                            }
+                          }
+                        }
+                      }
+                    }
+                  } else if (condition.type === 'NamespaceFinalizersRemaining') {
+                    logWarn(`    → Blocking: Finalizers remaining - ${condition.message || 'Unknown finalizers'}`);
+                    
+                    // Extract finalizer names from message if possible
+                    if (condition.message) {
+                      const finalizerMatch = condition.message.match(/finalizers: (.+)/);
+                      if (finalizerMatch) {
+                        logWarn(`      Finalizers: ${finalizerMatch[1]}`);
+                      }
+                    }
+                  }
+                }
+                
+                // Also check what resources actually exist
+                if (attempt % 5 === 0) { // Every 5 checks (15 seconds)
+                  logInfo('    Enumerating remaining resources in namespace...');
+                  const allResources = await execa('kubectl', ['api-resources', '--verbs=list', '--namespaced=true', '-o', 'name'], { stdio: 'pipe' }).catch(() => null);
+                  if (allResources) {
+                    const resourceTypes = allResources.stdout.trim().split('\n');
+                    for (const resourceType of resourceTypes.slice(0, 20)) { // Limit to first 20 types
+                      try {
+                        const res = await execa('kubectl', ['get', resourceType.trim(), '-n', ns, '--no-headers'], { stdio: 'pipe', timeout: 5000 }).catch(() => null);
+                        if (res && res.stdout.trim()) {
+                          const count = res.stdout.trim().split('\n').filter(l => l.trim()).length;
+                          if (count > 0) {
+                            logWarn(`      Found ${count} ${resourceType.trim()} resource(s) remaining`);
+                          }
+                        }
+                      } catch (e) {
+                        // Ignore errors
+                      }
+                    }
+                  }
+                }
+                
+              } catch (pollError: any) {
+                // Namespace might be deleted (NotFound) or error occurred
+                const errorStr = pollError.toString();
+                if (errorStr.includes('NotFound') || errorStr.includes('not found') || (pollError.exitCode !== undefined && pollError.exitCode === 1)) {
+                  logSuccess('✓ Namespace deleted successfully!');
+                  namespaceDeleted = true;
+                  break;
+                } else {
+                  // Some other error - log it but continue polling
+                  if (attempt % 10 === 0) { // Only log every 10th attempt to avoid spam
+                    logWarn(`    Polling error (attempt ${attempt}): ${errorStr}`);
+                  }
+                }
+              }
+            }
+            
+            if (!namespaceDeleted) {
+              logWarn('⚠️  Namespace deletion is taking longer than expected.');
+              logWarn('    The namespace may still be deleting in the background.');
+              logWarn('    You can check status manually with: kubectl get namespace ' + ns);
+            }
           }
         } catch (deleteAfterError: any) {
           if (deleteAfterError.toString().includes('NotFound')) {
@@ -2740,9 +2869,6 @@ async function uninstall(ns: string, name: string) {
             logWarn(`Force delete failed: ${deleteAfterError}`);
           }
         }
-        
-        // Wait a moment for deletion to propagate
-        await new Promise(resolve => setTimeout(resolve, 2000));
       } else {
         logInfo('Namespace not found - deletion successful');
         namespaceDeleted = true;
