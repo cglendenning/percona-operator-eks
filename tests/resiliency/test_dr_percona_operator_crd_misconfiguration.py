@@ -57,7 +57,7 @@ def test_percona_operator_crd_misconfiguration(core_v1, apps_v1, custom_objects_
     wait_for_chaos_completion(
         chaos_namespace='litmus',
         engine_name=engine_name,
-        timeout=max(600, 60 + 300)
+        timeout=180
     )
     print(f"✓ Chaos experiment completed\n")
     

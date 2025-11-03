@@ -57,7 +57,7 @@ def test_ingressvip_failure(core_v1, apps_v1, custom_objects_v1):
     wait_for_chaos_completion(
         chaos_namespace='litmus',
         engine_name=engine_name,
-        timeout=max(600, 60 + 300)
+        timeout=180
     )
     print(f"✓ Chaos experiment completed\n")
     

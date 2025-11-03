@@ -71,9 +71,14 @@ def get_chaos_engine_result(chaos_namespace: str, engine_name: str) -> Optional[
         return None
 
 
-def wait_for_chaos_completion(chaos_namespace: str, engine_name: str, timeout: int = 300) -> bool:
+def wait_for_chaos_completion(chaos_namespace: str, engine_name: str, timeout: int = 180) -> bool:
     """
     Wait for a chaos experiment to complete.
+    
+    Args:
+        chaos_namespace: Namespace where chaos resources are
+        engine_name: Name of the ChaosEngine
+        timeout: Maximum time to wait in seconds (default: 180s - 3 minutes)
     
     Returns:
         True if chaos completed successfully, False otherwise
@@ -81,33 +86,75 @@ def wait_for_chaos_completion(chaos_namespace: str, engine_name: str, timeout: i
     start_time = time.time()
     elapsed = 0
     check_count = 0
+    not_started_start = None  # Track when we first see "not-started"
+    max_not_started_time = 60  # Fail if stuck in not-started for 60 seconds
     
     console.print(f"[cyan]Waiting for chaos experiment {engine_name} to complete...[/cyan]")
     console.print(f"[dim]Timeout: {timeout}s, checking every 5 seconds...[/dim]")
     
+    # Quick check: Is chaos operator running?
+    try:
+        core_v1 = client.CoreV1Api()
+        operator_pods = core_v1.list_namespaced_pod(
+            namespace=chaos_namespace,
+            label_selector='app.kubernetes.io/name=litmus'
+        )
+        running_operators = [p for p in operator_pods.items if p.status.phase == 'Running']
+        if not running_operators:
+            console.print(f"[red]✗ Chaos operator not running in namespace {chaos_namespace}[/red]")
+            console.print(f"[yellow]ChaosEngine may never start without the operator[/yellow]")
+        else:
+            console.print(f"[dim]✓ Chaos operator running: {len(running_operators)} pod(s)[/dim]")
+    except Exception as e:
+        console.print(f"[yellow]Could not verify chaos operator status: {e}[/yellow]")
+    
+    engine = None
     while elapsed < timeout:
         check_count += 1
         elapsed = int(time.time() - start_time)
+        
+        # Always check engine status (not just when printing)
+        try:
+            custom_objects_v1 = client.CustomObjectsApi()
+            engine = custom_objects_v1.get_namespaced_custom_object(
+                group='litmuschaos.io',
+                version='v1alpha1',
+                namespace=chaos_namespace,
+                plural='chaosengines',
+                name=engine_name
+            )
+            engine_status = engine.get('status', {}).get('engineStatus', 'not-started')
+            experiments = engine.get('status', {}).get('experiments', [])
+            
+            # Track if stuck in "not-started" for too long (check every iteration)
+            if engine_status == 'not-started':
+                if not_started_start is None:
+                    not_started_start = elapsed
+                else:
+                    stuck_time = elapsed - not_started_start
+                    if stuck_time >= max_not_started_time:
+                        console.print(f"[red]✗ ChaosEngine stuck in 'not-started' for {stuck_time}s (max: {max_not_started_time}s)[/red]")
+                        console.print(f"[yellow]This usually means the chaos operator isn't processing the ChaosEngine[/yellow]")
+                        console.print(f"[yellow]Check operator logs: kubectl logs -n {chaos_namespace} -l app.kubernetes.io/name=litmus[/yellow]")
+                        return False
+            else:
+                # Status changed, reset the timer
+                not_started_start = None
+        except Exception as e:
+            # If we can't get engine status, continue (might be transient API issue)
+            if check_count == 1:
+                console.print(f"[yellow]Could not get ChaosEngine status: {e}[/yellow]")
         
         # Print progress every 30 seconds or on first check
         if check_count % 6 == 0 or check_count == 1:
             console.print(f"[dim]  Check #{check_count} at {elapsed}s: Checking chaos experiment status...[/dim]")
             
-            # Get detailed status information
-            try:
-                custom_objects_v1 = client.CustomObjectsApi()
-                core_v1 = client.CoreV1Api()
-                batch_v1 = client.BatchV1Api()
-                
-                # Check ChaosEngine status
+            # Get detailed status information for display
+            if engine:
                 try:
-                    engine = custom_objects_v1.get_namespaced_custom_object(
-                        group='litmuschaos.io',
-                        version='v1alpha1',
-                        namespace=chaos_namespace,
-                        plural='chaosengines',
-                        name=engine_name
-                    )
+                    core_v1 = client.CoreV1Api()
+                    batch_v1 = client.BatchV1Api()
+                    
                     engine_status = engine.get('status', {}).get('engineStatus', 'not-started')
                     experiments = engine.get('status', {}).get('experiments', [])
                     
@@ -558,7 +605,7 @@ def run_resiliency_tests_with_chaos(
         return False
     
     # Wait for chaos to complete
-    if not wait_for_chaos_completion(chaos_namespace, engine_name, timeout=600):
+    if not wait_for_chaos_completion(chaos_namespace, engine_name, timeout=180):
         console.print("[red]✗ Chaos experiment did not complete successfully[/red]")
         return False
     
