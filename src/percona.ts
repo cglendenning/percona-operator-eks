@@ -310,17 +310,11 @@ async function validateEksCluster(ns: string, nodes: number) {
     // Check DNS resolution now that namespace exists
     try {
       logInfo('Checking DNS resolution...');
-      const dnsTestPod = `apiVersion: v1
-kind: Pod
-metadata:
-  name: dns-test
-  namespace: ${ns}
-spec:
-  containers:
-  - name: dns-test
-    image: busybox:1.35
-    command: ['nslookup', 'kubernetes.default.svc.cluster.local']
-  restartPolicy: Never`;
+      const { readFile } = await import('fs/promises');
+      const { resolve } = await import('path');
+      const templatePath = resolve(process.cwd(), 'templates', 'test', 'dns-test-pod.yaml');
+      let dnsTestPod = await readFile(templatePath, 'utf8');
+      dnsTestPod = dnsTestPod.replace(/\{\{NAMESPACE\}\}/g, ns);
       
       const proc = execa('kubectl', ['apply', '-f', '-'], { stdio: ['pipe', 'pipe', 'pipe'] });
       proc.stdin?.write(dnsTestPod);
@@ -353,14 +347,11 @@ spec:
     
     // Check if we can create secrets (needed for S3 credentials)
     try {
-      const testSecret = `apiVersion: v1
-kind: Secret
-metadata:
-  name: test-secret
-  namespace: ${ns}
-type: Opaque
-data:
-  test: dGVzdA==`;
+      const { readFile } = await import('fs/promises');
+      const { resolve } = await import('path');
+      const templatePath = resolve(process.cwd(), 'templates', 'test', 'test-secret.yaml');
+      let testSecret = await readFile(templatePath, 'utf8');
+      testSecret = testSecret.replace(/\{\{NAMESPACE\}\}/g, ns);
       
       const proc = execa('kubectl', ['apply', '-f', '-'], { stdio: ['pipe', 'pipe', 'pipe'] });
       proc.stdin?.write(testSecret);
@@ -375,26 +366,11 @@ data:
     
     // Check if we can create StatefulSets (needed for Percona)
     try {
-      const testSts = `apiVersion: apps/v1
-kind: StatefulSet
-metadata:
-  name: test-sts
-  namespace: ${ns}
-spec:
-  serviceName: test-service
-  replicas: 0
-  selector:
-    matchLabels:
-      app: test
-  template:
-    metadata:
-      labels:
-        app: test
-    spec:
-      containers:
-      - name: test
-        image: busybox:1.35
-        command: ['sleep', '3600']`;
+      const { readFile } = await import('fs/promises');
+      const { resolve } = await import('path');
+      const templatePath = resolve(process.cwd(), 'templates', 'test', 'test-sts.yaml');
+      let testSts = await readFile(templatePath, 'utf8');
+      testSts = testSts.replace(/\{\{NAMESPACE\}\}/g, ns);
         
       const proc = execa('kubectl', ['apply', '-f', '-'], { stdio: ['pipe', 'pipe', 'pipe'] });
       proc.stdin?.write(testSts);
@@ -480,123 +456,22 @@ async function installOperator(ns: string) {
   }
 }
 
-function clusterValues(nodes: number, accountId: string): string {
-  return `pxc:
-  size: ${nodes}
-  resources:
-    requests:
-      memory: 1Gi
-      cpu: 500m
-    limits:
-      memory: 2Gi
-      cpu: 1
-  persistence:
-    enabled: true
-    size: 20Gi
-    accessMode: ReadWriteOnce
-    storageClass: gp3
-  affinity:
-    podAntiAffinity:
-      requiredDuringSchedulingIgnoredDuringExecution:
-      - labelSelector:
-          matchExpressions:
-          - key: app.kubernetes.io/component
-            operator: In
-            values:
-            - pxc
-        topologyKey: topology.kubernetes.io/zone
-  podDisruptionBudget:
-    maxUnavailable: 1
-haproxy:
-  enabled: false
-proxysql:
-  enabled: true
-  size: ${nodes}
-  image: percona/proxysql2:2.7.3
-  resources:
-    requests:
-      memory: 256Mi
-      cpu: 100m
-    limits:
-      memory: 512Mi
-      cpu: 500m
-  affinity:
-    podAntiAffinity:
-      requiredDuringSchedulingIgnoredDuringExecution:
-      - labelSelector:
-          matchExpressions:
-          - key: app.kubernetes.io/component
-            operator: In
-            values:
-            - proxysql
-        topologyKey: topology.kubernetes.io/zone
-  podDisruptionBudget:
-    maxUnavailable: 1
-  volumeSpec:
-    persistentVolumeClaim:
-      accessModes:
-        - ReadWriteOnce
-      resources:
-        requests:
-          storage: 5Gi
-      storageClassName: gp3
-backup:
-  enabled: true
-  pitr:
-    enabled: true
-    storageName: minio-backup
-    timeBetweenUploads: 60
-  storages:
-    minio-backup:
-      type: s3
-      s3:
-        bucket: percona-backups
-        region: us-east-1
-        endpointUrl: http://minio.minio.svc.cluster.local:9000
-        forcePathStyle: true
-        credentialsSecret: percona-backup-minio-credentials
-  schedule:
-    - name: "daily-backup"
-      schedule: "0 2 * * *"
-      retention:
-        type: "count"
-        count: 7
-        deleteFromStorage: true
-      storageName: minio-backup
-    - name: "weekly-backup"
-      schedule: "0 1 * * 0"
-      retention:
-        type: "count"
-        count: 8
-        deleteFromStorage: true
-      storageName: minio-backup
-    - name: "monthly-backup"
-      schedule: "30 1 1 * *"
-      retention:
-        type: "count"
-        count: 12
-        deleteFromStorage: true
-      storageName: minio-backup
-`;}
+async function clusterValues(nodes: number, accountId: string): Promise<string> {
+  const { readFile } = await import('fs/promises');
+  const { resolve } = await import('path');
+  const templatePath = resolve(process.cwd(), 'templates', 'percona-values.yaml');
+  let content = await readFile(templatePath, 'utf8');
+  content = content.replace(/\{\{NODES\}\}/g, nodes.toString());
+  return content;
+}
 
 async function createStorageClass() {
   logInfo('Creating gp3 storage class...');
-  const storageClassYaml = `apiVersion: storage.k8s.io/v1
-kind: StorageClass
-metadata:
-  name: gp3
-  annotations:
-    storageclass.kubernetes.io/is-default-class: "true"
-provisioner: ebs.csi.aws.com
-allowVolumeExpansion: true
-parameters:
-  type: gp3
-  fsType: xfs
-  encrypted: "true"
-reclaimPolicy: Delete
-volumeBindingMode: WaitForFirstConsumer`;
-
   const { execa } = await import('execa');
+  const { readFile } = await import('fs/promises');
+  const { resolve } = await import('path');
+  const templatePath = resolve(process.cwd(), 'templates', 'storageclass-gp3.yaml');
+  const storageClassYaml = await readFile(templatePath, 'utf8');
   const proc = execa('kubectl', ['apply', '-f', '-'], { stdio: ['pipe', 'inherit', 'inherit'] });
   proc.stdin?.write(storageClassYaml);
   proc.stdin?.end();
@@ -1139,26 +1014,19 @@ async function installMinIO(ns: string) {
 async function createMinIOCredentialsSecret(ns: string, accessKey: string, secretKey: string) {
   logInfo('Creating MinIO credentials secret...');
   const { execa } = await import('execa');
+  const { readFile } = await import('fs/promises');
+  const { resolve } = await import('path');
   
   try {
-    // MinIO endpoint (using cluster-internal DNS)
-    const minioEndpoint = 'http://minio.minio.svc.cluster.local:9000';
-    
-    // Create Kubernetes secret with MinIO credentials
-    const secretYaml = `apiVersion: v1
-kind: Secret
-metadata:
-  name: percona-backup-minio-credentials
-  namespace: ${ns}
-type: Opaque
-stringData:
-  AWS_ACCESS_KEY_ID: ${accessKey}
-  AWS_SECRET_ACCESS_KEY: ${secretKey}
-  AWS_ENDPOINT: ${minioEndpoint}
-  AWS_DEFAULT_REGION: us-east-1`;
+    const templatePath = resolve(process.cwd(), 'templates', 'minio-credentials-secret.yaml');
+    let content = await readFile(templatePath, 'utf8');
+    content = content
+      .replace(/\{\{NAMESPACE\}\}/g, ns)
+      .replace(/\{\{AWS_ACCESS_KEY_ID\}\}/g, accessKey)
+      .replace(/\{\{AWS_SECRET_ACCESS_KEY\}\}/g, secretKey);
 
     const proc = execa('kubectl', ['apply', '-f', '-'], { stdio: ['pipe', 'inherit', 'inherit'] });
-    proc.stdin?.write(secretYaml);
+    proc.stdin?.write(content);
     proc.stdin?.end();
     await proc;
 
@@ -1172,7 +1040,7 @@ stringData:
 async function installCluster(ns: string, name: string, nodes: number, accountId: string) {
   logInfo(`Installing Percona cluster "${name}" with ${nodes} nodes via Helm...`);
   logInfo('This may take a few minutes...');
-  const values = clusterValues(nodes, accountId);
+  const values = await clusterValues(nodes, accountId);
   const { execa } = await import('execa');
   const proc = execa('helm', ['upgrade', '--install', name, 'percona/pxc-db', '-n', ns, '-f', '-'], { stdio: ['pipe', 'inherit', 'inherit'] });
   proc.stdin?.write(values);
