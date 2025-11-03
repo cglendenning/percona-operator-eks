@@ -295,7 +295,6 @@ if [ "$VERBOSE" = "true" ]; then
         "-s"  # Disable output capturing so console.print works immediately
         "--tb=short"
         "--color=yes"
-        "tests/"
     )
 else
     # Minimal output: show test names with PASS/FAIL status
@@ -304,17 +303,10 @@ else
         "--tb=line"  # Minimal traceback (one line) for failures only
         "--color=yes"
         "-rN"  # No extra summary details for passed tests
-        "tests/"
     )
 fi
 
-# Default behavior: Run ALL tests (unit, integration, and resiliency)
-# Only disable resiliency if explicitly excluded
-if [ "$NO_RESILIENCY" == "false" ]; then
-    export RUN_RESILIENCY_TESTS=true
-    # Add pytest flag to trigger chaos experiments
-    PYTEST_OPTS+=("--trigger-chaos")
-fi
+# Do not enable chaos globally. Chaos is only enabled for resiliency/DR stages.
 
 # Build pytest marker expression to exclude test categories
 MARKER_EXPR=""
@@ -403,15 +395,17 @@ run_category() {
     local category_name="$1"   # pretty name
     local marker_expr="$2"     # pytest -m expression
     local trigger_chaos="$3"   # true/false
+    local test_path="$4"       # directory to run
 
     local OPTS=("${PYTEST_OPTS[@]}")
     # Replace any previous -m with category-specific marker
-    # Build new opts without existing -m
+    # Build new opts without existing -m or --trigger-chaos
     local CLEAN_OPTS=()
     local SKIP_NEXT=false
     for opt in "${OPTS[@]}"; do
         if [ "$SKIP_NEXT" = true ]; then SKIP_NEXT=false; continue; fi
         if [ "$opt" = "-m" ]; then SKIP_NEXT=true; continue; fi
+        if [ "$opt" = "--trigger-chaos" ]; then continue; fi
         CLEAN_OPTS+=("$opt")
     done
     OPTS=("${CLEAN_OPTS[@]}")
@@ -424,11 +418,11 @@ run_category() {
 
     if [ "$VERBOSE" = "true" ]; then
         echo -e "${BLUE}=== ${category_name} ===${NC}"
-        pytest "${OPTS[@]}"
+        pytest "${OPTS[@]}" "$test_path"
         return $?
     else
         TEMP_OUTPUT=$(mktemp)
-        pytest "${OPTS[@]}" > "$TEMP_OUTPUT" 2>&1
+        pytest "${OPTS[@]}" "$test_path" > "$TEMP_OUTPUT" 2>&1
         local rc=$?
         awk '
         /^tests\/.*::/ {
@@ -463,21 +457,21 @@ set +e
 TEST_RESULT=0
 
 if [ "$NO_UNIT" == "false" ]; then
-    run_category "Unit tests" "unit" false
+    run_category "Unit tests" "unit" false "tests/unit"
     [ $? -ne 0 ] && TEST_RESULT=1
 fi
 
 if [ "$NO_INTEGRATION" == "false" ]; then
-    run_category "Integration tests" "integration" false
+    run_category "Integration tests" "integration" false "tests/integration"
     [ $? -ne 0 ] && TEST_RESULT=1
 fi
 
 if [ "$NO_RESILIENCY" == "false" ]; then
     # Run resiliency (non-DR) first, then DR scenarios
-    run_category "Resiliency tests" "resiliency and not dr" true
+    run_category "Resiliency tests" "resiliency and not dr" true "tests/resiliency"
     [ $? -ne 0 ] && TEST_RESULT=1
     if [ "$NO_DR" == "false" ]; then
-        run_category "DR scenario tests" "dr" true
+        run_category "DR scenario tests" "dr" true "tests/resiliency"
         [ $? -ne 0 ] && TEST_RESULT=1
     fi
 fi
