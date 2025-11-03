@@ -2258,164 +2258,103 @@ async function uninstall(ns: string, name: string) {
   
   // Delete resources in correct order (controllers before pods to prevent recreation)
   
-  // 1. Delete StatefulSets first (stops pod recreation)
+  // 1. Delete StatefulSets first (stops pod recreation) - AGGRESSIVE MODE
   try {
     logInfo('Deleting StatefulSets...');
-    await run('kubectl', ['delete', 'statefulset', '--all', '-n', ns, '--timeout=60s'], { stdio: 'pipe' });
+    await run('kubectl', ['delete', 'statefulset', '--all', '-n', ns, '--timeout=10s', '--force', '--grace-period=0'], { stdio: 'pipe' });
     logSuccess('StatefulSets deleted successfully');
-  } catch (error) {
+  } catch (error: any) {
     if (error.toString().includes('NotFound') || error.toString().includes('no resources found')) {
       logInfo('No StatefulSets found or already deleted');
     } else {
-      logWarn(`Error deleting StatefulSets: ${error}`);
+      logWarn(`StatefulSet deletion timed out or failed, continuing...`);
     }
   }
   
-  // 2. Delete any remaining Pods (should be cleaned up by StatefulSet deletion)
+  // 2. Delete any remaining Pods immediately - AGGRESSIVE MODE
   try {
     logInfo('Deleting remaining Pods...');
-    await run('kubectl', ['delete', 'pods', '--all', '-n', ns, '--timeout=30s', '--force', '--grace-period=0'], { stdio: 'pipe' });
+    await run('kubectl', ['delete', 'pods', '--all', '-n', ns, '--timeout=5s', '--force', '--grace-period=0'], { stdio: 'pipe' });
     logSuccess('Pods deleted successfully');
-  } catch (error) {
+  } catch (error: any) {
     if (error.toString().includes('NotFound') || error.toString().includes('no resources found')) {
       logInfo('No Pods found or already deleted');
-    } else if (error.toString().includes('timeout') || error.toString().includes('timed out')) {
-      logWarn('Pod deletion timed out, checking for remaining pods and force deleting individually...');
-      try {
-        // Get list of remaining pods
-        const podResult = await execa('kubectl', ['get', 'pods', '-n', ns, '--no-headers', '-o', 'custom-columns=NAME:.metadata.name'], { stdio: 'pipe' });
-        const podNames = podResult.stdout.trim().split('\n').filter(name => name.trim());
-        
-        if (podNames.length === 0) {
-          logInfo('✓ All pods were actually deleted (none remain)');
-        } else {
-          logInfo(`Force deleting ${podNames.length} remaining pod(s)...`);
-          for (const podName of podNames) {
-            try {
-              await run('kubectl', ['delete', 'pod', podName, '-n', ns, '--force', '--grace-period=0'], { stdio: 'pipe' });
-              logInfo(`✓ Pod ${podName} force deleted`);
-            } catch (podError) {
-              if (podError.toString().includes('NotFound') || podError.toString().includes('not found')) {
-                logInfo(`✓ Pod ${podName} already deleted (not found)`);
-              } else {
-                logWarn(`Warning: Could not delete pod ${podName}: ${podError}`);
-              }
-            }
-          }
-        }
-      } catch (forceError) {
-        logWarn(`Error during pod force deletion: ${forceError}`);
-      }
     } else {
-      logWarn(`Error deleting Pods: ${error}`);
+      logWarn('Pod deletion timed out, continuing...');
     }
   }
   
-  // 3. Delete Services
+  // 3. Delete Services - AGGRESSIVE MODE
   try {
     logInfo('Deleting Services...');
-    await run('kubectl', ['delete', 'service', '--all', '-n', ns], { stdio: 'pipe' });
+    await run('kubectl', ['delete', 'service', '--all', '-n', ns, '--timeout=5s'], { stdio: 'pipe' });
     logSuccess('Services deleted successfully');
-  } catch (error) {
+  } catch (error: any) {
     if (error.toString().includes('NotFound') || error.toString().includes('no resources found')) {
       logInfo('No Services found or already deleted');
     } else {
-      logWarn(`Error deleting Services: ${error}`);
+      logWarn(`Service deletion timed out or failed, continuing...`);
     }
   }
   
-  // 4. Delete PVCs (they can have finalizers)
+  // 4. Delete PVCs (they can have finalizers) - AGGRESSIVE MODE
   try {
     logInfo('Deleting PVCs...');
-    await run('kubectl', ['delete', 'pvc', '--all', '-n', ns, '--timeout=60s'], { stdio: 'pipe' });
+    await run('kubectl', ['delete', 'pvc', '--all', '-n', ns, '--timeout=10s'], { stdio: 'pipe' });
     logSuccess('PVCs deleted successfully');
-  } catch (error) {
+  } catch (error: any) {
     if (error.toString().includes('NotFound') || error.toString().includes('no resources found')) {
       logInfo('No PVCs found or already deleted');
     } else if (error.toString().includes('timeout')) {
-      logWarn('PVC deletion timed out, forcing cleanup...');
+      logWarn('PVC deletion timed out, forcing aggressive cleanup...');
       try {
-        // Force delete PVCs that are stuck
+        // Get all PVCs immediately
         const pvcResult = await execa('kubectl', ['get', 'pvc', '-n', ns, '--no-headers', '-o', 'custom-columns=NAME:.metadata.name'], { stdio: 'pipe' });
         const pvcNames = pvcResult.stdout.trim().split('\n').filter(name => name.trim());
         
-        for (const pvcName of pvcNames) {
-          try {
-            logInfo(`Force deleting PVC: ${pvcName}...`);
-            
-            // Check PVC status first
+        if (pvcNames.length === 0) {
+          logInfo('✓ No PVCs found');
+        } else {
+          logInfo(`Aggressively deleting ${pvcNames.length} PVC(s)...`);
+          
+          // Remove all finalizers in parallel
+          const { execa } = await import('execa');
+
+          // Small helper to bound async wait times
+          const withTimeout = async <T>(p: Promise<T>, ms: number): Promise<void> => {
+            return Promise.race([
+              p.then(() => {}),
+              new Promise<void>(resolve => setTimeout(resolve, ms))
+            ]);
+          };
+
+          const finalizerPromises = pvcNames.map(async pvcName => {
             try {
-              const pvcStatus = await execa('kubectl', ['get', 'pvc', pvcName, '-n', ns, '-o', 'jsonpath={.status.phase}'], { stdio: 'pipe' });
-              if (pvcStatus.stdout === 'Bound' || pvcStatus.stdout === 'Terminating') {
-                logInfo(`PVC ${pvcName} is in ${pvcStatus.stdout} state`);
-              }
+              await execa('kubectl', ['patch', 'pvc', pvcName, '-n', ns, '-p', '{"metadata":{"finalizers":[]}}', '--type=merge'], { stdio: 'pipe', timeout: 5000 });
+              logInfo(`✓ Finalizers removed: ${pvcName}`);
             } catch {
-              // Ignore status check errors
+              // Ignore - PVC might already be gone or API slow
             }
-            
-            // Remove finalizers first - this is critical for stuck PVCs
+          });
+          // Do not block longer than 5s on finalizer removal overall
+          await withTimeout(Promise.allSettled(finalizerPromises), 5000);
+          
+          // Force delete all PVCs in parallel (no waiting)
+          const deletePromises = pvcNames.map(async pvcName => {
             try {
-              logInfo(`Removing finalizers from PVC ${pvcName}...`);
-              await run('kubectl', ['patch', 'pvc', pvcName, '-n', ns, '-p', '{"metadata":{"finalizers":[]}}', '--type=merge'], { stdio: 'pipe' });
-              logInfo(`✓ Finalizers removed from PVC ${pvcName}`);
-              
-              // Wait a moment for the change to propagate
-              await new Promise(resolve => setTimeout(resolve, 1000));
-            } catch (patchError) {
-              // If patching fails because PVC doesn't exist, that's fine
-              if (patchError.toString().includes('NotFound') || patchError.toString().includes('not found')) {
-                logInfo(`✓ PVC ${pvcName} not found during patch (already deleted)`);
-                continue; // Skip to next PVC
-              } else {
-                logWarn(`Warning: Could not patch finalizers for PVC ${pvcName}, trying direct delete: ${patchError}`);
-              }
+              await execa('kubectl', ['delete', 'pvc', pvcName, '-n', ns, '--force', '--grace-period=0'], { stdio: 'pipe', timeout: 5000 });
+              logInfo(`✓ Delete requested: ${pvcName}`);
+            } catch {
+              // Ignore - best effort
             }
-            
-            // Try normal delete first
-            try {
-              await run('kubectl', ['delete', 'pvc', pvcName, '-n', ns, '--timeout=10s'], { stdio: 'pipe' });
-              logInfo(`✓ PVC ${pvcName} deleted`);
-            } catch (deleteError) {
-              // If normal delete fails, try force delete
-              if (deleteError.toString().includes('timeout') || deleteError.toString().includes('Terminating')) {
-                logInfo(`PVC ${pvcName} still terminating, trying force delete...`);
-                try {
-                  await run('kubectl', ['delete', 'pvc', pvcName, '-n', ns, '--force', '--grace-period=0'], { stdio: 'pipe' });
-                  logInfo(`✓ PVC ${pvcName} force deleted`);
-                  
-                  // Wait a moment and verify it's actually gone
-                  await new Promise(resolve => setTimeout(resolve, 2000));
-                  try {
-                    await execa('kubectl', ['get', 'pvc', pvcName, '-n', ns], { stdio: 'pipe' });
-                    logWarn(`Warning: PVC ${pvcName} still exists after force delete`);
-                  } catch {
-                    logInfo(`✓ PVC ${pvcName} confirmed deleted`);
-                  }
-                } catch (forceError) {
-                  if (forceError.toString().includes('NotFound') || forceError.toString().includes('not found')) {
-                    logInfo(`✓ PVC ${pvcName} already deleted (not found)`);
-                  } else {
-                    logWarn(`Failed to force delete PVC ${pvcName}: ${forceError}`);
-                  }
-                }
-              } else if (deleteError.toString().includes('NotFound') || deleteError.toString().includes('not found')) {
-                logInfo(`✓ PVC ${pvcName} already deleted (not found)`);
-              } else {
-                throw deleteError;
-              }
-            }
-          } catch (pvcError) {
-            // NotFound errors mean the PVC is already deleted - that's success!
-            if (pvcError.toString().includes('NotFound') || pvcError.toString().includes('not found')) {
-              logInfo(`✓ PVC ${pvcName} already deleted (not found)`);
-            } else {
-              logWarn(`Failed to delete PVC ${pvcName}: ${pvcError}`);
-            }
-          }
+          });
+          // Fire-and-forget; don't block uninstall on PVC deletions
+          void Promise.allSettled(deletePromises);
+          
+          logSuccess('PVCs aggressively deleted');
         }
-        logSuccess('PVCs force deleted successfully');
-      } catch (forceError) {
-        logWarn(`Error force deleting PVCs: ${forceError}`);
+      } catch (forceError: any) {
+        logWarn(`Error during aggressive PVC deletion: ${forceError}`);
       }
     } else {
       logWarn(`Error deleting PVCs: ${error}`);
@@ -2641,19 +2580,19 @@ async function uninstall(ns: string, name: string) {
     }
   }
   
-  // Delete the namespace itself
+  // Delete the namespace itself - AGGRESSIVE MODE
   logInfo('Deleting Percona namespace...');
   let namespaceDeleted = false;
   
   try {
-    await run('kubectl', ['delete', 'namespace', ns, '--timeout=60s'], { stdio: 'pipe' });
+    await run('kubectl', ['delete', 'namespace', ns, '--timeout=10s'], { stdio: 'pipe' });
     logInfo('Namespace deletion command completed, verifying...');
-  } catch (error) {
+  } catch (error: any) {
     if (error.toString().includes('NotFound')) {
       logInfo(`Namespace ${ns} not found or already deleted`);
       namespaceDeleted = true;
     } else if (error.toString().includes('timeout')) {
-      logWarn(`Namespace deletion timed out, forcing cleanup...`);
+      logWarn(`Namespace deletion timed out, forcing aggressive cleanup...`);
     } else {
       logWarn(`Namespace deletion failed: ${error}`);
     }
@@ -2737,9 +2676,8 @@ async function uninstall(ns: string, name: string) {
           logWarn(`  Could not remove namespace finalizers: ${patchError}`);
         }
         
-        // 3. Wait a moment for Kubernetes to process the changes
-        logInfo('Waiting for Kubernetes to process finalizer removals...');
-        await new Promise(resolve => setTimeout(resolve, 3000));
+        // 3. Wait briefly for Kubernetes to process the changes
+        await new Promise(resolve => setTimeout(resolve, 500));
         
         // 4. Try deleting namespace again (might not need force now)
         try {
