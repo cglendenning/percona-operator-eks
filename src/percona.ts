@@ -1090,7 +1090,46 @@ async function installMinIO(ns: string) {
       }
     }
     
-    return { accessKey: minioAccessKey, secretKey: minioSecretKey };
+    // Fetch actual credentials from MinIO secret (MinIO may generate its own credentials)
+    logInfo('Fetching MinIO credentials from secret...');
+    let finalAccessKey = minioAccessKey;
+    let finalSecretKey = minioSecretKey;
+    
+    // Wait a bit for MinIO to generate credentials if needed
+    await new Promise(resolve => setTimeout(resolve, 5000));
+    
+    // Try multiple times to get credentials (MinIO might take a moment to create the secret)
+    for (let attempt = 1; attempt <= 10; attempt++) {
+      try {
+        const secretResult = await execa('kubectl', ['get', 'secret', 'minio', '-n', 'minio', '-o', 'jsonpath={.data.rootUser}', '--ignore-not-found'], { stdio: 'pipe' });
+        if (secretResult.stdout && secretResult.stdout.trim()) {
+          const fetchedAccessKey = Buffer.from(secretResult.stdout.trim(), 'base64').toString();
+          const secretKeyResult = await execa('kubectl', ['get', 'secret', 'minio', '-n', 'minio', '-o', 'jsonpath={.data.rootPassword}', '--ignore-not-found'], { stdio: 'pipe' });
+          if (secretKeyResult.stdout && secretKeyResult.stdout.trim()) {
+            const fetchedSecretKey = Buffer.from(secretKeyResult.stdout.trim(), 'base64').toString();
+            if (fetchedAccessKey && fetchedSecretKey) {
+              finalAccessKey = fetchedAccessKey;
+              finalSecretKey = fetchedSecretKey;
+              logSuccess(`✓ Using MinIO credentials from secret (attempt ${attempt})`);
+              break;
+            }
+          }
+        }
+      } catch (secretError) {
+        // Continue trying
+      }
+      
+      if (attempt < 10) {
+        logInfo(`Waiting for MinIO secret to be ready (attempt ${attempt}/10)...`);
+        await new Promise(resolve => setTimeout(resolve, 2000));
+      }
+    }
+    
+    if (finalAccessKey === minioAccessKey && finalSecretKey === minioSecretKey) {
+      logInfo('Using provided/default MinIO credentials');
+    }
+    
+    return { accessKey: finalAccessKey, secretKey: finalSecretKey };
     } catch (error) {
     logError(`Failed to install MinIO: ${error}`);
         throw error;
@@ -1115,7 +1154,8 @@ type: Opaque
 stringData:
   AWS_ACCESS_KEY_ID: ${accessKey}
   AWS_SECRET_ACCESS_KEY: ${secretKey}
-  AWS_ENDPOINT: ${minioEndpoint}`;
+  AWS_ENDPOINT: ${minioEndpoint}
+  AWS_DEFAULT_REGION: us-east-1`;
 
     const proc = execa('kubectl', ['apply', '-f', '-'], { stdio: ['pipe', 'inherit', 'inherit'] });
     proc.stdin?.write(secretYaml);

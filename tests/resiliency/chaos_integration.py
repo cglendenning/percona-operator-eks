@@ -227,9 +227,7 @@ def wait_for_chaos_completion(chaos_namespace: str, engine_name: str, timeout: i
                         console.print(f"[dim]    → No experiment jobs found yet[/dim]")
                 except Exception:
                     pass
-                    
-            except Exception:
-                pass
+            
         
         # Check if experiment is complete based on ChaosEngine status (not just ChaosResult)
         if engine:
