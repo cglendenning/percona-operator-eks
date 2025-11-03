@@ -77,12 +77,14 @@ npm run percona -- install --namespace percona --name pxc-cluster --nodes 3
 ```
 
 This command will automatically:
-- Install and configure ChartMuseum (internal Helm chart repository)
+- Install MinIO from external repo (bootstrap component)
+- Install and configure ChartMuseum (internal Helm chart repository with local storage)
 - Mirror all required charts (Percona, MinIO, LitmusChaos) to ChartMuseum
-- Install MinIO for backup storage
-- Install the Percona operator
-- Install the Percona cluster
+- Install the Percona operator (from internal ChartMuseum)
+- Install the Percona cluster (from internal ChartMuseum)
 - Install LitmusChaos for chaos engineering
+
+**Note:** MinIO is installed from the external `minio/minio` chart repository as a bootstrap step, since ChartMuseum doesn't exist yet. After ChartMuseum is set up and charts are mirrored, all subsequent installations use the internal ChartMuseum repository.
 
 Uninstall and cleanup PVCs:
 ```bash
@@ -249,14 +251,18 @@ This project uses **ChartMuseum** as an internal Helm chart repository to store 
 
 #### What is ChartMuseum?
 
-ChartMuseum is an open-source Helm Chart Repository server that stores Helm charts in S3. It's lightweight, Kubernetes-native, and perfect for EKS deployments.
+ChartMuseum is an open-source Helm Chart Repository server that stores Helm charts using local persistent storage. It's lightweight, Kubernetes-native, and perfect for EKS deployments.
 
 **Benefits:**
-- ✅ **No external dependencies**: All charts stored locally
-- ✅ **S3 backend**: Uses AWS S3 for persistent storage
+- ✅ **Minimal external dependencies**: Only MinIO chart fetched externally (bootstrap), then all charts served internally
+- ✅ **Local storage backend**: Uses EBS gp3 volumes for persistent storage
 - ✅ **Kubernetes-native**: Runs in your EKS cluster
-- ✅ **Secure**: IAM-based access control (IRSA)
+- ✅ **Secure**: Charts stored within your VPC on encrypted EBS volumes
 - ✅ **On-premises compatible**: Matches restricted network environments
+- ✅ **Fully automated**: Automatically installed and configured during setup
+
+**Bootstrap Approach:**
+Since ChartMuseum doesn't exist initially, MinIO is installed from the external `https://charts.min.io/` repository. Once ChartMuseum is running, all charts (including MinIO) are mirrored to it, and all subsequent Helm operations use the internal ChartMuseum repository.
 
 #### Quick Setup (3 Steps)
 
@@ -272,20 +278,17 @@ export AWS_REGION="us-east-1"
 ```
 
 This script will:
-- ✅ Create an S3 bucket for chart storage
-- ✅ Set up IAM roles for S3 access (IRSA)
+- ✅ Create a dedicated namespace for ChartMuseum
 - ✅ Install ChartMuseum in your EKS cluster
-- ✅ Configure it with S3 backend
+- ✅ Configure it with local persistent storage (50Gi EBS gp3 volume)
+- ✅ Expose it as a ClusterIP service (internal only)
 
-**Expected output:** ChartMuseum URL (e.g., `http://chartmuseum.chartmuseum.svc.cluster.local`)
+**Expected output:** ChartMuseum URL (e.g., `http://chartmuseum.chartmuseum.svc.cluster.local:8080`)
 
 **Step 2: Mirror External Charts**
 
 ```bash
-# Set the ChartMuseum URL (from Step 1)
-export CHARTMUSEUM_URL="http://chartmuseum.chartmuseum.svc.cluster.local"
-
-# Mirror all charts
+# Mirror all charts (ChartMuseum URL is auto-detected)
 ./scripts/mirror-charts.sh
 ```
 
@@ -298,102 +301,73 @@ This will download and upload:
 
 ```bash
 # Add your internal repo
-helm repo add internal http://chartmuseum.chartmuseum.svc.cluster.local
+helm repo add internal http://chartmuseum.chartmuseum.svc.cluster.local:8080
 helm repo update
 
 # Search for charts
 helm search repo internal
 
-# Test installing a chart (dry-run)
-helm install test-percona internal/pxc-operator --dry-run --namespace percona
+# Verify charts are available
+helm search repo internal/pxc
+helm search repo internal/minio
 ```
 
 #### Architecture Overview
 
+**Bootstrap Sequence:**
 ```
-┌─────────────────┐
-│  EKS Cluster    │
-│                 │
-│  ┌───────────┐  │
-│  │ChartMuseum│  │───┐
-│  │  Pod      │  │   │
-│  └───────────┘  │   │
-│        │        │   │
-│  ┌─────▼────┐   │   │
-│  │  S3      │   │   │
-│  │  Bucket  │◄──┘   │
-│  └──────────┘       │
-│                     │
-│  ┌──────────────┐   │
-│  │  Your Apps   │───┘
-│  │  (Percona)   │
-│  └──────────────┘
-│
-└─────────────────┘
+STEP 1: Bootstrap MinIO (external repo - ChartMuseum doesn't exist yet)
+┌─────────────────────────────────┐
+│  External: charts.min.io        │
+└────────────┬────────────────────┘
+             │ helm install minio/minio
+             ▼
+    ┌────────────────┐
+    │ MinIO Pod      │
+    └────────────────┘
+
+STEP 2: Install ChartMuseum
+┌──────────────────────────────────┐
+│  ChartMuseum Pod                 │
+│  ┌───────────────────────┐       │
+│  │ Persistent Volume     │       │
+│  │ (50Gi EBS gp3)        │       │
+│  └───────────────────────┘       │
+└──────────────────────────────────┘
+
+STEP 3: Mirror charts → ChartMuseum (one-time)
+External Repos → ChartMuseum (internal storage)
+
+STEP 4: Install Percona from internal ChartMuseum
+helm install internal/pxc-operator
+helm install internal/pxc-db
 ```
 
-#### Detailed Setup Guide
+#### Manual Setup Details
 
-**Create S3 Bucket:**
+If you need to customize the ChartMuseum installation:
+
+**Installation Parameters:**
 
 ```bash
-export AWS_REGION="us-east-1"
-export CHART_BUCKET_NAME="percona-helm-charts-$(date +%s)"
+# Environment variables (optional)
 export NAMESPACE="chartmuseum"
+export STORAGE_CLASS="gp3"  # EBS storage class
+export STORAGE_SIZE="50Gi"  # Persistent volume size
+export SERVICE_TYPE="ClusterIP"  # Service type (ClusterIP for internal only)
 
-# Create S3 bucket
-aws s3 mb s3://${CHART_BUCKET_NAME} --region ${AWS_REGION}
-
-# Enable versioning (optional but recommended)
-aws s3api put-bucket-versioning \
-    --bucket ${CHART_BUCKET_NAME} \
-    --versioning-configuration Status=Enabled
-
-# Block public access (security best practice)
-aws s3api put-public-access-block \
-    --bucket ${CHART_BUCKET_NAME} \
-    --public-access-block-configuration \
-    "BlockPublicAcls=true,IgnorePublicAcls=true,BlockPublicPolicy=true,RestrictPublicBuckets=true"
+# Run setup script
+./scripts/setup-chartmuseum.sh
 ```
 
-**Create IAM Role for ChartMuseum (IRSA):**
+**The script will:**
+1. Create the `chartmuseum` namespace
+2. Install ChartMuseum Helm chart with local storage configuration
+3. Create a persistent volume claim (50Gi gp3 by default)
+4. Configure resource limits (CPU: 100m-500m, Memory: 256Mi-512Mi)
+5. Expose ChartMuseum as a ClusterIP service on port 8080
 
-```bash
-# Create IAM policy for S3 access
-cat > /tmp/chartmuseum-s3-policy.json <<EOF
-{
-  "Version": "2012-10-17",
-  "Statement": [
-    {
-      "Effect": "Allow",
-      "Action": [
-        "s3:GetObject",
-        "s3:PutObject",
-        "s3:DeleteObject",
-        "s3:ListBucket"
-      ],
-      "Resource": [
-        "arn:aws:s3:::${CHART_BUCKET_NAME}",
-        "arn:aws:s3:::${CHART_BUCKET_NAME}/*"
-      ]
-    }
-  ]
-}
-EOF
-
-# Create the policy
-aws iam create-policy \
-    --policy-name ChartMuseumS3Policy \
-    --policy-document file:///tmp/chartmuseum-s3-policy.json
-
-# Get your cluster OIDC provider
-CLUSTER_NAME="percona-eks"
-OIDC_PROVIDER=$(aws eks describe-cluster --name ${CLUSTER_NAME} --query "cluster.identity.oidc.issuer" --output text | sed -e "s/^https:\/\///")
-
-# Create trust policy and role (see HELM_REPO_SETUP.md for complete script)
-```
-
-**Install ChartMuseum:**
+**Manual Installation (Advanced):**
 
 ```bash
 # Add ChartMuseum Helm repo
@@ -401,15 +375,24 @@ helm repo add chartmuseum https://chartmuseum.github.io/charts
 helm repo update
 
 # Create namespace
-kubectl create namespace ${NAMESPACE}
+kubectl create namespace chartmuseum
 
-# Install ChartMuseum (see scripts/setup-chartmuseum.sh for complete setup)
+# Install ChartMuseum with local storage
 helm install chartmuseum chartmuseum/chartmuseum \
-    --namespace ${NAMESPACE} \
+    --namespace chartmuseum \
     --set env.open.DISABLE_API=false \
-    --set env.open.STORAGE=amazon \
-    --set env.open.STORAGE_AMAZON_BUCKET=${CHART_BUCKET_NAME} \
-    --set env.open.STORAGE_AMAZON_REGION=${AWS_REGION}
+    --set env.open.STORAGE=local \
+    --set env.open.STORAGE_LOCAL_ROOTDIR=/storage \
+    --set persistence.enabled=true \
+    --set persistence.accessMode=ReadWriteOnce \
+    --set persistence.size=50Gi \
+    --set persistence.storageClass=gp3 \
+    --set service.type=ClusterIP \
+    --set resources.requests.memory=256Mi \
+    --set resources.requests.cpu=100m \
+    --set resources.limits.memory=512Mi \
+    --set resources.limits.cpu=500m \
+    --wait
 ```
 
 **Mirror External Charts:**
@@ -417,10 +400,12 @@ helm install chartmuseum chartmuseum/chartmuseum \
 The `scripts/mirror-charts.sh` script handles downloading and uploading all required charts:
 
 ```bash
-# Install helm-push plugin if needed
-helm plugin install https://github.com/chartmuseum/helm-push.git
+# The script will automatically:
+# 1. Detect the ChartMuseum URL
+# 2. Add external Helm repos (Percona, MinIO, LitmusChaos)
+# 3. Download charts locally
+# 4. Push them to ChartMuseum using the helm-push plugin
 
-# Run mirror script
 ./scripts/mirror-charts.sh
 ```
 
@@ -429,8 +414,10 @@ helm plugin install https://github.com/chartmuseum/helm-push.git
 The codebase is configured to use ChartMuseum by default:
 
 **`src/percona.ts`:**
-- Default Helm repo URL: `http://chartmuseum.chartmuseum.svc.cluster.local`
+- Default Helm repo URL: `http://chartmuseum.chartmuseum.svc.cluster.local:8080`
 - The `addRepos()` function automatically adds the internal repo
+- ChartMuseum is installed before chart mirroring
+- Charts are verified after mirroring
 
 **Test Files:**
 - Unit tests automatically check for and add the internal repo if needed
@@ -528,9 +515,9 @@ helm uninstall chartmuseum -n chartmuseum
 # Delete namespace
 kubectl delete namespace chartmuseum
 
-# Delete S3 bucket (careful - this deletes all charts!)
-aws s3 rm s3://<your-bucket-name> --recursive
-aws s3 rb s3://<your-bucket-name>
+# ChartMuseum is automatically uninstalled with:
+# npm run percona -- uninstall --namespace percona --name pxc-cluster
+# This removes the namespace, persistent volume, and all stored charts
 
 # Delete IAM resources (optional)
 aws iam detach-role-policy --role-name ChartMuseumRole-<cluster-name> --policy-arn <policy-arn>

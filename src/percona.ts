@@ -715,21 +715,31 @@ async function installMinIO(ns: string) {
     const minioAccessKey = 'minioadmin';
     const minioSecretKey = 'minioadmin';
     
+    // Install MinIO using Helm from external repo (bootstrap before ChartMuseum)
+    // We use the external minio repo here because ChartMuseum doesn't exist yet
+    logInfo('Adding MinIO Helm repository (for bootstrap)...');
+    try {
+      await execa('helm', ['repo', 'add', 'minio', 'https://charts.min.io/'], { stdio: 'pipe' });
+    } catch (repoError) {
+      // Repo might already exist
+      logInfo('MinIO repo already added');
+    }
+    await execa('helm', ['repo', 'update'], { stdio: 'pipe' });
+    
     // Install MinIO using Helm
     // Use --wait=false to prevent Helm from waiting for pods (we'll wait separately)
     // This avoids timeout issues with Helm's post-install hooks
-    logInfo('Installing MinIO Helm chart (this may take a few minutes)...');
+    logInfo('Installing MinIO Helm chart from external repo (this may take a few minutes)...');
     try {
       await run('helm', [
-        'upgrade', '--install', 'minio', 'internal/minio',
+        'upgrade', '--install', 'minio', 'minio/minio',  // Use external repo for bootstrap
         '--namespace', 'minio',
         '--set', 'mode=standalone',  // Use standalone mode (single pod) instead of distributed
         '--set', 'replicas=1',  // Explicitly set to 1 replica
         '--set', 'persistence.size=100Gi',
         '--set', 'persistence.storageClass=gp3',
-        '--set', `accessKey=${minioAccessKey}`,
-        '--set', `secretKey=${minioSecretKey}`,
-        '--set', 'defaultBuckets=percona-backups',
+        '--set', `rootUser=${minioAccessKey}`,  // Updated parameter name for newer MinIO charts
+        '--set', `rootPassword=${minioSecretKey}`,  // Updated parameter name for newer MinIO charts
         '--set', 'resources.requests.memory=1Gi',
         '--set', 'resources.requests.cpu=500m',
         '--set', 'resources.limits.memory=2Gi',
@@ -3072,16 +3082,7 @@ async function main() {
       
       await ensureNamespace(parsed.namespace);
       
-      // Install ChartMuseum first (required for internal repo)
-      await installChartMuseum();
-      
-      // Mirror charts to ChartMuseum
-      await mirrorChartsToChartMuseum();
-      
-      // Add internal repo (ChartMuseum)
-      await addRepos(parsed.helmRepo);
-      
-      // Create storage class first
+      // Create storage class first (needed by both MinIO and ChartMuseum)
       await createStorageClass();
       
       // Get AWS account ID (still needed for some operations)
@@ -3089,8 +3090,21 @@ async function main() {
       const accountResult = await execa('aws', ['sts', 'get-caller-identity', '--query', 'Account', '--output', 'text'], { stdio: 'pipe' });
       const accountId = accountResult.stdout.trim();
       
-      // Install MinIO for on-premises backup storage (replicates on-prem environment)
+      // Bootstrap sequence:
+      // 1. Install MinIO from external repo (minio/minio) - needed to bootstrap
+      //    since ChartMuseum doesn't exist yet to host charts internally
       const minioCredentials = await installMinIO(parsed.namespace);
+      
+      // 2. Install ChartMuseum with local persistent storage
+      //    Now MinIO is available if ChartMuseum needed it (though we use local storage)
+      await installChartMuseum();
+      
+      // 3. Mirror all charts to ChartMuseum (Percona, MinIO, LitmusChaos)
+      //    From this point forward, all installations use internal ChartMuseum repo
+      await mirrorChartsToChartMuseum();
+      
+      // 4. Add internal repo (ChartMuseum) for Percona operator and cluster
+      await addRepos(parsed.helmRepo);
       
       // Create MinIO credentials secret for Percona backups
       await createMinIOCredentialsSecret(parsed.namespace, minioCredentials.accessKey, minioCredentials.secretKey);
