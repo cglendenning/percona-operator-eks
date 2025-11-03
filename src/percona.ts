@@ -542,6 +542,10 @@ proxysql:
       storageClassName: gp3
 backup:
   enabled: true
+  pitr:
+    enabled: true
+    storageName: minio-backup
+    timeBetweenUploads: 60
   storages:
     minio-backup:
       type: s3
@@ -562,7 +566,14 @@ backup:
       schedule: "0 1 * * 0"
       retention:
         type: "count"
-        count: 4
+        count: 8
+        deleteFromStorage: true
+      storageName: minio-backup
+    - name: "monthly-backup"
+      schedule: "30 1 1 * *"
+      retention:
+        type: "count"
+        count: 12
         deleteFromStorage: true
       storageName: minio-backup
 `;}

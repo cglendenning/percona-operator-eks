@@ -119,6 +119,80 @@ By default, the Percona installation uses **MinIO** for backups to replicate on-
 
 This approach ensures the deployment matches on-premises environments where external cloud storage access is not permitted.
 
+#### Backup Schedules and Retention (Configured by default)
+
+- Binlog PITR (continuous): uploaded every 60s, retained for 7 days
+- Daily full backups: 02:00 every day, retain 7 days
+- Weekly full backups: 01:00 every Sunday, retain 8 weeks
+- Monthly full backups: 01:30 on the 1st of each month, retain 12 months
+
+These are implemented via the PXC Custom Resource `spec.backup`:
+
+```yaml
+spec:
+  backup:
+    enabled: true
+    pitr:
+      enabled: true
+      storageName: minio-backup
+      timeBetweenUploads: 60
+    storages:
+      minio-backup:
+        type: s3
+        s3:
+          bucket: percona-backups
+          region: us-east-1
+          endpoint: http://minio.minio.svc.cluster.local:9000
+          credentialsSecret: percona-backup-minio-credentials
+    schedule:
+      - name: daily-backup
+        schedule: "0 2 * * *"
+        retention:
+          type: count
+          count: 7
+          deleteFromStorage: true
+        storageName: minio-backup
+      - name: weekly-backup
+        schedule: "0 1 * * 0"
+        retention:
+          type: count
+          count: 8
+          deleteFromStorage: true
+        storageName: minio-backup
+      - name: monthly-backup
+        schedule: "30 1 1 * *"
+        retention:
+          type: count
+          count: 12
+          deleteFromStorage: true
+        storageName: minio-backup
+```
+
+#### Point-In-Time Recovery (PITR) quick restore
+
+To restore to a point in time using binlogs and the latest full backup:
+
+```bash
+# Example: restore to a timestamp (UTC)
+TARGET_TS="2025-11-02T18:30:00Z"
+kubectl apply -n percona -f - <<EOF
+apiVersion: pxc.percona.com/v1-10-0
+kind: PerconaXtraDBClusterRestore
+metadata:
+  name: pxc-restore-pitr
+spec:
+  pxcCluster: pxc-cluster
+  backupName: latest
+  pitr:
+    type: date
+    date: "$TARGET_TS"
+EOF
+```
+
+Notes:
+- Ensure `backup.pitr.enabled: true` and MinIO/S3 storage are reachable
+- The operator picks the latest compatible full backup and replays binlogs up to `TARGET_TS`
+
 #### Using AWS S3 for Backups (Alternative)
 
 If you prefer to use **AWS S3** instead of MinIO, you'll need to manually configure it:
