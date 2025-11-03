@@ -9,6 +9,24 @@ PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 
 cd "$PROJECT_ROOT"
 
+# Detect operating system
+detect_os() {
+    if [[ "$OSTYPE" == "darwin"* ]]; then
+        echo "macos"
+    elif [[ "$OSTYPE" == "linux-gnu"* ]]; then
+        # Check if running under WSL
+        if grep -qiE '(microsoft|wsl)' /proc/version 2>/dev/null; then
+            echo "wsl"
+        else
+            echo "linux"
+        fi
+    else
+        echo "unknown"
+    fi
+}
+
+OS_TYPE=$(detect_os)
+
 # Colors for output
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -143,13 +161,15 @@ for version in 3.14 3.13 3.12 3.11; do
         LATEST_VERSION="$version"
         break
     fi
-    # Check Homebrew Cellar (common location for macOS)
-    # Look for python3.X in bin directories under Cellar
-    CELLAR_PYTHON=$(find /opt/homebrew/Cellar/python@${version} -path "*/bin/python${version}" -type f 2>/dev/null | sort -V | tail -1)
-    if [ -n "$CELLAR_PYTHON" ] && [ -x "$CELLAR_PYTHON" ] && "$CELLAR_PYTHON" --version >/dev/null 2>&1; then
-        LATEST_CMD="$CELLAR_PYTHON"
-        LATEST_VERSION="$version"
-        break
+    # Check Homebrew Cellar (macOS only)
+    if [ "$OS_TYPE" = "macos" ]; then
+        # Look for python3.X in bin directories under Cellar
+        CELLAR_PYTHON=$(find /opt/homebrew/Cellar/python@${version} -path "*/bin/python${version}" -type f 2>/dev/null | sort -V | tail -1)
+        if [ -n "$CELLAR_PYTHON" ] && [ -x "$CELLAR_PYTHON" ] && "$CELLAR_PYTHON" --version >/dev/null 2>&1; then
+            LATEST_CMD="$CELLAR_PYTHON"
+            LATEST_VERSION="$version"
+            break
+        fi
     fi
 done
 

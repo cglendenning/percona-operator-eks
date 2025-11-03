@@ -5,6 +5,24 @@
 
 set -e
 
+# Detect operating system
+detect_os() {
+    if [[ "$OSTYPE" == "darwin"* ]]; then
+        echo "macos"
+    elif [[ "$OSTYPE" == "linux-gnu"* ]]; then
+        # Check if running under WSL
+        if grep -qiE '(microsoft|wsl)' /proc/version 2>/dev/null; then
+            echo "wsl"
+        else
+            echo "linux"
+        fi
+    else
+        echo "unknown"
+    fi
+}
+
+OS_TYPE=$(detect_os)
+
 # Colors for output
 RED='\033[0;31m'
 GREEN='\033[0;32m'

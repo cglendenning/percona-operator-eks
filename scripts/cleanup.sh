@@ -3,6 +3,24 @@
 # EKS Cluster Cleanup Script
 set -e
 
+# Detect operating system
+detect_os() {
+    if [[ "$OSTYPE" == "darwin"* ]]; then
+        echo "macos"
+    elif [[ "$OSTYPE" == "linux-gnu"* ]]; then
+        # Check if running under WSL
+        if grep -qiE '(microsoft|wsl)' /proc/version 2>/dev/null; then
+            echo "wsl"
+        else
+            echo "linux"
+        fi
+    else
+        echo "unknown"
+    fi
+}
+
+OS_TYPE=$(detect_os)
+
 # Configuration
 STACK_NAME="percona-eks-cluster"
 REGION="us-east-1"

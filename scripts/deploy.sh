@@ -3,6 +3,24 @@
 # EKS Cluster Deployment Script
 set -e
 
+# Detect operating system
+detect_os() {
+    if [[ "$OSTYPE" == "darwin"* ]]; then
+        echo "macos"
+    elif [[ "$OSTYPE" == "linux-gnu"* ]]; then
+        # Check if running under WSL
+        if grep -qiE '(microsoft|wsl)' /proc/version 2>/dev/null; then
+            echo "wsl"
+        else
+            echo "linux"
+        fi
+    else
+        echo "unknown"
+    fi
+}
+
+OS_TYPE=$(detect_os)
+
 # Configuration
 STACK_NAME="percona-eks-cluster"
 TEMPLATE_FILE="cloudformation/eks-cluster.yaml"
@@ -104,10 +122,12 @@ monitor_stack_events() {
                     if [ -n "$timestamp" ] && [ -n "$resource_id" ] && [ -n "$status" ]; then
                         # Format the timestamp for display (handle both GNU and BSD date)
                         local display_time=""
-                        if command -v gdate >/dev/null 2>&1; then
-                            display_time=$(gdate -d "$timestamp" "+%H:%M:%S" 2>/dev/null || echo "$timestamp")
+                        if [ "$OS_TYPE" = "macos" ]; then
+                            # macOS uses BSD date
+                            display_time=$(date -j -f "%Y-%m-%dT%H:%M:%S" "${timestamp:0:19}" "+%H:%M:%S" 2>/dev/null || echo "${timestamp:11:8}")
                         else
-                            display_time=$(date -j -f "%Y-%m-%dT%H:%M:%S.%3NZ" "$timestamp" "+%H:%M:%S" 2>/dev/null || echo "$timestamp")
+                            # Linux/WSL uses GNU date
+                            display_time=$(date -d "$timestamp" "+%H:%M:%S" 2>/dev/null || echo "${timestamp:11:8}")
                         fi
                         
                         # Color code the status
