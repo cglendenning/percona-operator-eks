@@ -129,7 +129,7 @@ async function validateEksCluster(ns: string, nodes: number) {
         validationWarnings.push('Could not determine Kubernetes version from any method');
       }
     }
-  } catch (error) {
+  } catch (error: any) {
     logWarn(`Error running kubectl version: ${error}`);
     validationWarnings.push(`Could not check Kubernetes version: ${error.message || error}`);
   }
@@ -299,7 +299,7 @@ async function validateEksCluster(ns: string, nodes: number) {
     try {
       await run('kubectl', ['create', 'namespace', ns], { stdio: 'pipe' });
       logInfo(`Created namespace ${ns} for validation`);
-    } catch (error) {
+    } catch (error: any) {
       if (error.toString().includes('already exists')) {
         logInfo(`Namespace ${ns} already exists`);
       } else {
@@ -720,7 +720,7 @@ async function installMinIO(ns: string) {
     try {
       await run('kubectl', ['create', 'namespace', 'minio'], { stdio: 'pipe' });
       logInfo('Created MinIO namespace');
-    } catch (error) {
+    } catch (error: any) {
       if (error.toString().includes('already exists')) {
         logInfo('MinIO namespace already exists');
       } else {
@@ -829,7 +829,7 @@ async function installMinIO(ns: string) {
       }
       
       // Re-throw the error if it's not just a timeout issue
-      if (!helmError.toString().includes('timeout') && !helmError.toString().includes('timed out')) {
+      if (!(helmError as any).toString().includes('timeout') && !(helmError as any).toString().includes('timed out')) {
         throw helmError;
       }
       // If it's a timeout, continue - we'll check pod status manually
@@ -1564,7 +1564,7 @@ async function waitForClusterReady(ns: string, name: string, nodes: number) {
       try {
         await execa('kubectl', ['get', 'pxc', pxcResourceName, '-n', ns], { stdio: 'pipe' });
         pxcExists = true;
-      } catch (error) {
+      } catch (error: any) {
         if (error.toString().includes('NotFound')) {
           // Log status updates every 30 seconds
           const elapsed = Math.round((Date.now() - startTime) / 1000);
@@ -2548,7 +2548,7 @@ async function uninstall(ns: string, name: string) {
       try {
         await run('kubectl', ['delete', 'storageclass', 'gp3'], { stdio: 'pipe' });
         logSuccess('Storage class gp3 deleted successfully');
-      } catch (deleteError) {
+      } catch (deleteError: any) {
         // This is expected if storage class is in use by other resources
         if (deleteError.toString().includes('cannot be deleted') || deleteError.toString().includes('in use')) {
           logInfo('Storage class gp3 is in use by other resources - leaving it in place');
@@ -2595,7 +2595,7 @@ async function uninstall(ns: string, name: string) {
           logInfo('Deleting MinIO PVCs...');
           await run('kubectl', ['delete', 'pvc', '--all', '-n', 'minio', '--timeout=60s'], { stdio: 'pipe' });
           logSuccess('MinIO PVCs deleted successfully');
-        } catch (pvcError) {
+        } catch (pvcError: any) {
           if (!pvcError.toString().includes('NotFound') && !pvcError.toString().includes('no resources found')) {
             logWarn(`Error deleting MinIO PVCs: ${pvcError}`);
           }
@@ -2606,7 +2606,7 @@ async function uninstall(ns: string, name: string) {
           logInfo('Deleting MinIO namespace...');
           await run('kubectl', ['delete', 'namespace', 'minio', '--timeout=60s'], { stdio: 'pipe' });
           logSuccess('MinIO namespace deleted successfully');
-        } catch (nsError) {
+        } catch (nsError: any) {
           if (!nsError.toString().includes('NotFound')) {
             logWarn(`Error deleting MinIO namespace: ${nsError}`);
             // Try force delete if regular delete fails
@@ -2624,7 +2624,7 @@ async function uninstall(ns: string, name: string) {
       } else {
         logInfo('MinIO Helm release not found - skipping MinIO cleanup');
       }
-    } catch (error) {
+    } catch (error: any) {
       // MinIO namespace might not exist
       if (error.toString().includes('NotFound') || error.toString().includes('does not exist')) {
         logInfo('MinIO namespace not found - MinIO may not be installed');
@@ -2956,8 +2956,8 @@ async function uninstall(ns: string, name: string) {
     } else {
       logSuccess(`✓ Namespace ${ns} successfully deleted - uninstall complete`);
     }
-  } catch (error) {
-    if (error.message.includes('Namespace') && error.message.includes('could not be deleted')) {
+  } catch (error: any) {
+    if (error.message && error.message.includes('Namespace') && error.message.includes('could not be deleted')) {
       throw error; // Re-throw critical errors
     }
     logSuccess(`✓ Namespace ${ns} successfully deleted - uninstall complete`);
@@ -3248,6 +3248,9 @@ async function main() {
       // Install LitmusChaos for chaos engineering
       await installLitmusChaos();
       
+      // Clean up port-forward after successful installation
+      await cleanupChartMuseumPortForward();
+      
       logSuccess('Percona operator and cluster installed and ready.');
     } else if (parsed.action === 'expand') {
       if (!parsed.size) {
@@ -3257,6 +3260,10 @@ async function main() {
       }
       logInfo(`Expanding Percona cluster volumes to ${parsed.size}...`);
       await expandVolumes(parsed.namespace, parsed.name, parsed.size);
+      
+      // Clean up port-forward after successful expansion
+      await cleanupChartMuseumPortForward();
+      
       logSuccess('Volume expansion completed.');
     } else {
       await uninstall(parsed.namespace, parsed.name);
