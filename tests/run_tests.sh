@@ -88,6 +88,12 @@ show_usage() {
     echo -e "  ${GREEN}--on-prem${NC}"
     echo "      On-prem mode: relax EKS/AWS-specific assertions and prefer hostname-based anti-affinity"
     echo ""
+    echo -e "  ${GREEN}[Pytest passthrough]${NC}"
+    echo "      Any unrecognized flags are forwarded to pytest. Useful ones:"
+    echo "        --proxysql         Run ProxySQL tests (skip HAProxy tests)"
+    echo "        -k <expr>         Filter tests by keyword"
+    echo "        <nodeid>          Run a specific test (e.g., tests/unit/test_x.py::test_y)"
+    echo ""
     echo -e "${BLUE}Examples:${NC}"
     echo "  # Run all tests (unit, integration, resiliency, DR scenarios)"
     echo "  $0"
@@ -107,6 +113,15 @@ show_usage() {
     echo "  # Run only integration tests"
     echo "  $0 --no-unit-tests --no-resiliency-tests --no-dr-tests"
     echo ""
+    echo "  # On-prem mode with defaults (hostname topology, standard storageclass)"
+    echo "  $0 --on-prem --no-integration-tests --no-resiliency-tests"
+    echo ""
+    echo "  # Run only ProxySQL tests (skip HAProxy)"
+    echo "  $0 --no-integration-tests --no-resiliency-tests -- --proxysql"
+    echo ""
+    echo "  # Run a single unit test"
+    echo "  $0 --no-integration-tests --no-resiliency-tests tests/unit/test_percona_values_yaml.py::test_percona_values_pxc_configuration"
+    echo ""
     echo -e "${BLUE}Environment Variables:${NC}"
     echo "  TEST_NAMESPACE          Kubernetes namespace (default: percona)"
     echo "  TEST_CLUSTER_NAME       Percona cluster name (default: pxc-cluster)"
@@ -116,6 +131,15 @@ show_usage() {
     echo "  RESILIENCY_MTTR_TIMEOUT_SECONDS  MTTR timeout for resiliency tests (default: 120)"
     echo "  GENERATE_HTML_REPORT    Set to 'true' to generate HTML test report"
     echo "  GENERATE_COVERAGE       Set to 'true' to generate coverage report"
+    echo "  ON_PREM                 'true' to enable on-prem defaults (also via --on-prem)"
+    echo "  STORAGE_CLASS_NAME      StorageClass name for on-prem (default: standard in on-prem)"
+    echo "  TOPOLOGY_KEY            Anti-affinity topology key (default: hostname in on-prem, zone in EKS)"
+    echo "  VALUES_FILE             Path to values file to test (default: templates/percona-values.yaml)"
+    echo "  VALUES_ROOT_KEY         Root key wrapper if present (e.g., pxc-db)"
+    echo "  PXC_PATH                Dot-path to PXC section (e.g., pxc-db.pxc)"
+    echo "  PROXYSQL_PATH           Dot-path to ProxySQL section"
+    echo "  HAPROXY_PATH            Dot-path to HAProxy section"
+    echo "  BACKUP_PATH             Dot-path to backup section (or backup-enabled normalization)"
     echo ""
 }
 
@@ -308,45 +332,52 @@ NO_UNIT=false
 NO_INTEGRATION=false
 NO_DR=false
 EXPLICIT_FLAGS=false
+PYTEST_PASSTHROUGH=()
+PASSTHROUGH_MODE=false
 
 for arg in "$@"; do
+    if [ "$arg" = "--" ]; then
+        PASSTHROUGH_MODE=true
+        continue
+    fi
+    
+    if [ "$PASSTHROUGH_MODE" = "true" ]; then
+        PYTEST_PASSTHROUGH+=("$arg")
+        continue
+    fi
+    
     case $arg in
         --show-warnings)
             SHOW_WARNINGS=true
             EXPLICIT_FLAGS=true
-            shift
             ;;
         --run-resiliency-tests)
             # Legacy flag - kept for backwards compatibility
             # Default behavior now runs all tests including resiliency
             EXPLICIT_FLAGS=true
-            shift
             ;;
         --no-resiliency-tests)
             NO_RESILIENCY=true
             EXPLICIT_FLAGS=true
-            shift
             ;;
         --no-unit-tests)
             NO_UNIT=true
             EXPLICIT_FLAGS=true
-            shift
             ;;
         --no-integration-tests)
             NO_INTEGRATION=true
             EXPLICIT_FLAGS=true
-            shift
             ;;
         --no-dr-tests)
             NO_DR=true
             EXPLICIT_FLAGS=true
-            shift
             ;;
         --verbose|-v)
             VERBOSE=true
             ;;
         *)
-            # Unknown option - pass through to pytest if needed
+            # Unknown option - assume it's for pytest
+            PYTEST_PASSTHROUGH+=("$arg")
             ;;
     esac
 done
@@ -481,13 +512,27 @@ run_category() {
         OPTS+=("--trigger-chaos")
     fi
 
+    # Add passthrough arguments
+    local FINAL_TEST_PATH="$test_path"
+    
+    # Check if passthrough contains a test path/nodeid
+    for arg in "${PYTEST_PASSTHROUGH[@]}"; do
+        # If it looks like a test path (starts with tests/ or contains ::), use it as the path
+        if [[ "$arg" =~ ^tests/ ]] || [[ "$arg" =~ :: ]]; then
+            FINAL_TEST_PATH="$arg"
+        else
+            # Otherwise, add as pytest option
+            OPTS+=("$arg")
+        fi
+    done
+
     if [ "$VERBOSE" = "true" ]; then
         echo -e "${BLUE}=== ${category_name} ===${NC}"
-        pytest "${OPTS[@]}" "$test_path"
+        pytest "${OPTS[@]}" "$FINAL_TEST_PATH"
         return $?
     else
         TEMP_OUTPUT=$(mktemp)
-        pytest "${OPTS[@]}" "$test_path" > "$TEMP_OUTPUT" 2>&1
+        pytest "${OPTS[@]}" "$FINAL_TEST_PATH" > "$TEMP_OUTPUT" 2>&1
         local rc=$?
         awk '
         /^tests\/.*::/ {
@@ -517,27 +562,85 @@ run_category() {
     fi
 }
 
+# Check if a specific test path/nodeid was provided
+SPECIFIC_TEST_PATH=""
+for arg in "${PYTEST_PASSTHROUGH[@]}"; do
+    if [[ "$arg" =~ ^tests/ ]] || [[ "$arg" =~ :: ]]; then
+        SPECIFIC_TEST_PATH="$arg"
+        break
+    fi
+done
+
 # Run categories in order: unit -> integration -> resiliency (incl. DR)
+# OR run specific test if provided
 set +e
 TEST_RESULT=0
 
-if [ "$NO_UNIT" == "false" ]; then
-    run_category "Unit tests" "unit" false "tests/unit"
-    [ $? -ne 0 ] && TEST_RESULT=1
-fi
-
-if [ "$NO_INTEGRATION" == "false" ]; then
-    run_category "Integration tests" "integration" false "tests/integration"
-    [ $? -ne 0 ] && TEST_RESULT=1
-fi
-
-if [ "$NO_RESILIENCY" == "false" ]; then
-    # Run resiliency (non-DR) first, then DR scenarios
-    run_category "Resiliency tests" "resiliency and not dr" true "tests/resiliency"
-    [ $? -ne 0 ] && TEST_RESULT=1
-    if [ "$NO_DR" == "false" ]; then
-        run_category "DR scenario tests" "dr" true "tests/resiliency"
+if [ -n "$SPECIFIC_TEST_PATH" ]; then
+    # Run specific test directly without category filtering
+    verbose_echo -e "${BLUE}Running specific test: ${SPECIFIC_TEST_PATH}${NC}"
+    verbose_echo ""
+    
+    SPECIFIC_OPTS=("${PYTEST_OPTS[@]}")
+    # Add passthrough args (excluding the test path which we'll use separately)
+    for arg in "${PYTEST_PASSTHROUGH[@]}"; do
+        if [[ "$arg" != "$SPECIFIC_TEST_PATH" ]]; then
+            SPECIFIC_OPTS+=("$arg")
+        fi
+    done
+    
+    if [ "$VERBOSE" = "true" ]; then
+        pytest "${SPECIFIC_OPTS[@]}" "$SPECIFIC_TEST_PATH"
+        TEST_RESULT=$?
+    else
+        TEMP_OUTPUT=$(mktemp)
+        pytest "${SPECIFIC_OPTS[@]}" "$SPECIFIC_TEST_PATH" > "$TEMP_OUTPUT" 2>&1
+        TEST_RESULT=$?
+        awk '
+        /^tests\/.*::/ {
+            test_name = $1
+            if (match($0, /PASSED|FAILED|ERROR/)) {
+                status_line = $0
+                if (match(status_line, /PASSED/)) status = "PASSED"
+                else if (match(status_line, /FAILED/)) status = "FAILED"
+                else if (match(status_line, /ERROR/)) status = "ERROR"
+                print test_name " " status
+            } else {
+                pending_test = test_name
+            }
+        }
+        /PASSED|FAILED|ERROR/ {
+            if (pending_test != "" && !/^tests\//) {
+                if (match($0, /PASSED/)) status = "PASSED"
+                else if (match($0, /FAILED/)) status = "FAILED"
+                else if (match($0, /ERROR/)) status = "ERROR"
+                print pending_test " " status
+                pending_test = ""
+            }
+        }
+        ' "$TEMP_OUTPUT"
+        rm -f "$TEMP_OUTPUT"
+    fi
+else
+    # Run by category as before
+    if [ "$NO_UNIT" == "false" ]; then
+        run_category "Unit tests" "unit" false "tests/unit"
         [ $? -ne 0 ] && TEST_RESULT=1
+    fi
+
+    if [ "$NO_INTEGRATION" == "false" ]; then
+        run_category "Integration tests" "integration" false "tests/integration"
+        [ $? -ne 0 ] && TEST_RESULT=1
+    fi
+
+    if [ "$NO_RESILIENCY" == "false" ]; then
+        # Run resiliency (non-DR) first, then DR scenarios
+        run_category "Resiliency tests" "resiliency and not dr" true "tests/resiliency"
+        [ $? -ne 0 ] && TEST_RESULT=1
+        if [ "$NO_DR" == "false" ]; then
+            run_category "DR scenario tests" "dr" true "tests/resiliency"
+            [ $? -ne 0 ] && TEST_RESULT=1
+        fi
     fi
 fi
 
