@@ -87,6 +87,7 @@ show_usage() {
     echo ""
     echo -e "  ${GREEN}--on-prem${NC}"
     echo "      On-prem mode: relax EKS/AWS-specific assertions and prefer hostname-based anti-affinity"
+    echo "      Auto-detects Fleet configurations (fleet.yaml) and extracts chart URL and values files"
     echo ""
     echo -e "  ${GREEN}[Pytest passthrough]${NC}"
     echo "      Any unrecognized flags are forwarded to pytest. Useful ones:"
@@ -140,6 +141,8 @@ show_usage() {
     echo "  PROXYSQL_PATH           Dot-path to ProxySQL section"
     echo "  HAPROXY_PATH            Dot-path to HAProxy section"
     echo "  BACKUP_PATH             Dot-path to backup section (or backup-enabled normalization)"
+    echo "  FLEET_YAML              Path to fleet.yaml (default: ./fleet.yaml if present in on-prem mode)"
+    echo "  FLEET_TARGET            Fleet targetCustomization name to use (default: auto-detect or first)"
     echo ""
 }
 
@@ -273,6 +276,86 @@ export ON_PREM=${ON_PREM}
 if [ "$ON_PREM" = "true" ]; then
     export STORAGE_CLASS_NAME=${STORAGE_CLASS_NAME:-standard}
     export TOPOLOGY_KEY=${TOPOLOGY_KEY:-kubernetes.io/hostname}
+    
+    # Fleet configuration detection (on-prem environments often use Fleet)
+    FLEET_YAML=${FLEET_YAML:-./fleet.yaml}
+    if [ -f "$FLEET_YAML" ] && command -v python3 >/dev/null 2>&1; then
+        verbose_echo -e "${BLUE}Detected Fleet configuration: $FLEET_YAML${NC}"
+        
+        # Extract chart URL and values files using Python (handles YAML safely)
+        FLEET_INFO=$(python3 - <<'PYTHON_SCRIPT'
+import sys
+import yaml
+import os
+
+fleet_path = os.getenv('FLEET_YAML', './fleet.yaml')
+fleet_target = os.getenv('FLEET_TARGET', '')
+
+try:
+    with open(fleet_path, 'r') as f:
+        fleet = yaml.safe_load(f)
+    
+    # Extract chart URL from helm.chart
+    chart_url = fleet.get('helm', {}).get('chart', '')
+    
+    # Extract values files from targetCustomizations
+    target_customizations = fleet.get('targetCustomizations', [])
+    values_files = []
+    
+    if fleet_target:
+        # Look for specific target
+        for target in target_customizations:
+            if target.get('name') == fleet_target:
+                values_files = target.get('helm', {}).get('valuesFiles', [])
+                break
+    elif target_customizations:
+        # Use first target if no specific target requested
+        values_files = target_customizations[0].get('helm', {}).get('valuesFiles', [])
+    
+    # Print results (one per line for easy parsing)
+    print(f"CHART_URL={chart_url}")
+    if values_files:
+        # Use first values file
+        print(f"VALUES_FILE={values_files[0]}")
+except Exception as e:
+    print(f"ERROR={str(e)}", file=sys.stderr)
+    sys.exit(1)
+PYTHON_SCRIPT
+)
+        
+        if [ $? -eq 0 ]; then
+            # Parse output
+            while IFS='=' read -r key value; do
+                case $key in
+                    CHART_URL)
+                        FLEET_CHART_URL="$value"
+                        verbose_echo "  Chart URL: $FLEET_CHART_URL"
+                        ;;
+                    VALUES_FILE)
+                        if [ -z "${VALUES_FILE:-}" ]; then
+                            export VALUES_FILE="$value"
+                            verbose_echo "  Values File: $VALUES_FILE"
+                        fi
+                        ;;
+                esac
+            done <<< "$FLEET_INFO"
+            
+            # If we found a values file, try to auto-detect schema
+            if [ -n "${VALUES_FILE:-}" ] && [ -f "$VALUES_FILE" ]; then
+                # Peek at values file to detect if it uses a wrapper key
+                if grep -q '^pxc-db:' "$VALUES_FILE" 2>/dev/null; then
+                    verbose_echo "  Detected pxc-db wrapper in values"
+                    export VALUES_ROOT_KEY=${VALUES_ROOT_KEY:-pxc-db}
+                    export PXC_PATH=${PXC_PATH:-pxc-db.pxc}
+                    export PROXYSQL_PATH=${PROXYSQL_PATH:-pxc-db.proxysql}
+                    export HAPROXY_PATH=${HAPROXY_PATH:-pxc-db.haproxy}
+                    export BACKUP_PATH=${BACKUP_PATH:-pxc-db.backup}
+                fi
+            fi
+        else
+            verbose_echo -e "${YELLOW}⚠ Could not parse Fleet configuration${NC}"
+        fi
+    fi
 else
     export STORAGE_CLASS_NAME=${STORAGE_CLASS_NAME:-gp3}
     export TOPOLOGY_KEY=${TOPOLOGY_KEY:-topology.kubernetes.io/zone}
