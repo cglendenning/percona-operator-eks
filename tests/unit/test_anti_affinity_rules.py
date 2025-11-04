@@ -14,10 +14,11 @@ def test_pxc_anti_affinity_required():
     values, path = get_values_for_test()
     
     pxc = values.get('pxc', {})
+    affinity = pxc.get('affinity', {})
     
     # Check for antiAffinityTopologyKey (PerconaXtraDBCluster CR format)
-    if 'antiAffinityTopologyKey' in pxc:
-        topology_key = pxc['antiAffinityTopologyKey']
+    if 'antiAffinityTopologyKey' in affinity:
+        topology_key = affinity['antiAffinityTopologyKey']
         log_check(
             criterion="PXC antiAffinityTopologyKey must be set",
             expected="non-empty string",
@@ -27,8 +28,7 @@ def test_pxc_anti_affinity_required():
         assert topology_key, "PXC must have antiAffinityTopologyKey configured"
         return
     
-    # Otherwise check for full affinity.podAntiAffinity structure (values file format)
-    affinity = pxc.get('affinity', {})
+    # Otherwise check for full podAntiAffinity structure (values file format)
     log_check(
         criterion="PXC affinity must include podAntiAffinity",
         expected="podAntiAffinity present",
@@ -62,6 +62,7 @@ def test_pxc_anti_affinity_topology_distribution():
     values, path = get_values_for_test()
     
     pxc = values.get('pxc', {})
+    affinity = pxc.get('affinity', {})
     
     # Define accepted topology keys
     accepted_keys = ['topology.kubernetes.io/zone', 'failure-domain.beta.kubernetes.io/zone']
@@ -69,8 +70,8 @@ def test_pxc_anti_affinity_topology_distribution():
         accepted_keys = ['kubernetes.io/hostname']
     
     # Check for antiAffinityTopologyKey (PerconaXtraDBCluster CR format)
-    if 'antiAffinityTopologyKey' in pxc:
-        topology_key = pxc['antiAffinityTopologyKey']
+    if 'antiAffinityTopologyKey' in affinity:
+        topology_key = affinity['antiAffinityTopologyKey']
         topo_found = topology_key in accepted_keys
         log_check(
             criterion=f"PXC antiAffinityTopologyKey should be in {accepted_keys}",
@@ -106,9 +107,10 @@ def test_pxc_anti_affinity_label_selector():
     values, path = get_values_for_test()
     
     pxc = values.get('pxc', {})
+    affinity = pxc.get('affinity', {})
     
     # Skip if using PerconaXtraDBCluster CR format (operator generates label selectors)
-    if 'antiAffinityTopologyKey' in pxc:
+    if 'antiAffinityTopologyKey' in affinity:
         pytest.skip("Label selector validation not applicable for PerconaXtraDBCluster CR format (operator-managed)")
     
     required_rules = pxc['affinity']['podAntiAffinity']['requiredDuringSchedulingIgnoredDuringExecution']
@@ -146,10 +148,11 @@ def test_proxysql_anti_affinity_required():
     # Try proxysql first, then haproxy
     proxy = values.get('proxysql') or values.get('haproxy', {})
     proxy_name = 'proxysql' if 'proxysql' in values else 'haproxy'
+    proxy_affinity = proxy.get('affinity', {})
     
     # Check for antiAffinityTopologyKey (PerconaXtraDBCluster CR format)
-    if 'antiAffinityTopologyKey' in proxy:
-        topology_key = proxy['antiAffinityTopologyKey']
+    if 'antiAffinityTopologyKey' in proxy_affinity:
+        topology_key = proxy_affinity['antiAffinityTopologyKey']
         log_check(
             criterion=f"{proxy_name} antiAffinityTopologyKey must be set",
             expected="non-empty string",
@@ -196,14 +199,15 @@ def test_proxysql_anti_affinity_topology_distribution():
     # Try proxysql first, then haproxy
     proxy = values.get('proxysql') or values.get('haproxy', {})
     proxy_name = 'proxysql' if 'proxysql' in values else 'haproxy'
+    proxy_affinity = proxy.get('affinity', {})
     
     accepted_keys = ['topology.kubernetes.io/zone', 'failure-domain.beta.kubernetes.io/zone']
     if TOPOLOGY_KEY == 'kubernetes.io/hostname':
         accepted_keys = ['kubernetes.io/hostname']
     
     # Check for antiAffinityTopologyKey (PerconaXtraDBCluster CR format)
-    if 'antiAffinityTopologyKey' in proxy:
-        topology_key = proxy['antiAffinityTopologyKey']
+    if 'antiAffinityTopologyKey' in proxy_affinity:
+        topology_key = proxy_affinity['antiAffinityTopologyKey']
         topo_found = topology_key in accepted_keys
         log_check(
             criterion=f"{proxy_name} antiAffinityTopologyKey should be in {accepted_keys}",
@@ -240,9 +244,10 @@ def test_proxysql_anti_affinity_label_selector():
     # Try proxysql first, then haproxy
     proxy = values.get('proxysql') or values.get('haproxy', {})
     proxy_name = 'proxysql' if 'proxysql' in values else 'haproxy'
+    proxy_affinity = proxy.get('affinity', {})
     
     # Skip if using PerconaXtraDBCluster CR format (operator generates label selectors)
-    if 'antiAffinityTopologyKey' in proxy:
+    if 'antiAffinityTopologyKey' in proxy_affinity:
         pytest.skip("Label selector validation not applicable for PerconaXtraDBCluster CR format (operator-managed)")
     
     required_rules = proxy['affinity']['podAntiAffinity']['requiredDuringSchedulingIgnoredDuringExecution']
@@ -278,27 +283,29 @@ def test_anti_affinity_prevents_single_host_or_zone_packing():
     values, path = get_values_for_test()
     
     pxc = values.get('pxc', {})
+    pxc_affinity = pxc.get('affinity', {})
     proxy = values.get('proxysql') or values.get('haproxy', {})
     proxy_name = 'proxysql' if 'proxysql' in values else 'haproxy'
+    proxy_affinity = proxy.get('affinity', {})
     
     accepted_keys = ['topology.kubernetes.io/zone', 'failure-domain.beta.kubernetes.io/zone'] if TOPOLOGY_KEY != 'kubernetes.io/hostname' else ['kubernetes.io/hostname']
     
     # Check PXC
-    if 'antiAffinityTopologyKey' in pxc:
-        pxc_has_required = pxc['antiAffinityTopologyKey'] in accepted_keys
+    if 'antiAffinityTopologyKey' in pxc_affinity:
+        pxc_has_required = pxc_affinity['antiAffinityTopologyKey'] in accepted_keys
     else:
         pxc_has_required = any(
             rule.get('topologyKey') in accepted_keys
-            for rule in pxc['affinity']['podAntiAffinity']['requiredDuringSchedulingIgnoredDuringExecution']
+            for rule in pxc_affinity['podAntiAffinity']['requiredDuringSchedulingIgnoredDuringExecution']
         )
     
     # Check proxy
-    if 'antiAffinityTopologyKey' in proxy:
-        proxy_has_required = proxy['antiAffinityTopologyKey'] in accepted_keys
+    if 'antiAffinityTopologyKey' in proxy_affinity:
+        proxy_has_required = proxy_affinity['antiAffinityTopologyKey'] in accepted_keys
     else:
         proxy_has_required = any(
             rule.get('topologyKey') in accepted_keys
-            for rule in proxy['affinity']['podAntiAffinity']['requiredDuringSchedulingIgnoredDuringExecution']
+            for rule in proxy_affinity['podAntiAffinity']['requiredDuringSchedulingIgnoredDuringExecution']
         )
     
     log_check(
