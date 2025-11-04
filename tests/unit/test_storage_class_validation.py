@@ -5,7 +5,7 @@ Validates Percona best practices for storage configuration.
 import os
 import yaml
 import pytest
-from tests.conftest import log_check
+from tests.conftest import log_check, ON_PREM, STORAGE_CLASS_NAME
 
 
 @pytest.mark.unit
@@ -16,15 +16,16 @@ def test_storage_class_yaml_valid():
         content = f.read()
         sc = yaml.safe_load(content)
     
+    expected_name = 'gp3' if not ON_PREM else STORAGE_CLASS_NAME
     log_check(
-        criterion="StorageClass YAML should define kind=StorageClass and name=gp3",
-        expected="kind=StorageClass, name=gp3",
+        criterion=f"StorageClass YAML should define kind=StorageClass and name={expected_name}",
+        expected=f"kind=StorageClass, name={expected_name}",
         actual=f"kind={sc.get('kind')}, name={sc.get('metadata',{}).get('name')}",
         source=path,
     )
     assert sc is not None
     assert sc['kind'] == 'StorageClass'
-    assert sc['metadata']['name'] == 'gp3'
+    assert sc['metadata']['name'] == expected_name
 
 
 @pytest.mark.unit
@@ -34,13 +35,15 @@ def test_storage_class_gp3_configuration():
     with open(path, 'r', encoding='utf-8') as f:
         sc = yaml.safe_load(f)
     
-    # GP3 is preferred for better performance/cost ratio
-    log_check("StorageClass name must be gp3", "gp3", f"name={sc['metadata']['name']}", source=path)
-    assert sc['metadata']['name'] == 'gp3'
-    log_check("Provisioner must be ebs.csi.aws.com", "ebs.csi.aws.com", f"{sc['provisioner']}", source=path)
-    assert sc['provisioner'] == 'ebs.csi.aws.com'
-    log_check("parameters.type must be gp3", "gp3", f"{sc['parameters']['type']}", source=path)
-    assert sc['parameters']['type'] == 'gp3'
+    # GP3 on EKS; on-prem may differ (skip provisioner/type strictness)
+    expected_name = 'gp3' if not ON_PREM else STORAGE_CLASS_NAME
+    log_check("StorageClass name", expected_name, f"name={sc['metadata']['name']}", source=path)
+    assert sc['metadata']['name'] == expected_name
+    if not ON_PREM:
+        log_check("Provisioner must be ebs.csi.aws.com", "ebs.csi.aws.com", f"{sc['provisioner']}", source=path)
+        assert sc['provisioner'] == 'ebs.csi.aws.com'
+        log_check("parameters.type must be gp3", "gp3", f"{sc['parameters']['type']}", source=path)
+        assert sc['parameters']['type'] == 'gp3'
     log_check("parameters.fsType must be xfs", "xfs", f"{sc['parameters']['fsType']}", source=path)
     assert sc['parameters']['fsType'] == 'xfs', "XFS is recommended for Percona"
     log_check("parameters.encrypted must be 'true'", "'true'", f"{sc['parameters']['encrypted']}", source=path)
@@ -59,8 +62,9 @@ def test_storage_class_default_annotation():
         sc = yaml.safe_load(f)
     
     annotation = sc['metadata']['annotations']['storageclass.kubernetes.io/is-default-class']
-    log_check("gp3 should be default StorageClass annotation", "true", f"{annotation}", source=path)
-    assert annotation == 'true', "gp3 should be the default storage class"
+    if not ON_PREM:
+        log_check("gp3 should be default StorageClass annotation", "true", f"{annotation}", source=path)
+        assert annotation == 'true', "gp3 should be the default storage class"
 
 
 @pytest.mark.unit

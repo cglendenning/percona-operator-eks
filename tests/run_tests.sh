@@ -85,6 +85,9 @@ show_usage() {
     echo -e "  ${GREEN}--verbose, -v${NC}"
     echo "      Show verbose output including setup, Python version, configuration, etc."
     echo ""
+    echo -e "  ${GREEN}--on-prem${NC}"
+    echo "      On-prem mode: relax EKS/AWS-specific assertions and prefer hostname-based anti-affinity"
+    echo ""
     echo -e "${BLUE}Examples:${NC}"
     echo "  # Run all tests (unit, integration, resiliency, DR scenarios)"
     echo "  $0"
@@ -118,6 +121,7 @@ show_usage() {
 
 # Parse arguments for help and verbose flags (before any setup work)
 VERBOSE=false
+ON_PREM=false
 for arg in "$@"; do
     case $arg in
         -h|--help)
@@ -126,6 +130,9 @@ for arg in "$@"; do
             ;;
         --verbose|-v)
             VERBOSE=true
+            ;;
+        --on-prem)
+            ON_PREM=true
             ;;
     esac
 done
@@ -237,6 +244,15 @@ export TEST_OPERATOR_NAMESPACE=${TEST_OPERATOR_NAMESPACE:-$TEST_NAMESPACE}
 export MINIO_NAMESPACE=${MINIO_NAMESPACE:-minio}
 export CHAOS_NAMESPACE=${CHAOS_NAMESPACE:-litmus}
 export CHARTMUSEUM_NAMESPACE=${CHARTMUSEUM_NAMESPACE:-chartmuseum}
+export ON_PREM=${ON_PREM}
+# On-prem sensible defaults
+if [ "$ON_PREM" = "true" ]; then
+    export STORAGE_CLASS_NAME=${STORAGE_CLASS_NAME:-standard}
+    export TOPOLOGY_KEY=${TOPOLOGY_KEY:-kubernetes.io/hostname}
+else
+    export STORAGE_CLASS_NAME=${STORAGE_CLASS_NAME:-gp3}
+    export TOPOLOGY_KEY=${TOPOLOGY_KEY:-topology.kubernetes.io/zone}
+fi
 
 # Auto-detect node count from cluster if not set
 if [ -z "${TEST_EXPECTED_NODES:-}" ]; then
@@ -267,6 +283,9 @@ verbose_echo "  Operator Namespace: $TEST_OPERATOR_NAMESPACE"
 verbose_echo "  MinIO Namespace: $MINIO_NAMESPACE"
 verbose_echo "  Chaos Namespace: $CHAOS_NAMESPACE"
 verbose_echo "  ChartMuseum Namespace: $CHARTMUSEUM_NAMESPACE"
+verbose_echo "  Mode: $( [ \"$ON_PREM\" = \"true\" ] && echo on-prem || echo eks/aws )"
+verbose_echo "  StorageClass Name: $STORAGE_CLASS_NAME"
+verbose_echo "  Anti-affinity Topology Key: $TOPOLOGY_KEY"
 verbose_echo "  Cluster Name: $TEST_CLUSTER_NAME"
 verbose_echo "  Expected Nodes: $TEST_EXPECTED_NODES"
 verbose_echo "  Backup Type: $TEST_BACKUP_TYPE"

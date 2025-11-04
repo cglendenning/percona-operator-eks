@@ -5,7 +5,7 @@ Validates that pods are distributed across availability zones per Percona best p
 import os
 import yaml
 import pytest
-from tests.conftest import log_check
+from tests.conftest import log_check, TOPOLOGY_KEY
 
 
 @pytest.mark.unit
@@ -46,8 +46,8 @@ def test_pxc_anti_affinity_required():
 
 
 @pytest.mark.unit
-def test_pxc_anti_affinity_zone_distribution():
-    """Test that PXC anti-affinity uses zone topology key."""
+def test_pxc_anti_affinity_topology_distribution():
+    """Test that PXC anti-affinity uses the correct topology key (zone on EKS, hostname on on-prem)."""
     path = os.path.join(os.path.dirname(__file__), '..', '..', 'templates', 'percona-values.yaml')
     with open(path, 'r', encoding='utf-8') as f:
         content = f.read()
@@ -56,20 +56,25 @@ def test_pxc_anti_affinity_zone_distribution():
     
     required_rules = values['pxc']['affinity']['podAntiAffinity']['requiredDuringSchedulingIgnoredDuringExecution']
     
-    # Check that at least one rule uses zone topology key
-    zone_topology_found = False
+    # Define accepted topology keys
+    accepted_keys = ['topology.kubernetes.io/zone', 'failure-domain.beta.kubernetes.io/zone']
+    if TOPOLOGY_KEY == 'kubernetes.io/hostname':
+        accepted_keys = ['kubernetes.io/hostname']
+
+    # Check that at least one rule uses the accepted topology key
+    topo_found = False
     for rule in required_rules:
-        if rule.get('topologyKey') in ['topology.kubernetes.io/zone', 'failure-domain.beta.kubernetes.io/zone']:
-            zone_topology_found = True
+        if rule.get('topologyKey') in accepted_keys:
+            topo_found = True
             break
     
     log_check(
-        criterion="At least one PXC anti-affinity rule uses zone topology key",
-        expected="topologyKey in [zone keys]",
-        actual=f"found={zone_topology_found}",
+        criterion="At least one PXC anti-affinity rule uses required topology key",
+        expected=f"topologyKey in {accepted_keys}",
+        actual=f"found={topo_found}",
         source=path,
     )
-    assert zone_topology_found, "PXC anti-affinity must use zone topology key for multi-AZ distribution"
+    assert topo_found, "PXC anti-affinity must use the required topology key for distribution"
 
 
 @pytest.mark.unit
@@ -83,9 +88,9 @@ def test_pxc_anti_affinity_label_selector():
     
     required_rules = values['pxc']['affinity']['podAntiAffinity']['requiredDuringSchedulingIgnoredDuringExecution']
     
-    # Find rule with zone topology
+    # Find rule with required topology
     for rule in required_rules:
-        if rule.get('topologyKey') in ['topology.kubernetes.io/zone', 'failure-domain.beta.kubernetes.io/zone']:
+        if rule.get('topologyKey') in (['topology.kubernetes.io/zone', 'failure-domain.beta.kubernetes.io/zone'] if TOPOLOGY_KEY != 'kubernetes.io/hostname' else ['kubernetes.io/hostname']):
             label_selector = rule.get('labelSelector', {})
             match_expressions = label_selector.get('matchExpressions', [])
             
@@ -146,8 +151,8 @@ def test_proxysql_anti_affinity_required():
 
 
 @pytest.mark.unit
-def test_proxysql_anti_affinity_zone_distribution():
-    """Test that ProxySQL anti-affinity uses zone topology key."""
+def test_proxysql_anti_affinity_topology_distribution():
+    """Test that ProxySQL anti-affinity uses the correct topology key (zone on EKS, hostname on on-prem)."""
     path = os.path.join(os.path.dirname(__file__), '..', '..', 'templates', 'percona-values.yaml')
     with open(path, 'r', encoding='utf-8') as f:
         content = f.read()
@@ -156,20 +161,23 @@ def test_proxysql_anti_affinity_zone_distribution():
     
     required_rules = values['proxysql']['affinity']['podAntiAffinity']['requiredDuringSchedulingIgnoredDuringExecution']
     
-    # Check that at least one rule uses zone topology key
-    zone_topology_found = False
+    accepted_keys = ['topology.kubernetes.io/zone', 'failure-domain.beta.kubernetes.io/zone']
+    if TOPOLOGY_KEY == 'kubernetes.io/hostname':
+        accepted_keys = ['kubernetes.io/hostname']
+
+    topo_found = False
     for rule in required_rules:
-        if rule.get('topologyKey') in ['topology.kubernetes.io/zone', 'failure-domain.beta.kubernetes.io/zone']:
-            zone_topology_found = True
+        if rule.get('topologyKey') in accepted_keys:
+            topo_found = True
             break
     
     log_check(
-        criterion="At least one ProxySQL anti-affinity rule uses zone topology key",
-        expected="topologyKey in [zone keys]",
-        actual=f"found={zone_topology_found}",
+        criterion="At least one ProxySQL anti-affinity rule uses required topology key",
+        expected=f"topologyKey in {accepted_keys}",
+        actual=f"found={topo_found}",
         source=path,
     )
-    assert zone_topology_found, "ProxySQL anti-affinity must use zone topology key for multi-AZ distribution"
+    assert topo_found, "ProxySQL anti-affinity must use the required topology key for distribution"
 
 
 @pytest.mark.unit
@@ -183,9 +191,9 @@ def test_proxysql_anti_affinity_label_selector():
     
     required_rules = values['proxysql']['affinity']['podAntiAffinity']['requiredDuringSchedulingIgnoredDuringExecution']
     
-    # Find rule with zone topology
+    # Find rule with required topology
     for rule in required_rules:
-        if rule.get('topologyKey') in ['topology.kubernetes.io/zone', 'failure-domain.beta.kubernetes.io/zone']:
+        if rule.get('topologyKey') in (['topology.kubernetes.io/zone', 'failure-domain.beta.kubernetes.io/zone'] if TOPOLOGY_KEY != 'kubernetes.io/hostname' else ['kubernetes.io/hostname']):
             label_selector = rule.get('labelSelector', {})
             match_expressions = label_selector.get('matchExpressions', [])
             
@@ -209,31 +217,32 @@ def test_proxysql_anti_affinity_label_selector():
 
 
 @pytest.mark.unit
-def test_anti_affinity_prevents_single_az_deployment():
-    """Test that anti-affinity rules prevent all pods from being in same AZ."""
+def test_anti_affinity_prevents_single_host_or_zone_packing():
+    """Test that anti-affinity rules prevent all pods from being on same host (on-prem) or same AZ (EKS)."""
     path = os.path.join(os.path.dirname(__file__), '..', '..', 'templates', 'percona-values.yaml')
     with open(path, 'r', encoding='utf-8') as f:
         content = f.read()
         content = content.replace('{{NODES}}', '3')
         values = yaml.safe_load(content)
     
-    # Both PXC and ProxySQL should have zone-based anti-affinity
-    pxc_has_zone = any(
-        rule.get('topologyKey') in ['topology.kubernetes.io/zone', 'failure-domain.beta.kubernetes.io/zone']
+    # Both PXC and ProxySQL should have required anti-affinity
+    accepted_keys = ['topology.kubernetes.io/zone', 'failure-domain.beta.kubernetes.io/zone'] if TOPOLOGY_KEY != 'kubernetes.io/hostname' else ['kubernetes.io/hostname']
+    pxc_has_required = any(
+        rule.get('topologyKey') in accepted_keys
         for rule in values['pxc']['affinity']['podAntiAffinity']['requiredDuringSchedulingIgnoredDuringExecution']
     )
     
-    proxysql_has_zone = any(
-        rule.get('topologyKey') in ['topology.kubernetes.io/zone', 'failure-domain.beta.kubernetes.io/zone']
+    proxysql_has_required = any(
+        rule.get('topologyKey') in accepted_keys
         for rule in values['proxysql']['affinity']['podAntiAffinity']['requiredDuringSchedulingIgnoredDuringExecution']
     )
     
     log_check(
-        criterion="Both PXC and ProxySQL must include zone-based anti-affinity",
-        expected="pxc_has_zone=True and proxysql_has_zone=True",
-        actual=f"pxc_has_zone={pxc_has_zone}, proxysql_has_zone={proxysql_has_zone}",
+        criterion="Both PXC and ProxySQL must include required anti-affinity topology",
+        expected=f"topologyKey in {accepted_keys}",
+        actual=f"pxc_has_required={pxc_has_required}, proxysql_has_required={proxysql_has_required}",
         source=path,
     )
-    assert pxc_has_zone and proxysql_has_zone, \
-        "Both PXC and ProxySQL must have zone-based anti-affinity to ensure multi-AZ deployment"
+    assert pxc_has_required and proxysql_has_required, \
+        "Both PXC and ProxySQL must have required anti-affinity to ensure proper distribution"
 

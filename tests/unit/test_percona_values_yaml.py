@@ -5,7 +5,7 @@ These tests validate the configuration before it's applied to ensure integration
 import yaml
 import os
 import pytest
-from tests.conftest import log_check
+from tests.conftest import log_check, ON_PREM, STORAGE_CLASS_NAME
 
 
 @pytest.mark.unit
@@ -40,7 +40,8 @@ def test_percona_values_pxc_configuration():
     log_check("pxc.persistence.enabled should be true", "True", f"{pxc['persistence']['enabled']}", source=path); assert pxc['persistence']['enabled'] is True
     log_check("pxc.persistence.size should be 20Gi", "20Gi", f"{pxc['persistence']['size']}", source=path); assert pxc['persistence']['size'] == '20Gi'
     log_check("pxc.persistence.accessMode should be ReadWriteOnce", "ReadWriteOnce", f"{pxc['persistence']['accessMode']}", source=path); assert pxc['persistence']['accessMode'] == 'ReadWriteOnce'
-    log_check("pxc.persistence.storageClass should be gp3", "gp3", f"{pxc['persistence']['storageClass']}", source=path); assert pxc['persistence']['storageClass'] == 'gp3'
+    expected_sc = STORAGE_CLASS_NAME if ON_PREM else 'gp3'
+    log_check("pxc.persistence.storageClass should match expected", f"{expected_sc}", f"{pxc['persistence']['storageClass']}", source=path); assert pxc['persistence']['storageClass'] == expected_sc
     log_check("pxc.pdb.maxUnavailable should be 1", "1", f"{pxc['podDisruptionBudget']['maxUnavailable']}", source=path); assert pxc['podDisruptionBudget']['maxUnavailable'] == 1
     
     # Check anti-affinity
@@ -87,7 +88,8 @@ def test_percona_values_proxysql_configuration():
     volume_spec = proxysql['volumeSpec']['persistentVolumeClaim']
     log_check("ProxySQL PVC accessModes", "['ReadWriteOnce']", f"{volume_spec['accessModes']}", source=path); assert volume_spec['accessModes'] == ['ReadWriteOnce']
     log_check("ProxySQL PVC requests.storage", "5Gi", f"{volume_spec['resources']['requests']['storage']}", source=path); assert volume_spec['resources']['requests']['storage'] == '5Gi'
-    log_check("ProxySQL PVC storageClassName", "gp3", f"{volume_spec['storageClassName']}", source=path); assert volume_spec['storageClassName'] == 'gp3'
+    expected_sc = STORAGE_CLASS_NAME if ON_PREM else 'gp3'
+    log_check("ProxySQL PVC storageClassName", f"{expected_sc}", f"{volume_spec['storageClassName']}", source=path); assert volume_spec['storageClassName'] == expected_sc
 
 
 @pytest.mark.unit

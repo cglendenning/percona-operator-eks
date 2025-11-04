@@ -54,6 +54,9 @@ TEST_BACKUP_BUCKET = os.getenv('TEST_BACKUP_BUCKET', '')
 TEST_OPERATOR_NAMESPACE = os.getenv('TEST_OPERATOR_NAMESPACE', TEST_NAMESPACE)
 MINIO_NAMESPACE = os.getenv('MINIO_NAMESPACE', 'minio')
 CHAOS_NAMESPACE = os.getenv('CHAOS_NAMESPACE', 'litmus')
+ON_PREM = os.getenv('ON_PREM', 'false').lower() == 'true'
+STORAGE_CLASS_NAME = os.getenv('STORAGE_CLASS_NAME', 'gp3' if not ON_PREM else 'standard')
+TOPOLOGY_KEY = os.getenv('TOPOLOGY_KEY', 'topology.kubernetes.io/zone' if not ON_PREM else 'kubernetes.io/hostname')
 
 
 def log_check(criterion: str, expected: str, actual: str, *, source: str | None = None) -> None:
