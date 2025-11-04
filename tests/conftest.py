@@ -72,6 +72,9 @@ PROXYSQL_PATH = os.getenv('PROXYSQL_PATH', '')      # e.g., 'pxc-db.proxysql'
 HAPROXY_PATH = os.getenv('HAPROXY_PATH', '')        # e.g., 'pxc-db.haproxy'
 BACKUP_PATH = os.getenv('BACKUP_PATH', '')          # e.g., 'pxc-db.backup'
 
+# Fleet rendered manifest (on-prem mode with Fleet)
+FLEET_RENDERED_MANIFEST = os.getenv('FLEET_RENDERED_MANIFEST', '')
+
 
 def _deep_get(obj, path: str):
     if not path:
@@ -100,6 +103,24 @@ def _auto_locate(obj: dict, candidates: list[str]) -> dict | None:
 
 
 def _load_values_yaml() -> dict:
+    # If Fleet rendered manifest is available, use it instead
+    if FLEET_RENDERED_MANIFEST and os.path.exists(FLEET_RENDERED_MANIFEST):
+        try:
+            import yaml
+            with open(FLEET_RENDERED_MANIFEST, 'r', encoding='utf-8') as f:
+                # Load all documents from the manifest
+                docs = list(yaml.safe_load_all(f))
+                # For now, return the first PerconaXtraDBCluster CR if found
+                for doc in docs:
+                    if doc and doc.get('kind') == 'PerconaXtraDBCluster':
+                        # Extract the spec which contains pxc, proxysql, etc.
+                        return doc.get('spec', {})
+                # If no PXC CR found, return empty
+                return {}
+        except Exception:
+            pass  # Fall through to normal values file loading
+    
+    # Normal values file loading
     with open(VALUES_FILE, 'r', encoding='utf-8') as f:
         content = f.read()
     # Replace common placeholders

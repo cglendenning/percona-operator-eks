@@ -279,14 +279,18 @@ if [ "$ON_PREM" = "true" ]; then
     
     # Fleet configuration detection (on-prem environments often use Fleet)
     FLEET_YAML=${FLEET_YAML:-./fleet.yaml}
-    if [ -f "$FLEET_YAML" ] && command -v python3 >/dev/null 2>&1; then
+    if [ -f "$FLEET_YAML" ] && command -v python3 >/dev/null 2>&1 && command -v helm >/dev/null 2>&1; then
         verbose_echo -e "${BLUE}Detected Fleet configuration: $FLEET_YAML${NC}"
         
-        # Extract chart URL and values files using Python (handles YAML safely)
-        FLEET_INFO=$(python3 - <<'PYTHON_SCRIPT'
+        # Extract Fleet configuration and render manifest using Python
+        FLEET_RENDER=$(python3 - <<'PYTHON_SCRIPT'
 import sys
 import yaml
 import os
+import subprocess
+import tempfile
+import re
+from datetime import datetime
 
 fleet_path = os.getenv('FLEET_YAML', './fleet.yaml')
 fleet_target = os.getenv('FLEET_TARGET', '')
@@ -295,28 +299,73 @@ try:
     with open(fleet_path, 'r') as f:
         fleet = yaml.safe_load(f)
     
-    # Extract chart URL from helm.chart
-    chart_url = fleet.get('helm', {}).get('chart', '')
+    # Extract base helm config
+    helm_config = fleet.get('helm', {})
+    chart_url = helm_config.get('chart', '')
+    release_name = helm_config.get('releaseName', 'pxc-cluster')
+    base_namespace = helm_config.get('targetNamespace', 'percona')
+    base_values_files = helm_config.get('valuesFiles', [])
     
-    # Extract values files from targetCustomizations
+    # Find target customization
     target_customizations = fleet.get('targetCustomizations', [])
-    values_files = []
+    target_values_files = []
+    target_namespace = base_namespace
     
     if fleet_target:
-        # Look for specific target
         for target in target_customizations:
             if target.get('name') == fleet_target:
-                values_files = target.get('helm', {}).get('valuesFiles', [])
+                target_helm = target.get('helm', {})
+                target_values_files = target_helm.get('valuesFiles', [])
+                target_namespace = target.get('namespace') or target_helm.get('targetNamespace', base_namespace)
                 break
     elif target_customizations:
-        # Use first target if no specific target requested
-        values_files = target_customizations[0].get('helm', {}).get('valuesFiles', [])
+        target = target_customizations[0]
+        target_helm = target.get('helm', {})
+        target_values_files = target_helm.get('valuesFiles', [])
+        target_namespace = target.get('namespace') or target_helm.get('targetNamespace', base_namespace)
     
-    # Print results (one per line for easy parsing)
+    # Combine values files (base + target-specific)
+    all_values_files = base_values_files + target_values_files
+    
+    # Build helm template command
+    helm_cmd = ['helm', 'template', release_name, chart_url, '--insecure-skip-tls-verify']
+    if target_namespace:
+        helm_cmd.extend(['--namespace', target_namespace])
+    
+    for vf in all_values_files:
+        helm_cmd.extend(['-f', vf])
+    
+    # Run helm template
+    result = subprocess.run(helm_cmd, capture_output=True, text=True, check=True)
+    rendered_manifest = result.stdout
+    
+    # Redact secrets
+    manifest_docs = list(yaml.safe_load_all(rendered_manifest))
+    for doc in manifest_docs:
+        if doc and doc.get('kind') == 'Secret' and 'data' in doc:
+            for key in doc['data']:
+                doc['data'][key] = '[REDACTED]'
+        if doc and doc.get('kind') == 'Secret' and 'stringData' in doc:
+            for key in doc['stringData']:
+                doc['stringData'][key] = '[REDACTED]'
+    
+    # Save to temp file
+    timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+    temp_file = f'/tmp/fleet-rendered-{timestamp}.yaml'
+    with open(temp_file, 'w') as f:
+        yaml.dump_all(manifest_docs, f, default_flow_style=False)
+    
+    # Print results
     print(f"CHART_URL={chart_url}")
-    if values_files:
-        # Use first values file
-        print(f"VALUES_FILE={values_files[0]}")
+    print(f"RELEASE_NAME={release_name}")
+    print(f"NAMESPACE={target_namespace}")
+    print(f"RENDERED_MANIFEST={temp_file}")
+    if all_values_files:
+        print(f"VALUES_FILES={','.join(all_values_files)}")
+    
+except subprocess.CalledProcessError as e:
+    print(f"ERROR=helm template failed: {e.stderr}", file=sys.stderr)
+    sys.exit(1)
 except Exception as e:
     print(f"ERROR={str(e)}", file=sys.stderr)
     sys.exit(1)
@@ -331,18 +380,32 @@ PYTHON_SCRIPT
                         FLEET_CHART_URL="$value"
                         verbose_echo "  Chart URL: $FLEET_CHART_URL"
                         ;;
-                    VALUES_FILE)
-                        if [ -z "${VALUES_FILE:-}" ]; then
-                            export VALUES_FILE="$value"
-                            verbose_echo "  Values File: $VALUES_FILE"
+                    RELEASE_NAME)
+                        FLEET_RELEASE_NAME="$value"
+                        verbose_echo "  Release Name: $FLEET_RELEASE_NAME"
+                        ;;
+                    NAMESPACE)
+                        if [ -z "${TEST_NAMESPACE:-}" ] || [ "$TEST_NAMESPACE" = "percona" ]; then
+                            export TEST_NAMESPACE="$value"
+                            verbose_echo "  Namespace: $TEST_NAMESPACE (from Fleet)"
+                        fi
+                        ;;
+                    RENDERED_MANIFEST)
+                        export FLEET_RENDERED_MANIFEST="$value"
+                        verbose_echo "  Rendered Manifest: $FLEET_RENDERED_MANIFEST"
+                        ;;
+                    VALUES_FILES)
+                        IFS=',' read -ra VF_ARRAY <<< "$value"
+                        if [ ${#VF_ARRAY[@]} -gt 0 ] && [ -z "${VALUES_FILE:-}" ]; then
+                            export VALUES_FILE="${VF_ARRAY[0]}"
+                            verbose_echo "  Primary Values File: $VALUES_FILE"
                         fi
                         ;;
                 esac
-            done <<< "$FLEET_INFO"
+            done <<< "$FLEET_RENDER"
             
-            # If we found a values file, try to auto-detect schema
+            # Auto-detect schema from first values file if present
             if [ -n "${VALUES_FILE:-}" ] && [ -f "$VALUES_FILE" ]; then
-                # Peek at values file to detect if it uses a wrapper key
                 if grep -q '^pxc-db:' "$VALUES_FILE" 2>/dev/null; then
                     verbose_echo "  Detected pxc-db wrapper in values"
                     export VALUES_ROOT_KEY=${VALUES_ROOT_KEY:-pxc-db}
@@ -353,7 +416,7 @@ PYTHON_SCRIPT
                 fi
             fi
         else
-            verbose_echo -e "${YELLOW}⚠ Could not parse Fleet configuration${NC}"
+            verbose_echo -e "${YELLOW}⚠ Could not render Fleet manifest${NC}"
         fi
     fi
 else
@@ -729,6 +792,12 @@ fi
 
 echo ""
 echo -e "${BLUE}Completing test run...${NC}"
+
+# Clean up Fleet rendered manifest if it exists
+if [ -n "${FLEET_RENDERED_MANIFEST:-}" ] && [ -f "$FLEET_RENDERED_MANIFEST" ]; then
+    verbose_echo "Cleaning up rendered Fleet manifest: $FLEET_RENDERED_MANIFEST"
+    rm -f "$FLEET_RENDERED_MANIFEST"
+fi
 
 # Skip warning counting - it can hang with fixtures and isn't critical
 # Warnings are visible if user runs with --show-warnings
