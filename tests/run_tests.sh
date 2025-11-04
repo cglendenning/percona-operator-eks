@@ -9,6 +9,24 @@ PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 
 cd "$PROJECT_ROOT"
 
+# Setup logging to /tmp with timestamp
+LOG_TIMESTAMP=$(date +"%Y%m%d_%H%M%S")
+LOG_FILE="/tmp/percona_tests_${LOG_TIMESTAMP}.log"
+
+# Function to strip ANSI color codes for clean log file
+strip_colors() {
+    sed 's/\x1b\[[0-9;]*m//g'
+}
+
+# Redirect output to both screen (with colors) and log file (without colors)
+exec > >(tee >(strip_colors >> "$LOG_FILE"))
+exec 2>&1
+
+# Record test run start
+echo "Percona Test Run - $(date)"
+echo "Log file: $LOG_FILE"
+echo ""
+
 # Detect operating system
 detect_os() {
     if [[ "$OSTYPE" == "darwin"* ]]; then
@@ -531,6 +549,11 @@ if [ "${GENERATE_HTML_REPORT:-}" == "true" ]; then
     echo ""
     echo -e "${GREEN}HTML report generated: tests/report.html${NC}"
 fi
+
+# Show log file location
+echo ""
+echo -e "${BLUE}Full test log saved to:${NC} ${LOG_FILE}"
+echo "View log: cat ${LOG_FILE}"
 
 exit $TEST_RESULT
 
