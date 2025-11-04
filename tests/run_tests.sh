@@ -521,6 +521,9 @@ for arg in "$@"; do
         --verbose|-v)
             VERBOSE=true
             ;;
+        --on-prem)
+            # Already handled in early scan, skip here
+            ;;
         *)
             # Unknown option - assume it's for pytest
             PYTEST_PASSTHROUGH+=("$arg")
