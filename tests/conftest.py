@@ -20,7 +20,7 @@ except (ImportError, AttributeError):
 console = Console()
 
 # ChartMuseum port-forward configuration
-CHARTMUSEUM_NAMESPACE = 'chartmuseum'
+CHARTMUSEUM_NAMESPACE = os.getenv('CHARTMUSEUM_NAMESPACE', 'chartmuseum')
 CHARTMUSEUM_SERVICE = 'chartmuseum'
 CHARTMUSEUM_LOCAL_PORT = 8765
 
@@ -51,6 +51,8 @@ TEST_EXPECTED_NODES = int(os.getenv('TEST_EXPECTED_NODES', '6'))
 TEST_BACKUP_TYPE = os.getenv('TEST_BACKUP_TYPE', 'minio')  # 's3' or 'minio' (default: minio for on-prem replication)
 TEST_BACKUP_BUCKET = os.getenv('TEST_BACKUP_BUCKET', '')
 TEST_OPERATOR_NAMESPACE = os.getenv('TEST_OPERATOR_NAMESPACE', TEST_NAMESPACE)
+MINIO_NAMESPACE = os.getenv('MINIO_NAMESPACE', 'minio')
+CHAOS_NAMESPACE = os.getenv('CHAOS_NAMESPACE', 'litmus')
 
 
 @pytest.fixture(scope="session")

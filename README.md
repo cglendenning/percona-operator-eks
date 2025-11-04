@@ -854,16 +854,98 @@ See `chaos-experiments/pod-delete-pxc-with-resiliency.yaml` for example configur
 
 #### Configuration
 
+**Quick Setup with Interactive Script:**
+
+```bash
+./scripts/configure-namespaces.sh
+```
+
+This interactive script will:
+- Scan your cluster for existing namespaces
+- Prompt for each namespace value with smart defaults
+- Verify namespaces exist
+- Create a `.env.test` file you can source
+
+**Manual Configuration:**
+
 Set environment variables to customize test behavior:
 
 ```bash
-export TEST_NAMESPACE=percona
+# Namespace Configuration (Required if using non-default namespaces)
+export TEST_NAMESPACE=percona              # Percona XtraDB Cluster namespace
+export TEST_OPERATOR_NAMESPACE=percona     # Percona Operator namespace (defaults to TEST_NAMESPACE)
+export MINIO_NAMESPACE=minio               # MinIO namespace (for backup tests)
+export CHAOS_NAMESPACE=litmus              # Litmus namespace (for resiliency tests)
+export CHARTMUSEUM_NAMESPACE=chartmuseum   # ChartMuseum namespace (for chart tests)
+
+# Cluster Configuration
 export TEST_CLUSTER_NAME=pxc-cluster
 export TEST_EXPECTED_NODES=6
-export TEST_BACKUP_TYPE=minio  # or 's3' (default: minio for on-prem replication)
+export TEST_BACKUP_TYPE=minio              # or 's3' (default: minio for on-prem replication)
 export TEST_BACKUP_BUCKET=my-backup-bucket
+
+# Resiliency Test Configuration
 export RESILIENCY_MTTR_TIMEOUT_SECONDS=120  # Default: 120 seconds
 export RESILIENCY_POLL_INTERVAL_SECONDS=15  # Default: 15 seconds
+```
+
+**Namespace Usage by Test Type:**
+
+| Test Type | Required Namespaces | Can Skip If Missing |
+|-----------|---------------------|---------------------|
+| Unit Tests | None (no cluster access) | N/A |
+| Integration Tests | `TEST_NAMESPACE`, `MINIO_NAMESPACE`, `CHARTMUSEUM_NAMESPACE` | Use `--no-integration-tests` |
+| Resiliency Tests | `TEST_NAMESPACE`, `CHAOS_NAMESPACE` | Use `--no-resiliency-tests` |
+
+**Common Namespace Configurations:**
+
+```bash
+# Single namespace (everything in 'percona')
+export TEST_NAMESPACE=percona
+export MINIO_NAMESPACE=percona
+export CHAOS_NAMESPACE=percona
+
+# Separate namespaces (recommended for production)
+export TEST_NAMESPACE=percona-prod
+export TEST_OPERATOR_NAMESPACE=percona-operator
+export MINIO_NAMESPACE=minio-system
+export CHAOS_NAMESPACE=litmus
+export CHARTMUSEUM_NAMESPACE=chartmuseum
+
+# Multi-tenant environment
+export TEST_NAMESPACE=tenant-a-percona
+export MINIO_NAMESPACE=shared-storage
+export CHAOS_NAMESPACE=shared-chaos
+
+# Using an env file (recommended)
+echo 'export TEST_NAMESPACE=percona' > .env.test
+echo 'export MINIO_NAMESPACE=minio' >> .env.test
+echo 'export CHAOS_NAMESPACE=litmus' >> .env.test
+source .env.test
+./tests/run_tests.sh
+```
+
+**Verifying Your Configuration:**
+
+```bash
+# Check if namespaces exist
+kubectl get namespace $TEST_NAMESPACE $MINIO_NAMESPACE $CHAOS_NAMESPACE
+
+# View what the test runner will use (verbose mode)
+./tests/run_tests.sh --verbose --no-unit-tests --no-integration-tests --no-resiliency-tests
+```
+
+**Skipping Tests for Missing Components:**
+
+```bash
+# No MinIO deployed? Skip backup tests
+./tests/run_tests.sh --no-integration-tests
+
+# No Litmus Chaos? Skip resiliency tests
+./tests/run_tests.sh --no-resiliency-tests --no-dr-tests
+
+# Only run unit tests (no cluster required)
+./tests/run_tests.sh --no-integration-tests --no-resiliency-tests --no-dr-tests
 ```
 
 #### Running Tests Before/After Changes

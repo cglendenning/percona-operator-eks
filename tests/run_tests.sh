@@ -216,14 +216,18 @@ export TEST_CLUSTER_NAME=${TEST_CLUSTER_NAME:-pxc-cluster}
 export TEST_BACKUP_TYPE=${TEST_BACKUP_TYPE:-minio}
 export TEST_BACKUP_BUCKET=${TEST_BACKUP_BUCKET:-percona-backups}
 export TEST_OPERATOR_NAMESPACE=${TEST_OPERATOR_NAMESPACE:-$TEST_NAMESPACE}
+export MINIO_NAMESPACE=${MINIO_NAMESPACE:-minio}
+export CHAOS_NAMESPACE=${CHAOS_NAMESPACE:-litmus}
+export CHARTMUSEUM_NAMESPACE=${CHARTMUSEUM_NAMESPACE:-chartmuseum}
 
 # Auto-detect node count from cluster if not set
 if [ -z "${TEST_EXPECTED_NODES:-}" ]; then
     # Try to get node count from PXC StatefulSet
     # First try to find by name pattern (contains -pxc but not proxysql)
-    PXC_STS_NAME=$(kubectl get statefulset -n "$TEST_NAMESPACE" -o jsonpath='{range .items[*]}{.metadata.name}{"\n"}{end}' 2>/dev/null | grep -E '\-pxc' | grep -v proxysql | head -1)
+    # Use || true to prevent script exit if grep finds nothing (due to set -e)
+    PXC_STS_NAME=$(kubectl get statefulset -n "$TEST_NAMESPACE" -o jsonpath='{range .items[*]}{.metadata.name}{"\n"}{end}' 2>/dev/null | grep -E '\-pxc' | grep -v proxysql | head -1 || true)
     if [ -n "$PXC_STS_NAME" ]; then
-        PXC_STS=$(kubectl get statefulset "$PXC_STS_NAME" -n "$TEST_NAMESPACE" -o jsonpath='{.spec.replicas}' 2>/dev/null)
+        PXC_STS=$(kubectl get statefulset "$PXC_STS_NAME" -n "$TEST_NAMESPACE" -o jsonpath='{.spec.replicas}' 2>/dev/null || true)
         if [ -n "$PXC_STS" ] && [ "$PXC_STS" != "null" ] && [ "$PXC_STS" -gt 0 ] 2>/dev/null; then
             export TEST_EXPECTED_NODES=$PXC_STS
         fi
@@ -240,7 +244,11 @@ else
 fi
 
 verbose_echo -e "${BLUE}Test Configuration:${NC}"
-verbose_echo "  Namespace: $TEST_NAMESPACE"
+verbose_echo "  Percona Namespace: $TEST_NAMESPACE"
+verbose_echo "  Operator Namespace: $TEST_OPERATOR_NAMESPACE"
+verbose_echo "  MinIO Namespace: $MINIO_NAMESPACE"
+verbose_echo "  Chaos Namespace: $CHAOS_NAMESPACE"
+verbose_echo "  ChartMuseum Namespace: $CHARTMUSEUM_NAMESPACE"
 verbose_echo "  Cluster Name: $TEST_CLUSTER_NAME"
 verbose_echo "  Expected Nodes: $TEST_EXPECTED_NODES"
 verbose_echo "  Backup Type: $TEST_BACKUP_TYPE"

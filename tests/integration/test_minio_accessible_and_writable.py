@@ -6,7 +6,7 @@ import base64
 import subprocess
 from kubernetes import client
 from kubernetes import client
-from tests.conftest import TEST_NAMESPACE, TEST_CLUSTER_NAME, TEST_BACKUP_TYPE, TEST_BACKUP_BUCKET
+from tests.conftest import TEST_NAMESPACE, TEST_CLUSTER_NAME, TEST_BACKUP_TYPE, TEST_BACKUP_BUCKET, MINIO_NAMESPACE
 from rich.console import Console
 
 console = Console()
@@ -23,15 +23,15 @@ def test_minio_accessible_and_writable(core_v1):
     # Get MinIO pod and credentials
     try:
         minio_pods = core_v1.list_namespaced_pod(
-            namespace='minio',
+            namespace=MINIO_NAMESPACE,
             label_selector='app=minio'
         )
     except:
         # Fallback: get all pods in minio namespace and filter by name
-        all_pods = core_v1.list_namespaced_pod(namespace='minio')
+        all_pods = core_v1.list_namespaced_pod(namespace=MINIO_NAMESPACE)
         minio_pods = type('obj', (object,), {'items': [p for p in all_pods.items if 'minio' in p.metadata.name.lower()]})()
 
-    assert len(minio_pods.items) > 0, "MinIO pod not found in minio namespace"
+    assert len(minio_pods.items) > 0, f"MinIO pod not found in {MINIO_NAMESPACE} namespace"
     minio_pod = minio_pods.items[0]
 
     # Get credentials from secret
@@ -66,7 +66,7 @@ def test_minio_accessible_and_writable(core_v1):
     # This handles cases where the secret might not match MinIO's actual credentials
     try:
         env_result = subprocess.run(
-            ['kubectl', 'exec', '-n', 'minio', minio_pod.metadata.name, '--', 'env'],
+            ['kubectl', 'exec', '-n', MINIO_NAMESPACE, minio_pod.metadata.name, '--', 'env'],
             capture_output=True, text=True, timeout=10
         )
         if env_result.returncode == 0:
@@ -96,7 +96,7 @@ def test_minio_accessible_and_writable(core_v1):
             try:
                 # Configure mc alias (using MinIO's internal endpoint)
                 mc_config_cmd = [
-                    'kubectl', 'exec', '-n', 'minio', minio_pod.metadata.name, '--',
+                    'kubectl', 'exec', '-n', MINIO_NAMESPACE, minio_pod.metadata.name, '--',
                     'mc', 'alias', 'set', mc_alias, 
                     'http://localhost:9000', cred_access_key, cred_secret_key
                 ]
@@ -116,14 +116,14 @@ def test_minio_accessible_and_writable(core_v1):
             f"Secret credentials may not match MinIO's actual credentials."
 
         # Check if bucket exists, create it if it doesn't
-        ls_cmd = ['kubectl', 'exec', '-n', 'minio', minio_pod.metadata.name, '--',
+        ls_cmd = ['kubectl', 'exec', '-n', MINIO_NAMESPACE, minio_pod.metadata.name, '--',
                  'mc', 'ls', f'{mc_alias}/{bucket_name}']
         result = subprocess.run(ls_cmd, capture_output=True, text=True, timeout=10)
 
         if result.returncode != 0:
             # Bucket doesn't exist, create it
             console.print(f"[yellow]⚠[/yellow] MinIO bucket {bucket_name} does not exist, creating it...")
-            mb_cmd = ['kubectl', 'exec', '-n', 'minio', minio_pod.metadata.name, '--',
+            mb_cmd = ['kubectl', 'exec', '-n', MINIO_NAMESPACE, minio_pod.metadata.name, '--',
                      'mc', 'mb', f'{mc_alias}/{bucket_name}']
             mb_result = subprocess.run(mb_cmd, capture_output=True, text=True, timeout=10)
 
@@ -147,7 +147,7 @@ def test_minio_accessible_and_writable(core_v1):
         # Test write capability - write a test file
         # First create the test file content inside the pod
         write_cmd = [
-            'kubectl', 'exec', '-n', 'minio', minio_pod.metadata.name, '--',
+            'kubectl', 'exec', '-n', MINIO_NAMESPACE, minio_pod.metadata.name, '--',
             'sh', '-c', f'echo "{base64.b64encode(test_data).decode()}" | base64 -d > /tmp/test_write.txt && cat /tmp/test_write.txt | mc pipe {mc_alias}/{bucket_name}/{test_content}'
         ]
         result = subprocess.run(write_cmd, capture_output=True, text=True, timeout=10)
@@ -158,7 +158,7 @@ def test_minio_accessible_and_writable(core_v1):
         console.print(f"[green]✓[/green] Successfully wrote test file to MinIO bucket: {test_content}")
 
         # Verify the file was written by listing it
-        verify_cmd = ['kubectl', 'exec', '-n', 'minio', minio_pod.metadata.name, '--',
+        verify_cmd = ['kubectl', 'exec', '-n', MINIO_NAMESPACE, minio_pod.metadata.name, '--',
                      'mc', 'ls', f'{mc_alias}/{bucket_name}/{test_content}']
         result = subprocess.run(verify_cmd, capture_output=True, text=True, timeout=10)
 
@@ -166,7 +166,7 @@ def test_minio_accessible_and_writable(core_v1):
             f"Test file not found in bucket after write: {result.stderr or result.stdout}"
 
         # Verify we can read it back
-        read_cmd = ['kubectl', 'exec', '-n', 'minio', minio_pod.metadata.name, '--',
+        read_cmd = ['kubectl', 'exec', '-n', MINIO_NAMESPACE, minio_pod.metadata.name, '--',
                    'mc', 'cat', f'{mc_alias}/{bucket_name}/{test_content}']
         result = subprocess.run(read_cmd, capture_output=True, text=True, timeout=10)
 
@@ -178,7 +178,7 @@ def test_minio_accessible_and_writable(core_v1):
         console.print(f"[green]✓[/green] Successfully read test file from MinIO bucket")
 
         # Clean up test file
-        rm_cmd = ['kubectl', 'exec', '-n', 'minio', minio_pod.metadata.name, '--',
+        rm_cmd = ['kubectl', 'exec', '-n', MINIO_NAMESPACE, minio_pod.metadata.name, '--',
                  'mc', 'rm', f'{mc_alias}/{bucket_name}/{test_content}']
         subprocess.run(rm_cmd, capture_output=True, text=True, timeout=10)
 

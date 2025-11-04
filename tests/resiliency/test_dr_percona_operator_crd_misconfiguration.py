@@ -17,7 +17,7 @@ from tests.resiliency.helpers import (
     wait_for_service_recovery,
     wait_for_pod_recovery
 )
-from tests.conftest import TEST_NAMESPACE, TEST_CLUSTER_NAME
+from tests.conftest import TEST_NAMESPACE, TEST_CLUSTER_NAME, CHAOS_NAMESPACE
 
 
 @pytest.mark.dr
@@ -55,7 +55,7 @@ def test_percona_operator_crd_misconfiguration(core_v1, apps_v1, custom_objects_
     # Step 2: Wait for chaos to complete
     print(f"[2/3] Waiting for chaos experiment to complete...")
     wait_for_chaos_completion(
-        chaos_namespace='litmus',
+        chaos_namespace=CHAOS_NAMESPACE,
         engine_name=engine_name,
         timeout=180
     )
