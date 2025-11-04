@@ -41,6 +41,12 @@ def pytest_addoption(parser):
         default=False,
         help='Trigger chaos experiments before running resiliency tests'
     )
+    parser.addoption(
+        '--proxysql',
+        action='store_true',
+        default=False,
+        help='Environment uses ProxySQL (run ProxySQL tests and skip HAProxy tests)'
+    )
 
 # Pytest markers for test categorization
 pytest_plugins = []
@@ -57,6 +63,101 @@ CHAOS_NAMESPACE = os.getenv('CHAOS_NAMESPACE', 'litmus')
 ON_PREM = os.getenv('ON_PREM', 'false').lower() == 'true'
 STORAGE_CLASS_NAME = os.getenv('STORAGE_CLASS_NAME', 'gp3' if not ON_PREM else 'standard')
 TOPOLOGY_KEY = os.getenv('TOPOLOGY_KEY', 'topology.kubernetes.io/zone' if not ON_PREM else 'kubernetes.io/hostname')
+
+# Schema mapping environment overrides
+VALUES_FILE = os.getenv('VALUES_FILE', os.path.join(os.getcwd(), 'templates', 'percona-values.yaml'))
+VALUES_ROOT_KEY = os.getenv('VALUES_ROOT_KEY', '')  # e.g., 'pxc-db'
+PXC_PATH = os.getenv('PXC_PATH', '')                # e.g., 'pxc-db.pxc'
+PROXYSQL_PATH = os.getenv('PROXYSQL_PATH', '')      # e.g., 'pxc-db.proxysql'
+HAPROXY_PATH = os.getenv('HAPROXY_PATH', '')        # e.g., 'pxc-db.haproxy'
+BACKUP_PATH = os.getenv('BACKUP_PATH', '')          # e.g., 'pxc-db.backup'
+
+
+def _deep_get(obj, path: str):
+    if not path:
+        return None
+    cur = obj
+    for part in path.split('.'):
+        if isinstance(cur, dict) and part in cur:
+            cur = cur[part]
+        else:
+            return None
+    return cur
+
+
+def _auto_locate(obj: dict, candidates: list[str]) -> dict | None:
+    # Try direct
+    for key in candidates:
+        if key in obj and isinstance(obj[key], dict):
+            return obj[key]
+    # Try one-level wrapper
+    for top_key, val in obj.items():
+        if isinstance(val, dict):
+            for key in candidates:
+                if key in val and isinstance(val[key], dict):
+                    return val[key]
+    return None
+
+
+def _load_values_yaml() -> dict:
+    with open(VALUES_FILE, 'r', encoding='utf-8') as f:
+        content = f.read()
+    # Replace common placeholders
+    content = content.replace('{{NODES}}', '3')
+    try:
+        import yaml
+        return yaml.safe_load(content) or {}
+    except Exception:
+        return {}
+
+
+def get_normalized_values():
+    """Return normalized component views: {'pxc','proxysql','haproxy','backup'}"""
+    raw = _load_values_yaml()
+    root = raw.get(VALUES_ROOT_KEY) if VALUES_ROOT_KEY else raw
+
+    norm = {'pxc': None, 'proxysql': None, 'haproxy': None, 'backup': None}
+
+    # PXC
+    pxc = _deep_get(raw, PXC_PATH) if PXC_PATH else None
+    if pxc is None and isinstance(root, dict):
+        pxc = _auto_locate(root, ['pxc'])
+    norm['pxc'] = pxc or {}
+
+    # ProxySQL
+    proxysql = _deep_get(raw, PROXYSQL_PATH) if PROXYSQL_PATH else None
+    if proxysql is None and isinstance(root, dict):
+        proxysql = _auto_locate(root, ['proxysql'])
+    norm['proxysql'] = proxysql or {}
+
+    # HAProxy
+    haproxy = _deep_get(raw, HAPROXY_PATH) if HAPROXY_PATH else None
+    if haproxy is None and isinstance(root, dict):
+        haproxy = _auto_locate(root, ['haproxy'])
+    norm['haproxy'] = haproxy or {}
+
+    # Backup (support backup or backup-enabled)
+    backup = _deep_get(raw, BACKUP_PATH) if BACKUP_PATH else None
+    if backup is None and isinstance(root, dict):
+        backup = _auto_locate(root, ['backup'])
+        if not backup and 'backup-enabled' in root:
+            backup = {'enabled': root.get('backup-enabled')}
+    norm['backup'] = backup or {}
+
+    return norm
+
+
+@pytest.fixture(scope='session')
+def values_norm():
+    return get_normalized_values()
+
+
+@pytest.fixture(scope='session')
+def is_proxysql(request):
+    try:
+        return bool(request.config.getoption('--proxysql'))
+    except Exception:
+        return False
 
 
 def log_check(criterion: str, expected: str, actual: str, *, source: str | None = None) -> None:

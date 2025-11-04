@@ -56,7 +56,9 @@ def test_percona_values_pxc_configuration():
 
 
 @pytest.mark.unit
-def test_percona_values_proxysql_configuration():
+def test_percona_values_proxysql_configuration(request):
+    if not request.config.getoption('--proxysql'):
+        pytest.skip("ProxySQL tests run only with --proxysql")
     """Test ProxySQL configuration matches expected values."""
     path = os.path.join(os.getcwd(), 'templates', 'percona-values.yaml')
     with open(path, 'r', encoding='utf-8') as f:
@@ -93,7 +95,9 @@ def test_percona_values_proxysql_configuration():
 
 
 @pytest.mark.unit
-def test_percona_values_haproxy_disabled():
+def test_percona_values_haproxy_disabled(request):
+    if not request.config.getoption('--proxysql'):
+        pytest.skip("This HAProxy-disabled test is only relevant when ProxySQL is enabled")
     """Test that HAProxy is disabled."""
     path = os.path.join(os.getcwd(), 'templates', 'percona-values.yaml')
     with open(path, 'r', encoding='utf-8') as f:
