@@ -5,17 +5,13 @@ Validates that pods are distributed across availability zones per Percona best p
 import os
 import yaml
 import pytest
-from tests.conftest import log_check, TOPOLOGY_KEY
+from tests.conftest import log_check, TOPOLOGY_KEY, get_values_for_test
 
 
 @pytest.mark.unit
 def test_pxc_anti_affinity_required():
     """Test that PXC has required anti-affinity rules."""
-    path = os.path.join(os.path.dirname(__file__), '..', '..', 'templates', 'percona-values.yaml')
-    with open(path, 'r', encoding='utf-8') as f:
-        content = f.read()
-        content = content.replace('{{NODES}}', '3')
-        values = yaml.safe_load(content)
+    values, path = get_values_for_test()
     
     affinity = values['pxc']['affinity']
     log_check(
@@ -48,11 +44,7 @@ def test_pxc_anti_affinity_required():
 @pytest.mark.unit
 def test_pxc_anti_affinity_topology_distribution():
     """Test that PXC anti-affinity uses the correct topology key (zone on EKS, hostname on on-prem)."""
-    path = os.path.join(os.path.dirname(__file__), '..', '..', 'templates', 'percona-values.yaml')
-    with open(path, 'r', encoding='utf-8') as f:
-        content = f.read()
-        content = content.replace('{{NODES}}', '3')
-        values = yaml.safe_load(content)
+    values, path = get_values_for_test()
     
     required_rules = values['pxc']['affinity']['podAntiAffinity']['requiredDuringSchedulingIgnoredDuringExecution']
     
@@ -80,11 +72,7 @@ def test_pxc_anti_affinity_topology_distribution():
 @pytest.mark.unit
 def test_pxc_anti_affinity_label_selector():
     """Test that PXC anti-affinity uses correct label selector."""
-    path = os.path.join(os.path.dirname(__file__), '..', '..', 'templates', 'percona-values.yaml')
-    with open(path, 'r', encoding='utf-8') as f:
-        content = f.read()
-        content = content.replace('{{NODES}}', '3')
-        values = yaml.safe_load(content)
+    values, path = get_values_for_test()
     
     required_rules = values['pxc']['affinity']['podAntiAffinity']['requiredDuringSchedulingIgnoredDuringExecution']
     
@@ -116,11 +104,7 @@ def test_pxc_anti_affinity_label_selector():
 @pytest.mark.unit
 def test_proxysql_anti_affinity_required():
     """Test that ProxySQL has required anti-affinity rules."""
-    path = os.path.join(os.path.dirname(__file__), '..', '..', 'templates', 'percona-values.yaml')
-    with open(path, 'r', encoding='utf-8') as f:
-        content = f.read()
-        content = content.replace('{{NODES}}', '3')
-        values = yaml.safe_load(content)
+    values, path = get_values_for_test()
     
     affinity = values['proxysql']['affinity']
     log_check(
@@ -153,11 +137,7 @@ def test_proxysql_anti_affinity_required():
 @pytest.mark.unit
 def test_proxysql_anti_affinity_topology_distribution():
     """Test that ProxySQL anti-affinity uses the correct topology key (zone on EKS, hostname on on-prem)."""
-    path = os.path.join(os.path.dirname(__file__), '..', '..', 'templates', 'percona-values.yaml')
-    with open(path, 'r', encoding='utf-8') as f:
-        content = f.read()
-        content = content.replace('{{NODES}}', '3')
-        values = yaml.safe_load(content)
+    values, path = get_values_for_test()
     
     required_rules = values['proxysql']['affinity']['podAntiAffinity']['requiredDuringSchedulingIgnoredDuringExecution']
     
@@ -183,11 +163,7 @@ def test_proxysql_anti_affinity_topology_distribution():
 @pytest.mark.unit
 def test_proxysql_anti_affinity_label_selector():
     """Test that ProxySQL anti-affinity uses correct label selector."""
-    path = os.path.join(os.path.dirname(__file__), '..', '..', 'templates', 'percona-values.yaml')
-    with open(path, 'r', encoding='utf-8') as f:
-        content = f.read()
-        content = content.replace('{{NODES}}', '3')
-        values = yaml.safe_load(content)
+    values, path = get_values_for_test()
     
     required_rules = values['proxysql']['affinity']['podAntiAffinity']['requiredDuringSchedulingIgnoredDuringExecution']
     
@@ -219,11 +195,7 @@ def test_proxysql_anti_affinity_label_selector():
 @pytest.mark.unit
 def test_anti_affinity_prevents_single_host_or_zone_packing():
     """Test that anti-affinity rules prevent all pods from being on same host (on-prem) or same AZ (EKS)."""
-    path = os.path.join(os.path.dirname(__file__), '..', '..', 'templates', 'percona-values.yaml')
-    with open(path, 'r', encoding='utf-8') as f:
-        content = f.read()
-        content = content.replace('{{NODES}}', '3')
-        values = yaml.safe_load(content)
+    values, path = get_values_for_test()
     
     # Both PXC and ProxySQL should have required anti-affinity
     accepted_keys = ['topology.kubernetes.io/zone', 'failure-domain.beta.kubernetes.io/zone'] if TOPOLOGY_KEY != 'kubernetes.io/hostname' else ['kubernetes.io/hostname']

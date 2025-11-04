@@ -181,6 +181,26 @@ def is_proxysql(request):
         return False
 
 
+def get_values_for_test():
+    """
+    Get values for unit tests, preferring Fleet-rendered manifest over raw values file.
+    Returns (values_dict, source_path) tuple.
+    """
+    if FLEET_RENDERED_MANIFEST and os.path.exists(FLEET_RENDERED_MANIFEST):
+        # Use Fleet-rendered manifest
+        raw = _load_values_yaml()  # This will extract from rendered manifest
+        return (raw, FLEET_RENDERED_MANIFEST)
+    else:
+        # Use raw values file
+        path = os.path.join(os.getcwd(), 'templates', 'percona-values.yaml')
+        with open(path, 'r', encoding='utf-8') as f:
+            content = f.read()
+        content = content.replace('{{NODES}}', '3')
+        import yaml
+        values = yaml.safe_load(content) or {}
+        return (values, path)
+
+
 def log_check(criterion: str, expected: str, actual: str, *, source: str | None = None) -> None:
     """Emit a standardized criterion/result line for verbose runs.
 
