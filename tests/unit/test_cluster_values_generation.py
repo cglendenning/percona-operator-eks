@@ -6,6 +6,7 @@ import os
 import yaml
 import pytest
 import re
+from tests.conftest import log_check
 
 
 @pytest.mark.unit
@@ -21,8 +22,26 @@ def test_cluster_values_template_substitution():
         content = template.replace('{{NODES}}', str(node_count))
         values = yaml.safe_load(content)
         
+        log_check(
+            criterion=f"pxc.size must equal substituted node_count={node_count}",
+            expected=f"{node_count}",
+            actual=f"{values['pxc']['size']}",
+            source=template_path,
+        )
         assert values['pxc']['size'] == node_count
+        log_check(
+            criterion=f"proxysql.size must equal substituted node_count={node_count}",
+            expected=f"{node_count}",
+            actual=f"{values['proxysql']['size']}",
+            source=template_path,
+        )
         assert values['proxysql']['size'] == node_count
+        log_check(
+            criterion="Template must not retain {{NODES}} placeholder after substitution",
+            expected="not present",
+            actual=f"present={ '{{NODES}}' in content }",
+            source=template_path,
+        )
         assert '{{NODES}}' not in content, f"Template still contains {{NODES}} placeholder after substitution"
 
 
@@ -38,6 +57,12 @@ def test_cluster_values_yaml_validity():
         content = template.replace('{{NODES}}', str(node_count))
         # Should not raise exception
         values = yaml.safe_load(content)
+        log_check(
+            criterion=f"Generated values for node_count={node_count} must be valid YAML",
+            expected="parsed object not None",
+            actual=f"is None={values is None}",
+            source=template_path,
+        )
         assert values is not None
 
 
@@ -53,6 +78,12 @@ def test_cluster_values_node_count_consistency():
         content = template.replace('{{NODES}}', str(node_count))
         values = yaml.safe_load(content)
         
+        log_check(
+            criterion=f"pxc.size must equal proxysql.size for node_count={node_count}",
+            expected=f"{values['pxc']['size']}",
+            actual=f"{values['proxysql']['size']}",
+            source=template_path,
+        )
         assert values['pxc']['size'] == values['proxysql']['size'], \
             "PXC and ProxySQL node counts must match"
 
@@ -69,7 +100,9 @@ def test_cluster_values_minimum_nodes():
     content = template.replace('{{NODES}}', '3')
     values = yaml.safe_load(content)
     
+    log_check("pxc.size must be >= 3", ">= 3", f"{values['pxc']['size']}", source=template_path)
     assert values['pxc']['size'] >= 3, "Percona requires minimum 3 nodes for high availability"
+    log_check("proxysql.size must be >= 3", ">= 3", f"{values['proxysql']['size']}", source=template_path)
     assert values['proxysql']['size'] >= 3, "ProxySQL requires minimum 3 nodes for high availability"
 
 

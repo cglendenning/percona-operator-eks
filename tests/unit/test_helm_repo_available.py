@@ -4,6 +4,7 @@ Test that Percona Helm repo is available
 import pytest
 import subprocess
 from rich.console import Console
+from tests.conftest import log_check
 
 console = Console()
 
@@ -17,5 +18,12 @@ def test_helm_repo_available():
         check=True
     )
 
-    assert 'percona' in result.stdout.lower(), \
+    present = 'percona' in result.stdout.lower()
+    log_check(
+        criterion="Helm repo list should include 'percona' repository",
+        expected="present=True",
+        actual=f"present={present}",
+        source="helm repo list",
+    )
+    assert present, \
         "Percona Helm repo not found. Run: helm repo add percona https://percona.github.io/percona-helm-charts/"

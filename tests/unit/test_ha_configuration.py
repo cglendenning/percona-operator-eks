@@ -5,6 +5,7 @@ Validates HA settings match Percona best practices for v1.18.
 import os
 import yaml
 import pytest
+from tests.conftest import log_check
 
 
 @pytest.mark.unit
@@ -39,6 +40,12 @@ def test_odd_node_count_preference():
         values = yaml.safe_load(content)
     
     node_count = values['pxc']['size']
+
+    # Emit explicit criterion/result for verbose clarity
+    criterion = "PXC node count (<=5) should be one of [3, 5] to maintain quorum preference"
+    expected_desc = "one of [3, 5]"
+    actual_desc = f"pxc size = {node_count}"
+    log_check(criterion=criterion, expected=expected_desc, actual=actual_desc, source=path)
     
     # While even numbers > 4 are acceptable, odd numbers are preferred
     # This test documents the best practice

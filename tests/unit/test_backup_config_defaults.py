@@ -2,6 +2,7 @@ import io
 import os
 import re
 import yaml
+from tests.conftest import log_check
 
 
 def extract_backup_yaml_from_cluster_values(ts_source: str) -> str:
@@ -112,6 +113,12 @@ def test_backup_configuration_defaults_match_source():
             ],
         }
     }
+
+    # Emit criterion/result comparison before assertion
+    criterion = "Backup subtree in src/percona.ts must match expected default structure"
+    expected_desc = "YAML structure matches expected keys and values"
+    actual_desc = f"loaded keys={sorted(list(loaded.get('backup', {}).keys()))}"
+    log_check(criterion=criterion, expected=expected_desc, actual=actual_desc, source=ts_file)
 
     assert loaded == expected, (
         "Backup configuration in src/percona.ts has changed.\n"

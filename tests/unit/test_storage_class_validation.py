@@ -5,6 +5,7 @@ Validates Percona best practices for storage configuration.
 import os
 import yaml
 import pytest
+from tests.conftest import log_check
 
 
 @pytest.mark.unit
@@ -15,6 +16,12 @@ def test_storage_class_yaml_valid():
         content = f.read()
         sc = yaml.safe_load(content)
     
+    log_check(
+        criterion="StorageClass YAML should define kind=StorageClass and name=gp3",
+        expected="kind=StorageClass, name=gp3",
+        actual=f"kind={sc.get('kind')}, name={sc.get('metadata',{}).get('name')}",
+        source=path,
+    )
     assert sc is not None
     assert sc['kind'] == 'StorageClass'
     assert sc['metadata']['name'] == 'gp3'
@@ -28,12 +35,19 @@ def test_storage_class_gp3_configuration():
         sc = yaml.safe_load(f)
     
     # GP3 is preferred for better performance/cost ratio
+    log_check("StorageClass name must be gp3", "gp3", f"name={sc['metadata']['name']}", source=path)
     assert sc['metadata']['name'] == 'gp3'
+    log_check("Provisioner must be ebs.csi.aws.com", "ebs.csi.aws.com", f"{sc['provisioner']}", source=path)
     assert sc['provisioner'] == 'ebs.csi.aws.com'
+    log_check("parameters.type must be gp3", "gp3", f"{sc['parameters']['type']}", source=path)
     assert sc['parameters']['type'] == 'gp3'
+    log_check("parameters.fsType must be xfs", "xfs", f"{sc['parameters']['fsType']}", source=path)
     assert sc['parameters']['fsType'] == 'xfs', "XFS is recommended for Percona"
+    log_check("parameters.encrypted must be 'true'", "'true'", f"{sc['parameters']['encrypted']}", source=path)
     assert sc['parameters']['encrypted'] == 'true', "Encryption at rest is required"
+    log_check("allowVolumeExpansion must be True", "True", f"{sc['allowVolumeExpansion']}", source=path)
     assert sc['allowVolumeExpansion'] is True, "Volume expansion must be enabled"
+    log_check("volumeBindingMode must be WaitForFirstConsumer", "WaitForFirstConsumer", f"{sc['volumeBindingMode']}", source=path)
     assert sc['volumeBindingMode'] == 'WaitForFirstConsumer', "WaitForFirstConsumer improves multi-AZ placement"
 
 
@@ -45,6 +59,7 @@ def test_storage_class_default_annotation():
         sc = yaml.safe_load(f)
     
     annotation = sc['metadata']['annotations']['storageclass.kubernetes.io/is-default-class']
+    log_check("gp3 should be default StorageClass annotation", "true", f"{annotation}", source=path)
     assert annotation == 'true', "gp3 should be the default storage class"
 
 
@@ -57,6 +72,7 @@ def test_storage_class_reclaim_policy():
     
     # Delete is appropriate for development/test, Retain may be preferred for production
     # But Delete is acceptable and matches the template
+    log_check("reclaimPolicy should be Delete or Retain", "in ['Delete','Retain']", f"{sc['reclaimPolicy']}", source=path)
     assert sc['reclaimPolicy'] in ['Delete', 'Retain']
 
 
@@ -70,8 +86,15 @@ def test_percona_values_uses_gp3_storage_class():
         values = yaml.safe_load(content)
     
     # PXC should use gp3
+    log_check("PXC storageClass must be gp3", "gp3", f"{values['pxc']['persistence']['storageClass']}", source=path)
     assert values['pxc']['persistence']['storageClass'] == 'gp3'
     
     # ProxySQL should use gp3
+    log_check(
+        "ProxySQL PVC storageClassName must be gp3",
+        "gp3",
+        f"{values['proxysql']['volumeSpec']['persistentVolumeClaim']['storageClassName']}",
+        source=path,
+    )
     assert values['proxysql']['volumeSpec']['persistentVolumeClaim']['storageClassName'] == 'gp3'
 

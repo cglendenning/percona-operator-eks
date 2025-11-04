@@ -6,6 +6,7 @@ import os
 import yaml
 import pytest
 import re
+from tests.conftest import log_check
 
 
 def parse_resource_value(value_str):
@@ -60,12 +61,12 @@ def test_pxc_resource_requests():
     
     # Minimum CPU request: 500m (0.5 cores)
     cpu_request = parse_resource_value(pxc_resources['requests']['cpu'])
-    assert cpu_request >= 500, "PXC minimum CPU request is 500m"
+    log_check("PXC min CPU request", ">= 500m", f"{cpu_request}m", source=path); assert cpu_request >= 500, "PXC minimum CPU request is 500m"
     
     # Minimum memory request: 1Gi
     memory_request = parse_resource_value(pxc_resources['requests']['memory'])
     min_memory_bytes = 1 * 1024 * 1024 * 1024  # 1Gi
-    assert memory_request >= min_memory_bytes, "PXC minimum memory request is 1Gi"
+    log_check("PXC min memory request", ">= 1Gi", f"{int(memory_request)} bytes", source=path); assert memory_request >= min_memory_bytes, "PXC minimum memory request is 1Gi"
 
 
 @pytest.mark.unit
@@ -89,16 +90,16 @@ def test_pxc_resource_limits():
         cpu_limit *= 1000
     if isinstance(raw_cpu_request, (int, float)):
         cpu_request *= 1000
-    assert cpu_limit >= cpu_request, "CPU limit must be >= request"
+    log_check("PXC CPU limit >= request", ">= request", f"limit={cpu_limit}m, request={cpu_request}m", source=path); assert cpu_limit >= cpu_request, "CPU limit must be >= request"
     
     memory_limit = parse_resource_value(pxc_resources['limits']['memory'])
     memory_request = parse_resource_value(pxc_resources['requests']['memory'])
-    assert memory_limit >= memory_request, "Memory limit must be >= request"
+    log_check("PXC memory limit >= request", ">= request", f"limit={int(memory_limit)}, request={int(memory_request)}", source=path); assert memory_limit >= memory_request, "Memory limit must be >= request"
     
     # Recommended limits (at least 1 CPU)
-    assert cpu_limit >= 1000, "PXC should have at least 1 CPU limit"
+    log_check("PXC CPU limit >= 1 core", ">= 1000m", f"{cpu_limit}m", source=path); assert cpu_limit >= 1000, "PXC should have at least 1 CPU limit"
     min_memory_limit = 2 * 1024 * 1024 * 1024  # 2Gi
-    assert memory_limit >= min_memory_limit, "PXC should have at least 2Gi memory limit"
+    log_check("PXC memory limit >= 2Gi", ">= 2Gi", f"{int(memory_limit)} bytes", source=path); assert memory_limit >= min_memory_limit, "PXC should have at least 2Gi memory limit"
 
 
 @pytest.mark.unit
@@ -114,12 +115,12 @@ def test_proxysql_resource_requests():
     
     # Minimum CPU request: 100m
     cpu_request = parse_resource_value(proxysql_resources['requests']['cpu'])
-    assert cpu_request >= 100, "ProxySQL minimum CPU request is 100m"
+    log_check("ProxySQL min CPU request", ">= 100m", f"{cpu_request}m", source=path); assert cpu_request >= 100, "ProxySQL minimum CPU request is 100m"
     
     # Minimum memory request: 256Mi
     memory_request = parse_resource_value(proxysql_resources['requests']['memory'])
     min_memory_bytes = 256 * 1024 * 1024  # 256Mi
-    assert memory_request >= min_memory_bytes, "ProxySQL minimum memory request is 256Mi"
+    log_check("ProxySQL min memory request", ">= 256Mi", f"{int(memory_request)} bytes", source=path); assert memory_request >= min_memory_bytes, "ProxySQL minimum memory request is 256Mi"
 
 
 @pytest.mark.unit
@@ -136,11 +137,11 @@ def test_proxysql_resource_limits():
     # Limits should be >= requests
     cpu_limit = parse_resource_value(proxysql_resources['limits']['cpu'])
     cpu_request = parse_resource_value(proxysql_resources['requests']['cpu'])
-    assert cpu_limit >= cpu_request, "CPU limit must be >= request"
+    log_check("ProxySQL CPU limit >= request", ">= request", f"limit={cpu_limit}m, request={cpu_request}m", source=path); assert cpu_limit >= cpu_request, "CPU limit must be >= request"
     
     memory_limit = parse_resource_value(proxysql_resources['limits']['memory'])
     memory_request = parse_resource_value(proxysql_resources['requests']['memory'])
-    assert memory_limit >= memory_request, "Memory limit must be >= request"
+    log_check("ProxySQL memory limit >= request", ">= request", f"limit={int(memory_limit)}, request={int(memory_request)}", source=path); assert memory_limit >= memory_request, "Memory limit must be >= request"
 
 
 @pytest.mark.unit
@@ -157,7 +158,7 @@ def test_pxc_storage_size():
     
     # Minimum 20Gi for PXC
     min_storage = 20 * 1024 * 1024 * 1024  # 20Gi
-    assert size_bytes >= min_storage, "PXC minimum storage is 20Gi"
+    log_check("PXC minimum storage size", ">= 20Gi", f"{int(size_bytes)} bytes", source=path); assert size_bytes >= min_storage, "PXC minimum storage is 20Gi"
 
 
 @pytest.mark.unit
@@ -174,7 +175,7 @@ def test_proxysql_storage_size():
     
     # Minimum 5Gi for ProxySQL
     min_storage = 5 * 1024 * 1024 * 1024  # 5Gi
-    assert size_bytes >= min_storage, "ProxySQL minimum storage is 5Gi"
+    log_check("ProxySQL minimum storage size", ">= 5Gi", f"{int(size_bytes)} bytes", source=path); assert size_bytes >= min_storage, "ProxySQL minimum storage is 5Gi"
 
 
 @pytest.mark.unit
@@ -188,9 +189,9 @@ def test_resources_use_read_write_once():
     
     # PXC access mode
     pxc_access_mode = values['pxc']['persistence']['accessMode']
-    assert pxc_access_mode == 'ReadWriteOnce', "PXC should use ReadWriteOnce"
+    log_check("PXC accessMode should be ReadWriteOnce", "ReadWriteOnce", f"{pxc_access_mode}", source=path); assert pxc_access_mode == 'ReadWriteOnce', "PXC should use ReadWriteOnce"
     
     # ProxySQL access modes
     proxysql_access_modes = values['proxysql']['volumeSpec']['persistentVolumeClaim']['accessModes']
-    assert 'ReadWriteOnce' in proxysql_access_modes, "ProxySQL should use ReadWriteOnce"
+    log_check("ProxySQL accessModes should include ReadWriteOnce", "contains", f"{proxysql_access_modes}", source=path); assert 'ReadWriteOnce' in proxysql_access_modes, "ProxySQL should use ReadWriteOnce"
 

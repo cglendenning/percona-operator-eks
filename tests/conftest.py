@@ -2,6 +2,7 @@
 Pytest configuration and shared fixtures for Percona XtraDB Cluster tests
 """
 import os
+import inspect
 import subprocess
 import json
 import warnings
@@ -54,6 +55,104 @@ TEST_OPERATOR_NAMESPACE = os.getenv('TEST_OPERATOR_NAMESPACE', TEST_NAMESPACE)
 MINIO_NAMESPACE = os.getenv('MINIO_NAMESPACE', 'minio')
 CHAOS_NAMESPACE = os.getenv('CHAOS_NAMESPACE', 'litmus')
 
+
+def log_check(criterion: str, expected: str, actual: str, *, source: str | None = None) -> None:
+    """Emit a standardized criterion/result line for verbose runs.
+
+    Example:
+      Criterion: pxc size should be in [3,5]
+      Result:    pxc size = 3 (source: templates/percona-values.yaml)
+    """
+    prefix = "[dim]"
+    suffix = "[/dim]"
+    console.print(f"{prefix}Criterion:{suffix} {criterion}")
+    if source:
+        console.print(f"{prefix}Result:{suffix} {actual} (source: {source})")
+    else:
+        console.print(f"{prefix}Result:{suffix} {actual}")
+
+def _env_context_summary():
+    """Return a concise single-line environment context summary for logs."""
+    parts = [
+        f"namespace={TEST_NAMESPACE}",
+        f"operator_ns={TEST_OPERATOR_NAMESPACE}",
+        f"minio_ns={MINIO_NAMESPACE}",
+        f"chaos_ns={CHAOS_NAMESPACE}",
+        f"cluster={TEST_CLUSTER_NAME}",
+        f"expected_nodes={TEST_EXPECTED_NODES}",
+        f"backup_type={TEST_BACKUP_TYPE}",
+    ]
+    if TEST_BACKUP_BUCKET:
+        parts.append(f"backup_bucket={TEST_BACKUP_BUCKET}")
+    return ", ".join(parts)
+
+
+def pytest_runtest_setup(item):
+    """In verbose mode, print the test's docstring before it runs."""
+    try:
+        verbose = item.config.getoption('verbose', 0) > 0
+    except Exception:
+        verbose = False
+    if not verbose:
+        return
+
+    # Safely obtain the test object's docstring
+    doc = None
+    try:
+        obj = getattr(item, 'obj', None)
+        if obj is not None:
+            doc = inspect.getdoc(obj) or obj.__doc__
+    except Exception:
+        doc = None
+
+    console.print("\n[bold blue]=== Test:[/bold blue] " + item.nodeid)
+    if doc:
+        # Print only the first paragraph for brevity
+        first_para = str(doc).strip().split('\n\n', 1)[0]
+        console.print("[dim]Description:[/dim] " + first_para)
+    console.print("[dim]Context:[/dim] " + _env_context_summary())
+
+
+def pytest_runtest_logreport(report):
+    """In verbose mode, print a concise pass/fail reason with environment context."""
+    try:
+        verbose = report.config.getoption('verbose', 0) > 0  # type: ignore[attr-defined]
+    except Exception:
+        verbose = False
+    if not verbose:
+        return
+
+    # Only log after the test call phase
+    if report.when != 'call':
+        return
+
+    context = _env_context_summary()
+    if report.passed:
+        # Provide a simple success justification indicating assertions held true
+        console.print(f"[green]✓ PASSED[/green] {report.nodeid} [dim]Reason:[/dim] Assertions satisfied under {context}")
+    elif report.skipped:
+        # Include skip reason if available
+        reason = ""
+        try:
+            if isinstance(report.longrepr, tuple) and len(report.longrepr) >= 3:
+                reason = str(report.longrepr[2])
+            else:
+                reason = str(report.longrepr)
+        except Exception:
+            reason = "(no reason provided)"
+        console.print(f"[yellow]↷ SKIPPED[/yellow] {report.nodeid} [dim]Reason:[/dim] {reason} [dim]| {context}[/dim]")
+    else:
+        # On failure, show a brief failure message (first line of longrepr)
+        msg = ""
+        try:
+            lr = report.longrepr
+            if hasattr(lr, 'reprcrash') and getattr(lr, 'reprcrash') is not None:
+                msg = getattr(lr.reprcrash, 'message', '')
+            else:
+                msg = str(lr).splitlines()[0]
+        except Exception:
+            msg = "(no failure message available)"
+        console.print(f"[red]✗ FAILED[/red] {report.nodeid} [dim]Reason:[/dim] {msg} [dim]| {context}[/dim]")
 
 @pytest.fixture(scope="session")
 def k8s_client():

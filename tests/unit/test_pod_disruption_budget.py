@@ -5,6 +5,7 @@ Validates that PDBs are configured to ensure high availability.
 import os
 import yaml
 import pytest
+from tests.conftest import log_check
 
 
 @pytest.mark.unit
@@ -16,6 +17,10 @@ def test_pxc_pod_disruption_budget_exists():
         content = content.replace('{{NODES}}', '3')
         values = yaml.safe_load(content)
     
+    criterion = "PXC values must include podDisruptionBudget key"
+    expected_desc = "key present"
+    actual_desc = f"keys={sorted(list(values['pxc'].keys()))}"
+    log_check(criterion=criterion, expected=expected_desc, actual=actual_desc, source=path)
     assert 'podDisruptionBudget' in values['pxc'], "PXC must have Pod Disruption Budget configured"
 
 
@@ -36,6 +41,12 @@ def test_pxc_pod_disruption_budget_max_unavailable():
     
     # Should be 1 for 3-node cluster (allows 1 pod to be disrupted)
     # For larger clusters, this might be configurable, but 1 is safe
+    log_check(
+        criterion="PXC PDB maxUnavailable must be 1 for quorum on 3-node cluster",
+        expected="1",
+        actual=f"pxc pdb maxUnavailable = {max_unavailable}",
+        source=path,
+    )
     assert max_unavailable == 1, \
         "PXC PDB maxUnavailable should be 1 to maintain quorum during maintenance"
 
@@ -49,6 +60,10 @@ def test_proxysql_pod_disruption_budget_exists():
         content = content.replace('{{NODES}}', '3')
         values = yaml.safe_load(content)
     
+    criterion = "ProxySQL values must include podDisruptionBudget key"
+    expected_desc = "key present"
+    actual_desc = f"keys={sorted(list(values['proxysql'].keys()))}"
+    log_check(criterion=criterion, expected=expected_desc, actual=actual_desc, source=path)
     assert 'podDisruptionBudget' in values['proxysql'], "ProxySQL must have Pod Disruption Budget configured"
 
 
@@ -65,6 +80,12 @@ def test_proxysql_pod_disruption_budget_max_unavailable():
     
     # ProxySQL should also have maxUnavailable=1 to ensure availability
     max_unavailable = pdb.get('maxUnavailable', 0)
+    log_check(
+        criterion="ProxySQL PDB maxUnavailable must be 1 to ensure availability",
+        expected="1",
+        actual=f"proxysql pdb maxUnavailable = {max_unavailable}",
+        source=path,
+    )
     assert max_unavailable == 1, \
         "ProxySQL PDB maxUnavailable should be 1 to ensure high availability"
 
@@ -83,6 +104,18 @@ def test_pdb_allows_rolling_updates():
     pxc_pdb = values['pxc']['podDisruptionBudget']
     proxysql_pdb = values['proxysql']['podDisruptionBudget']
     
+    log_check(
+        criterion="Rolling updates: PXC PDB maxUnavailable must be 1",
+        expected="1",
+        actual=f"pxc pdb maxUnavailable = {pxc_pdb.get('maxUnavailable')}",
+        source=path,
+    )
+    log_check(
+        criterion="Rolling updates: ProxySQL PDB maxUnavailable must be 1",
+        expected="1",
+        actual=f"proxysql pdb maxUnavailable = {proxysql_pdb.get('maxUnavailable')}",
+        source=path,
+    )
     assert pxc_pdb.get('maxUnavailable') == 1
     assert proxysql_pdb.get('maxUnavailable') == 1
     
@@ -113,6 +146,12 @@ def test_pdb_maintains_quorum():
         # Quorum = floor(n/2) + 1
         quorum = (node_count // 2) + 1
         
+        log_check(
+            criterion=f"For {node_count}-node cluster, available during disruption must be >= quorum {quorum}",
+            expected=f">= {quorum}",
+            actual=f"available_during_disruption = {available_during_disruption} (maxUnavailable={max_unavailable})",
+            source=path,
+        )
         assert available_during_disruption >= quorum, \
             f"For {node_count}-node cluster, maxUnavailable={max_unavailable} must maintain quorum of {quorum}"
 

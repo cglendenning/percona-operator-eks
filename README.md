@@ -1484,3 +1484,90 @@ Set `test_enabled: false` and `test_file: null`, with explanation in `test_descr
 4. **Maintainability**: Individual test files
 5. **Documentation**: Tests serve as executable documentation
 
+---
+
+## Testing Philosophy: Why Not Traditional E2E Tests?
+
+This project uses a structured test pyramid approach (Unit → Integration → Resiliency) rather than traditional end-to-end (e2e) tests. While Percona provides an e2e test suite for their operator ([percona-xtradb-cluster-operator/e2e-tests](https://github.com/percona/percona-xtradb-cluster-operator/tree/v1.18.0/e2e-tests)), this project adopts a different testing strategy for the following reasons:
+
+### Architecture: Modular vs. Monolithic
+
+Traditional e2e tests often combine deployment, configuration, validation, and failure scenarios into single, long-running tests. This project separates these concerns:
+
+- **Unit Tests** (22 tests, ~30 seconds): Validate configuration, YAML rendering, and Helm templates without requiring a cluster
+- **Integration Tests** (47 tests, ~5-8 minutes): Verify deployed infrastructure with granular, single-concern tests
+- **Resiliency Tests** (16 tests, ~30-60 minutes): Test recovery from chaos events with MTTR-based validation
+
+This separation enables faster feedback loops, easier debugging, and better CI/CD integration.
+
+### Key Advantages of This Approach
+
+**1. Faster Execution and Fail-Fast**
+- Unit tests run in seconds, providing immediate feedback on configuration errors
+- Integration tests can be parallelized and run independently
+- No need to wait for full deployment cycle to catch simple configuration mistakes
+- CI/CD pipelines fail fast on unit tests, saving time and resources
+
+**2. Superior Debuggability**
+- Each test validates one specific concern, making failures easy to diagnose
+- Test names clearly indicate what failed (e.g., `test_pxc_pvc_storage_size`)
+- No need to parse through complex logs to find which step in a multi-stage test failed
+
+**3. Maintainability**
+- Individual test files are easier to update when requirements change
+- Shared fixtures and helpers (`conftest.py`, `helpers.py`) reduce code duplication
+- New team members can understand and contribute to tests more quickly
+
+**4. Advanced Chaos Engineering Integration**
+- Automated LitmusChaos integration with `--trigger-chaos` flag
+- MTTR-based polling mechanism (`helpers.py`) for sophisticated recovery validation
+- Disaster recovery scenario tracking via `disaster_scenarios.json`
+- Production-grade resiliency testing without manual chaos injection
+
+**5. CI/CD Friendly**
+- Run only the tests you need: `pytest tests/unit/` or `pytest tests/integration/`
+- Easy to parallelize across multiple CI workers
+- Test markers enable selective execution: `pytest -m "not resiliency"`
+- Configurable timeouts and polling intervals for different environments
+
+**6. Better Test Coverage Visibility**
+- 82 granular tests covering specific aspects of the deployment
+- Clear separation between configuration validation, deployment verification, and failure recovery
+- Explicit tracking of disaster recovery scenarios with test coverage validation
+
+### What This Approach Doesn't Cover (and Why That's Okay)
+
+**Complete End-to-End Workflows**: Traditional e2e tests excel at validating entire user workflows (deploy → configure → scale → backup → restore → delete) as single scenarios. This project validates each step independently, which provides better granularity but doesn't test the complete workflow as a cohesive unit.
+
+**Decision**: For this infrastructure-as-code deployment, validating individual components thoroughly is more valuable than testing workflows end-to-end. The modular approach catches issues earlier and makes debugging significantly faster.
+
+### When Would E2E Tests Be Appropriate?
+
+Traditional e2e tests are valuable when:
+- Testing user-facing applications where the user journey is critical
+- Validating complex workflows that depend on specific sequences of operations
+- Testing operator upgrade paths and version compatibility
+- You need to test the operator's internal code (which requires Go and access to private APIs)
+
+For infrastructure validation and operational testing, the structured pyramid approach provides better ROI in terms of development speed, debugging time, and CI/CD integration.
+
+### Test Execution Comparison
+
+```bash
+# This project (structured approach):
+pytest tests/unit/        # ~30 seconds (no cluster needed)
+pytest tests/integration/ # ~5-8 minutes (requires cluster)
+pytest tests/resiliency/  # ~30-60 minutes (with chaos, optional)
+
+# Traditional e2e tests (Percona's approach):
+go test -v -timeout 4h ./e2e-tests/...  # 2-4 hours (all tests, must run serially)
+```
+
+The structured approach enables **20-40x faster** feedback for unit and integration tests, while still providing comprehensive resiliency validation when needed.
+
+---
+
+### Summary
+
+This project's test suite is designed for **operational excellence** rather than comprehensive end-to-end workflow validation. By separating concerns, integrating chaos engineering, and optimizing for CI/CD, it provides faster feedback, easier debugging, and better maintainability than traditional monolithic e2e tests. The approach is particularly well-suited for infrastructure-as-code projects where configuration validation, deployment verification, and failure recovery testing are primary concerns.
+

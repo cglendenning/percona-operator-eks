@@ -6,6 +6,7 @@ import pytest
 import subprocess
 import yaml
 from tests.conftest import TEST_NAMESPACE, TEST_CLUSTER_NAME, TEST_EXPECTED_NODES
+from tests.conftest import log_check
 from rich.console import Console
 
 console = Console()
@@ -34,6 +35,12 @@ def test_helm_chart_renders_pvc(chartmuseum_port_forward):
         None
     )
 
+    log_check(
+        criterion="Helm render should include PerconaXtraDBCluster custom resource",
+        expected="PerconaXtraDBCluster present",
+        actual=f"present={cr is not None}",
+        source="helm template internal/pxc-db",
+    )
     assert cr is not None, "PerconaXtraDBCluster not found in Helm chart"
 
     # Check for volumeSpec in PXC spec (indicates PVC configuration)
@@ -41,5 +48,11 @@ def test_helm_chart_renders_pvc(chartmuseum_port_forward):
     volume_spec = pxc_spec.get('volumeSpec', {})
     pvc_spec = volume_spec.get('persistentVolumeClaim', {})
 
+    log_check(
+        criterion="PXC spec must include volumeSpec.persistentVolumeClaim",
+        expected="> 0 fields",
+        actual=f"present={pvc_spec is not None}, size={len(pvc_spec) if pvc_spec else 0}",
+        source="helm template internal/pxc-db",
+    )
     assert pvc_spec is not None and len(pvc_spec) > 0, \
         "PerconaXtraDBCluster PXC spec should have persistentVolumeClaim volumeSpec"

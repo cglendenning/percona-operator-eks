@@ -6,6 +6,7 @@ import pytest
 import subprocess
 import yaml
 from tests.conftest import TEST_NAMESPACE, TEST_CLUSTER_NAME, TEST_EXPECTED_NODES
+from tests.conftest import log_check
 
 @pytest.mark.unit
 def test_helm_chart_anti_affinity_rules(chartmuseum_port_forward):
@@ -32,6 +33,12 @@ def test_helm_chart_anti_affinity_rules(chartmuseum_port_forward):
         None
     )
 
+    log_check(
+        criterion="Helm render should include PerconaXtraDBCluster custom resource",
+        expected="CR present",
+        actual=f"present={cr is not None}",
+        source="helm template internal/pxc-db",
+    )
     assert cr is not None, "PerconaXtraDBCluster not found in Helm chart"
 
     # Check for affinity in PXC spec
@@ -46,9 +53,21 @@ def test_helm_chart_anti_affinity_rules(chartmuseum_port_forward):
     all_rules = required + preferred
     
     # Only validate if rules are actually defined
+    log_check(
+        criterion="If anti-affinity rules are present, they must use a zone topologyKey",
+        expected="topologyKey contains 'zone'",
+        actual=f"rules_count={len(all_rules)}",
+        source="helm template internal/pxc-db",
+    )
     if len(all_rules) > 0:
         for rule in all_rules:
             topology_key = rule.get('topologyKey', '')
+            log_check(
+                criterion="Anti-affinity rule topologyKey contains 'zone'",
+                expected="contains 'zone'",
+                actual=f"{topology_key}",
+                source="helm template internal/pxc-db",
+            )
             assert topology_key and 'zone' in topology_key.lower(), \
                 f"Anti-affinity topologyKey must contain 'zone', got: {topology_key}"
 

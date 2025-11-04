@@ -6,6 +6,7 @@ import os
 import yaml
 import pytest
 import subprocess
+from tests.conftest import log_check
 
 
 @pytest.mark.unit
@@ -35,6 +36,12 @@ def test_statefulset_uses_ordered_ready_pod_management(chartmuseum_port_forward)
             pod_management_policy = sts.get('spec', {}).get('podManagementPolicy', 'OrderedReady')
             # OrderedReady is the default and recommended for PXC
             # Parallel is also acceptable but OrderedReady is safer for quorum
+            log_check(
+                criterion="StatefulSet podManagementPolicy should be OrderedReady or Parallel",
+                expected="in ['OrderedReady','Parallel']",
+                actual=f"{pod_management_policy}",
+                source="helm template internal/pxc-db",
+            )
             assert pod_management_policy in ['OrderedReady', 'Parallel'], \
                 f"Pod management policy should be OrderedReady or Parallel, not {pod_management_policy}"
 
@@ -64,6 +71,12 @@ def test_statefulset_uses_ondelete_update_strategy(chartmuseum_port_forward):
                 update_strategy = doc.get('spec', {}).get('updateStrategy', {}).get('type', 'RollingUpdate')
                 # OnDelete is recommended for PXC to maintain quorum
                 # RollingUpdate is also acceptable but requires careful coordination
+                log_check(
+                    criterion="PXC StatefulSet updateStrategy.type should be OnDelete or RollingUpdate",
+                    expected="in ['OnDelete','RollingUpdate']",
+                    actual=f"{update_strategy}",
+                    source="helm template internal/pxc-db",
+                )
                 assert update_strategy in ['OnDelete', 'RollingUpdate'], \
                     f"PXC update strategy should be OnDelete or RollingUpdate, not {update_strategy}"
 
@@ -91,6 +104,12 @@ def test_statefulset_volume_claim_templates(chartmuseum_port_forward):
             # PXC StatefulSet should have volume claim templates
             labels = doc.get('metadata', {}).get('labels', {})
             if labels.get('app.kubernetes.io/component') == 'pxc':
+                log_check(
+                    criterion="PXC StatefulSet must define volumeClaimTemplates",
+                    expected="> 0",
+                    actual=f"count={len(volume_claim_templates)}",
+                    source="helm template internal/pxc-db",
+                )
                 assert len(volume_claim_templates) > 0, \
                         "PXC StatefulSet must have volume claim templates for data persistence"
 
@@ -129,6 +148,12 @@ def test_statefulset_service_name_matches(chartmuseum_port_forward):
     
     # Verify each StatefulSet has a matching headless service
     for sts_name, service_name in statefulsets.items():
+        log_check(
+            criterion=f"StatefulSet {sts_name} serviceName must match a headless Service",
+            expected=f"{list(services.keys())}",
+            actual=f"serviceName={service_name}",
+            source="helm template internal/pxc-db",
+        )
         assert service_name in services, \
             f"StatefulSet {sts_name} serviceName {service_name} must match a headless Service"
 
@@ -147,7 +172,9 @@ def test_statefulset_replicas_match_cluster_size(chartmuseum_port_forward):
             values = yaml.safe_load(content)
         
         # Values should specify size
+        log_check("pxc.size must equal configured cluster size", f"{node_count}", f"{values['pxc']['size']}", source=path)
         assert values['pxc']['size'] == node_count
+        log_check("proxysql.size must equal configured cluster size", f"{node_count}", f"{values['proxysql']['size']}", source=path)
         assert values['proxysql']['size'] == node_count
         
         # Helm should render StatefulSets with matching replicas
@@ -169,10 +196,22 @@ def test_statefulset_replicas_match_cluster_size(chartmuseum_port_forward):
                 replicas = doc.get('spec', {}).get('replicas')
                 
                 if labels.get('app.kubernetes.io/component') == 'pxc' and replicas is not None:
+                    log_check(
+                        criterion="PXC StatefulSet replicas must match cluster size",
+                        expected=f"{node_count}",
+                        actual=f"{replicas}",
+                        source="helm template internal/pxc-db",
+                    )
                     assert replicas == node_count, \
                         f"PXC StatefulSet replicas {replicas} should match cluster size {node_count}"
                 
                 elif labels.get('app.kubernetes.io/component') == 'proxysql' and replicas is not None:
+                    log_check(
+                        criterion="ProxySQL StatefulSet replicas must match cluster size",
+                        expected=f"{node_count}",
+                        actual=f"{replicas}",
+                        source="helm template internal/pxc-db",
+                    )
                     assert replicas == node_count, \
                         f"ProxySQL StatefulSet replicas {replicas} should match cluster size {node_count}"
 

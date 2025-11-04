@@ -6,6 +6,7 @@ import os
 import yaml
 import pytest
 import re
+from tests.conftest import log_check
 from datetime import datetime
 
 
@@ -32,7 +33,7 @@ def test_backup_enabled():
         content = content.replace('{{NODES}}', '3')
         values = yaml.safe_load(content)
     
-    assert values['backup']['enabled'] is True, "Backups must be enabled"
+    log_check("Backups must be enabled", "True", f"{values['backup']['enabled']}", source=path); assert values['backup']['enabled'] is True, "Backups must be enabled"
 
 
 @pytest.mark.unit
@@ -44,7 +45,7 @@ def test_pitr_enabled():
         content = content.replace('{{NODES}}', '3')
         values = yaml.safe_load(content)
     
-    assert values['backup']['pitr']['enabled'] is True, "PITR must be enabled for point-in-time recovery"
+    log_check("PITR must be enabled", "True", f"{values['backup']['pitr']['enabled']}", source=path); assert values['backup']['pitr']['enabled'] is True, "PITR must be enabled for point-in-time recovery"
 
 
 @pytest.mark.unit
@@ -60,6 +61,7 @@ def test_pitr_time_between_uploads():
     
     # Should be between 30-300 seconds for reasonable RPO
     # 60 seconds is a good balance
+    log_check("PITR timeBetweenUploads between 30-300s", "30..300", f"{time_between_uploads}", source=path)
     assert 30 <= time_between_uploads <= 300, \
         "PITR timeBetweenUploads should be between 30-300 seconds for reasonable RPO"
 
@@ -74,17 +76,15 @@ def test_backup_storage_configuration():
         values = yaml.safe_load(content)
     
     storages = values['backup']['storages']
-    assert 'minio-backup' in storages
+    log_check("backup.storages must include minio-backup", "present", f"present={'minio-backup' in storages}", source=path); assert 'minio-backup' in storages
     
     storage = storages['minio-backup']
-    assert storage['type'] == 's3', "Storage type should be s3 (S3-compatible)"
+    log_check("backup storage type", "s3", f"{storage['type']}", source=path); assert storage['type'] == 's3', "Storage type should be s3 (S3-compatible)"
     
     s3_config = storage['s3']
-    assert 'bucket' in s3_config
-    assert 'region' in s3_config
-    assert 'endpointUrl' in s3_config
-    assert 'credentialsSecret' in s3_config
-    assert s3_config.get('forcePathStyle') is True, "MinIO requires forcePathStyle=true"
+    for key in ['bucket','region','endpointUrl','credentialsSecret']:
+        log_check(f"s3 config must include {key}", "present", f"present={key in s3_config}", source=path); assert key in s3_config
+    log_check("s3.forcePathStyle must be True", "True", f"{s3_config.get('forcePathStyle')}", source=path); assert s3_config.get('forcePathStyle') is True, "MinIO requires forcePathStyle=true"
 
 
 @pytest.mark.unit
@@ -97,11 +97,11 @@ def test_backup_schedules_exist():
         values = yaml.safe_load(content)
     
     schedules = values['backup']['schedule']
-    assert len(schedules) > 0, "At least one backup schedule must be configured"
+    log_check("At least one backup schedule configured", "> 0", f"{len(schedules)}", source=path); assert len(schedules) > 0, "At least one backup schedule must be configured"
     
     # Should have daily, weekly, and monthly backups
     schedule_names = [s['name'] for s in schedules]
-    assert 'daily-backup' in schedule_names
+    log_check("Schedule names should include daily/weekly/monthly", "present", f"{schedule_names}", source=path); assert 'daily-backup' in schedule_names
     assert 'weekly-backup' in schedule_names
     assert 'monthly-backup' in schedule_names
 
@@ -120,13 +120,13 @@ def test_daily_backup_schedule():
     
     # Validate cron schedule format
     cron = parse_cron_schedule(daily['schedule'])
-    assert daily['schedule'] == '0 2 * * *', "Daily backup should run at 2 AM"
+    log_check("Daily cron", "0 2 * * *", f"{daily['schedule']}", source=path); assert daily['schedule'] == '0 2 * * *', "Daily backup should run at 2 AM"
     
     # Validate retention
     retention = daily['retention']
-    assert retention['type'] == 'count'
-    assert retention['count'] >= 7, "Daily backups should retain at least 7 days"
-    assert retention.get('deleteFromStorage') is True, "Old backups should be deleted from storage"
+    log_check("Daily retention.type", "count", f"{retention['type']}", source=path); assert retention['type'] == 'count'
+    log_check("Daily retention.count >= 7", ">= 7", f"{retention['count']}", source=path); assert retention['count'] >= 7, "Daily backups should retain at least 7 days"
+    log_check("Daily deleteFromStorage", "True", f"{retention.get('deleteFromStorage')}", source=path); assert retention.get('deleteFromStorage') is True, "Old backups should be deleted from storage"
     
     assert daily['storageName'] == 'minio-backup'
 
@@ -145,13 +145,13 @@ def test_weekly_backup_schedule():
     
     # Validate cron schedule format
     cron = parse_cron_schedule(weekly['schedule'])
-    assert weekly['schedule'] == '0 1 * * 0', "Weekly backup should run Sunday at 1 AM"
+    log_check("Weekly cron", "0 1 * * 0", f"{weekly['schedule']}", source=path); assert weekly['schedule'] == '0 1 * * 0', "Weekly backup should run Sunday at 1 AM"
     
     # Validate retention
     retention = weekly['retention']
-    assert retention['type'] == 'count'
-    assert retention['count'] >= 4, "Weekly backups should retain at least 4 weeks (1 month)"
-    assert retention.get('deleteFromStorage') is True
+    log_check("Weekly retention.type", "count", f"{retention['type']}", source=path); assert retention['type'] == 'count'
+    log_check("Weekly retention.count >= 4", ">= 4", f"{retention['count']}", source=path); assert retention['count'] >= 4, "Weekly backups should retain at least 4 weeks (1 month)"
+    log_check("Weekly deleteFromStorage", "True", f"{retention.get('deleteFromStorage')}", source=path); assert retention.get('deleteFromStorage') is True
     
     assert weekly['storageName'] == 'minio-backup'
 
@@ -170,13 +170,13 @@ def test_monthly_backup_schedule():
     
     # Validate cron schedule format
     cron = parse_cron_schedule(monthly['schedule'])
-    assert monthly['schedule'] == '30 1 1 * *', "Monthly backup should run on 1st of month at 1:30 AM"
+    log_check("Monthly cron", "30 1 1 * *", f"{monthly['schedule']}", source=path); assert monthly['schedule'] == '30 1 1 * *', "Monthly backup should run on 1st of month at 1:30 AM"
     
     # Validate retention
     retention = monthly['retention']
-    assert retention['type'] == 'count'
-    assert retention['count'] >= 12, "Monthly backups should retain at least 12 months (1 year)"
-    assert retention.get('deleteFromStorage') is True
+    log_check("Monthly retention.type", "count", f"{retention['type']}", source=path); assert retention['type'] == 'count'
+    log_check("Monthly retention.count >= 12", ">= 12", f"{retention['count']}", source=path); assert retention['count'] >= 12, "Monthly backups should retain at least 12 months (1 year)"
+    log_check("Monthly deleteFromStorage", "True", f"{retention.get('deleteFromStorage')}", source=path); assert retention.get('deleteFromStorage') is True
     
     assert monthly['storageName'] == 'minio-backup'
 
@@ -226,6 +226,7 @@ def test_backup_storage_secret_reference():
     secret_name = secret['metadata']['name']
     backup_secret_name = values['backup']['storages']['minio-backup']['s3']['credentialsSecret']
     
+    log_check("Backup config credentialsSecret matches secret metadata.name", backup_secret_name, secret_name, source=values_path)
     assert secret_name == backup_secret_name, \
         f"Secret name {secret_name} must match backup config {backup_secret_name}"
 
@@ -246,6 +247,7 @@ def test_backup_schedule_timezones():
         hour = int(cron['hour'])
         
         # Backups should run during off-peak hours (1-3 AM)
+        log_check(f"Backup {schedule['name']} hour should be 1-3", "1..3", f"{hour}", source=path)
         assert 1 <= hour <= 3, \
             f"Backup {schedule['name']} should run during off-peak hours (1-3 AM), not {hour}:00"
 
