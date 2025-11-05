@@ -387,7 +387,11 @@ fleet_path = os.getenv('FLEET_YAML', './fleet.yaml')
 fleet_target = os.getenv('FLEET_TARGET', '')
 
 try:
-    with open(fleet_path, 'r') as f:
+    # Get absolute path to fleet.yaml and its directory
+    fleet_path_abs = os.path.abspath(fleet_path)
+    fleet_dir = os.path.dirname(fleet_path_abs)
+    
+    with open(fleet_path_abs, 'r') as f:
         fleet = yaml.safe_load(f)
     
     # Extract base helm config
@@ -426,9 +430,16 @@ try:
     for vf in all_values_files:
         helm_cmd.extend(['-f', vf])
     
+    # Change to fleet.yaml directory so relative paths work
+    original_cwd = os.getcwd()
+    os.chdir(fleet_dir)
+    
     # Run helm template
-    result = subprocess.run(helm_cmd, capture_output=True, text=True, check=True)
+    result = subprocess.run(helm_cmd, capture_output=True, text=True, check=True, cwd=fleet_dir)
     rendered_manifest = result.stdout
+    
+    # Change back to original directory
+    os.chdir(original_cwd)
     
     # Redact secrets
     manifest_docs = list(yaml.safe_load_all(rendered_manifest))
@@ -451,14 +462,19 @@ try:
     print(f"RELEASE_NAME={release_name}")
     print(f"NAMESPACE={target_namespace}")
     print(f"RENDERED_MANIFEST={temp_file}")
+    print(f"FLEET_DIR={fleet_dir}")
     if all_values_files:
         print(f"VALUES_FILES={','.join(all_values_files)}")
     
 except subprocess.CalledProcessError as e:
     print(f"ERROR=helm template failed: {e.stderr}", file=sys.stderr)
+    print(f"Working directory: {fleet_dir}", file=sys.stderr)
+    print(f"Values files: {all_values_files if 'all_values_files' in locals() else 'not set'}", file=sys.stderr)
     sys.exit(1)
 except Exception as e:
     print(f"ERROR={str(e)}", file=sys.stderr)
+    import traceback
+    traceback.print_exc(file=sys.stderr)
     sys.exit(1)
 PYTHON_SCRIPT
 )
@@ -484,6 +500,10 @@ PYTHON_SCRIPT
                     RENDERED_MANIFEST)
                         export FLEET_RENDERED_MANIFEST="$value"
                         verbose_echo "  Rendered Manifest: $FLEET_RENDERED_MANIFEST"
+                        ;;
+                    FLEET_DIR)
+                        FLEET_DIR="$value"
+                        verbose_echo "  Fleet Directory: $FLEET_DIR"
                         ;;
                     VALUES_FILES)
                         IFS=',' read -ra VF_ARRAY <<< "$value"
