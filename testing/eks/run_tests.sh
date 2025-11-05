@@ -8,6 +8,42 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 cd "$SCRIPT_DIR"
 
+# Validate we're in the correct directory structure
+if [ ! -f "conftest.py" ] || [ ! -f "pytest.ini" ] || [ ! -f "requirements.txt" ]; then
+    echo "ERROR: run_tests.sh must be run from the test suite directory" >&2
+    echo "Expected files not found: conftest.py, pytest.ini, or requirements.txt" >&2
+    echo "Current directory: $(pwd)" >&2
+    echo "Script location: $SCRIPT_DIR" >&2
+    echo "" >&2
+    echo "You should run this script from:" >&2
+    echo "  cd /path/to/percona_operator/testing/eks" >&2
+    echo "  ./run_tests.sh" >&2
+    exit 1
+fi
+
+# Validate project structure exists
+PROJECT_ROOT="$(cd ../.. && pwd)"
+if [ ! -d "$PROJECT_ROOT/percona/templates" ]; then
+    echo "ERROR: Invalid project structure detected" >&2
+    echo "Expected directory not found: $PROJECT_ROOT/percona/templates" >&2
+    echo "Current directory: $(pwd)" >&2
+    echo "Calculated project root: $PROJECT_ROOT" >&2
+    echo "" >&2
+    echo "This test suite expects to be in: /path/to/percona_operator/testing/eks/" >&2
+    echo "With project structure:" >&2
+    echo "  percona_operator/" >&2
+    echo "  ├── percona/" >&2
+    echo "  │   └── templates/" >&2
+    echo "  └── testing/" >&2
+    echo "      └── eks/" >&2
+    echo "          └── run_tests.sh (this script)" >&2
+    exit 1
+fi
+
+# Clean up any Python cache that might cause issues
+find . -type d -name __pycache__ -exec rm -rf {} + 2>/dev/null || true
+find . -type f -name "*.pyc" -delete 2>/dev/null || true
+
 # Set PYTHONPATH so conftest can be imported as a module
 export PYTHONPATH="${SCRIPT_DIR}:${PYTHONPATH:-}"
 
@@ -332,6 +368,8 @@ else
 fi
 
 verbose_echo -e "${BLUE}Test Configuration:${NC}"
+verbose_echo "  Test Directory: $SCRIPT_DIR"
+verbose_echo "  Project Root: $PROJECT_ROOT"
 verbose_echo "  Percona Namespace: $TEST_NAMESPACE"
 verbose_echo "  Operator Namespace: $TEST_OPERATOR_NAMESPACE"
 verbose_echo "  MinIO Namespace: $MINIO_NAMESPACE"

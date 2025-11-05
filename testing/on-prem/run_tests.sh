@@ -8,6 +8,45 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 cd "$SCRIPT_DIR"
 
+# Validate we're in the correct directory structure
+if [ ! -f "conftest.py" ] || [ ! -f "pytest.ini" ] || [ ! -f "requirements.txt" ]; then
+    echo "ERROR: run_tests.sh must be run from the test suite directory" >&2
+    echo "Expected files not found: conftest.py, pytest.ini, or requirements.txt" >&2
+    echo "Current directory: $(pwd)" >&2
+    echo "Script location: $SCRIPT_DIR" >&2
+    echo "" >&2
+    echo "You should run this script from:" >&2
+    echo "  cd /path/to/percona_operator/testing/on-prem" >&2
+    echo "  ./run_tests.sh" >&2
+    exit 1
+fi
+
+# On-prem always uses Fleet - validate fleet.yaml exists
+FLEET_YAML_CHECK="${FLEET_YAML:-./fleet.yaml}"
+if [ ! -f "$FLEET_YAML_CHECK" ]; then
+    echo "ERROR: fleet.yaml not found" >&2
+    echo "Expected file: $FLEET_YAML_CHECK" >&2
+    echo "Current directory: $(pwd)" >&2
+    echo "" >&2
+    echo "On-prem tests require a fleet.yaml configuration file." >&2
+    echo "Either:" >&2
+    echo "  1. Run from the directory containing fleet.yaml, OR" >&2
+    echo "  2. Set FLEET_YAML environment variable:" >&2
+    echo "     export FLEET_YAML=/path/to/fleet.yaml" >&2
+    echo "" >&2
+    echo "Optionally set FLEET_TARGET to select a specific target:" >&2
+    echo "  export FLEET_TARGET=k8s-dev" >&2
+    exit 1
+fi
+
+# Set PROJECT_ROOT for any scripts that need it (though on-prem doesn't use it)
+PROJECT_ROOT="$(cd ../.. && pwd 2>/dev/null || pwd)"
+export PROJECT_ROOT
+
+# Clean up any Python cache that might cause issues
+find . -type d -name __pycache__ -exec rm -rf {} + 2>/dev/null || true
+find . -type f -name "*.pyc" -delete 2>/dev/null || true
+
 # Set PYTHONPATH so conftest can be imported as a module
 export PYTHONPATH="${SCRIPT_DIR}:${PYTHONPATH:-}"
 
@@ -500,6 +539,9 @@ else
 fi
 
 verbose_echo -e "${BLUE}Test Configuration:${NC}"
+verbose_echo "  Test Directory: $SCRIPT_DIR"
+verbose_echo "  Configuration Source: Fleet (${FLEET_YAML_CHECK})"
+verbose_echo "  Fleet Target: ${FLEET_TARGET:-auto-detect first target}"
 verbose_echo "  Percona Namespace: $TEST_NAMESPACE"
 verbose_echo "  Operator Namespace: $TEST_OPERATOR_NAMESPACE"
 verbose_echo "  MinIO Namespace: $MINIO_NAMESPACE"

@@ -65,7 +65,8 @@ STORAGE_CLASS_NAME = os.getenv('STORAGE_CLASS_NAME', 'gp3' if not ON_PREM else '
 TOPOLOGY_KEY = os.getenv('TOPOLOGY_KEY', 'topology.kubernetes.io/zone' if not ON_PREM else 'kubernetes.io/hostname')
 
 # Schema mapping environment overrides
-# Values file path (two directories up from testing/on-prem/ to project root, then into percona/)
+# Note: On-prem always uses Fleet rendered manifest (FLEET_RENDERED_MANIFEST)
+# VALUES_FILE is kept for compatibility but not used in on-prem deployments
 PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))
 VALUES_FILE = os.getenv('VALUES_FILE', os.path.join(PROJECT_ROOT, 'percona', 'templates', 'percona-values.yaml'))
 VALUES_ROOT_KEY = os.getenv('VALUES_ROOT_KEY', '')  # e.g., 'pxc-db'
@@ -105,7 +106,7 @@ def _auto_locate(obj: dict, candidates: list[str]) -> dict | None:
 
 
 def _load_values_yaml() -> dict:
-    # If Fleet rendered manifest is available, use it instead
+    # On-prem always uses Fleet rendered manifest
     if FLEET_RENDERED_MANIFEST and os.path.exists(FLEET_RENDERED_MANIFEST):
         try:
             import yaml
@@ -119,10 +120,22 @@ def _load_values_yaml() -> dict:
                         return doc.get('spec', {})
                 # If no PXC CR found, return empty
                 return {}
-        except Exception:
-            pass  # Fall through to normal values file loading
+        except Exception as e:
+            console.print(f"[yellow]⚠ Warning: Failed to load Fleet manifest: {e}[/yellow]")
+            return {}
     
-    # Normal values file loading
+    # On-prem should always have Fleet manifest - if not, fail clearly
+    if ON_PREM:
+        console.print("[red]✗ Error: On-prem tests require Fleet rendered manifest[/red]")
+        console.print(f"[yellow]FLEET_RENDERED_MANIFEST not set or file not found[/yellow]")
+        console.print(f"[yellow]Current value: {FLEET_RENDERED_MANIFEST or 'not set'}[/yellow]")
+        return {}
+    
+    # Fallback for non-on-prem (should not be used in this test suite)
+    if not os.path.exists(VALUES_FILE):
+        console.print(f"[red]✗ Error: Values file not found: {VALUES_FILE}[/red]")
+        return {}
+    
     with open(VALUES_FILE, 'r', encoding='utf-8') as f:
         content = f.read()
     # Replace common placeholders
