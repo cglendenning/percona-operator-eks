@@ -3,7 +3,7 @@ Test that services have endpoints
 """
 import pytest
 from kubernetes import client
-from tests.conftest import TEST_NAMESPACE, TEST_CLUSTER_NAME
+from conftest import TEST_NAMESPACE, TEST_CLUSTER_NAME
 from rich.console import Console
 
 console = Console()

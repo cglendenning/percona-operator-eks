@@ -29,11 +29,13 @@ MINIO_NAMESPACE = os.getenv('MINIO_NAMESPACE', 'minio')
 CHAOS_NAMESPACE = os.getenv('CHAOS_NAMESPACE', 'litmus')
 
 # EKS-specific defaults (no ON_PREM logic)
+ON_PREM = False  # Always False for EKS test suite
 STORAGE_CLASS_NAME = os.getenv('STORAGE_CLASS_NAME', 'gp3')
 TOPOLOGY_KEY = os.getenv('TOPOLOGY_KEY', 'topology.kubernetes.io/zone')
 
-# Values file path
-VALUES_FILE = os.path.join(os.getcwd(), 'percona', 'templates', 'percona-values.yaml')
+# Values file path (two directories up from testing/eks/ to project root, then into percona/)
+PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))
+VALUES_FILE = os.path.join(PROJECT_ROOT, 'percona', 'templates', 'percona-values.yaml')
 
 
 def _load_values_yaml() -> dict:
@@ -83,17 +85,25 @@ def get_values_for_test():
     """
     path = VALUES_FILE
     values = _load_values_yaml()
-        return (values, path)
+    return (values, path)
 
 
 def log_check(criterion: str, expected: str, actual: str, source: str = ""):
     """
     Log a criterion/result pair for test assertions in verbose mode.
-
+    Only prints detailed information when verbose mode is enabled.
+    
     Example:
       Criterion: pxc size should be in [3,5]
       Result:    pxc size = 3 (source: percona/templates/percona-values.yaml)
     """
+    import os
+    # Check if run_tests.sh was invoked with --verbose
+    verbose = os.getenv('VERBOSE') == 'true'
+    
+    if not verbose:
+        return
+    
     prefix = "[dim]"
     if source:
         print(f"{prefix}Criterion: {criterion}")
@@ -110,7 +120,11 @@ def pytest_runtest_setup(item):
     Hook to run before each test (setup phase).
     Display test description in verbose mode.
     """
-    if item.config.option.verbose > 0:
+    import os
+    # Check if run_tests.sh was invoked with --verbose
+    verbose = os.getenv('VERBOSE') == 'true'
+    
+    if verbose:
         # Get the test's docstring if available
         if item.obj.__doc__:
             desc = item.obj.__doc__.strip().split('\n')[0]
@@ -122,20 +136,35 @@ def pytest_runtest_setup(item):
             print(f"Description: {desc}")
 
 
-def pytest_runtest_logreport(item, when, report):
+def pytest_runtest_logreport(report):
     """
     Hook to run after each test phase (call phase).
-    Display detailed pass/fail/skip reasons with environment context in verbose mode.
+    Display detailed pass/fail/skip information in verbose mode only.
     """
-    if when == "call" and item.config.option.verbose > 0:
-    if report.passed:
-            print(f"[green]✓ PASSED[/green]")
+    # Check if run_tests.sh was invoked with --verbose flag
+    import os
+    verbose = os.getenv('VERBOSE') == 'true'
+    
+    # Only show extra status when run_tests.sh --verbose was used
+    if not verbose:
+        return
+    
+    # ANSI color codes for terminal output
+    GREEN = '\033[0;32m'
+    RED = '\033[0;31m'
+    YELLOW = '\033[1;33m'
+    NC = '\033[0m'  # No Color
+    
+    # In verbose mode, show status on new line with details
+    if report.when == "call":
+        if report.passed:
+            print(f"\n{GREEN}✓ PASSED{NC}")
         elif report.failed:
-            print(f"[red]✗ FAILED[/red]")
+            print(f"\n{RED}✗ FAILED{NC}")
             if report.longrepr:
                 print(f"Reason: {report.longreprtext}")
-    elif report.skipped:
-            print(f"[yellow]⊘ SKIPPED[/yellow]")
+        elif report.skipped:
+            print(f"\n{YELLOW}⊘ SKIPPED{NC}")
             if hasattr(report, 'wasxfail'):
                 print(f"Reason: {report.wasxfail}")
 
@@ -152,10 +181,10 @@ def chartmuseum_port_forward():
     # Start port-forward
     proc = subprocess.Popen(
         ["kubectl", "port-forward", "-n", CHARTMUSEUM_NAMESPACE, "svc/chartmuseum", "8080:8080"],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE
-        )
-        
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE
+    )
+    
     # Wait a moment for port-forward to establish
     time.sleep(2)
     

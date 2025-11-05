@@ -5,7 +5,7 @@ contains no references to external Helm repositories or raw URLs.
 
 import re
 from pathlib import Path
-from tests.conftest import log_check
+from conftest import log_check
 
 
 EXTERNAL_URL_PATTERNS = [

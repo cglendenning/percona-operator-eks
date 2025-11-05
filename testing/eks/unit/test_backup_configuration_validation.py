@@ -6,7 +6,7 @@ import os
 import yaml
 import pytest
 import re
-from tests.conftest import log_check
+from conftest import log_check
 from datetime import datetime
 
 
@@ -27,7 +27,7 @@ def parse_cron_schedule(schedule):
 @pytest.mark.unit
 def test_backup_enabled():
     """Test that backups are enabled."""
-    path = os.path.join(os.path.dirname(__file__), '..', '..', 'templates', 'percona-values.yaml')
+    path = os.path.join(os.path.dirname(__file__), '..', '..', '..', 'percona', 'templates', 'percona-values.yaml')
     with open(path, 'r', encoding='utf-8') as f:
         content = f.read()
         content = content.replace('{{NODES}}', '3')
@@ -39,7 +39,7 @@ def test_backup_enabled():
 @pytest.mark.unit
 def test_pitr_enabled():
     """Test that Point-in-Time Recovery (PITR) is enabled."""
-    path = os.path.join(os.path.dirname(__file__), '..', '..', 'templates', 'percona-values.yaml')
+    path = os.path.join(os.path.dirname(__file__), '..', '..', '..', 'percona', 'templates', 'percona-values.yaml')
     with open(path, 'r', encoding='utf-8') as f:
         content = f.read()
         content = content.replace('{{NODES}}', '3')
@@ -51,7 +51,7 @@ def test_pitr_enabled():
 @pytest.mark.unit
 def test_pitr_time_between_uploads():
     """Test that PITR timeBetweenUploads is configured appropriately."""
-    path = os.path.join(os.path.dirname(__file__), '..', '..', 'templates', 'percona-values.yaml')
+    path = os.path.join(os.path.dirname(__file__), '..', '..', '..', 'percona', 'templates', 'percona-values.yaml')
     with open(path, 'r', encoding='utf-8') as f:
         content = f.read()
         content = content.replace('{{NODES}}', '3')
@@ -69,7 +69,7 @@ def test_pitr_time_between_uploads():
 @pytest.mark.unit
 def test_backup_storage_configuration():
     """Test that backup storage is properly configured."""
-    path = os.path.join(os.path.dirname(__file__), '..', '..', 'templates', 'percona-values.yaml')
+    path = os.path.join(os.path.dirname(__file__), '..', '..', '..', 'percona', 'templates', 'percona-values.yaml')
     with open(path, 'r', encoding='utf-8') as f:
         content = f.read()
         content = content.replace('{{NODES}}', '3')
@@ -90,7 +90,7 @@ def test_backup_storage_configuration():
 @pytest.mark.unit
 def test_backup_schedules_exist():
     """Test that backup schedules are configured."""
-    path = os.path.join(os.path.dirname(__file__), '..', '..', 'templates', 'percona-values.yaml')
+    path = os.path.join(os.path.dirname(__file__), '..', '..', '..', 'percona', 'templates', 'percona-values.yaml')
     with open(path, 'r', encoding='utf-8') as f:
         content = f.read()
         content = content.replace('{{NODES}}', '3')
@@ -109,7 +109,7 @@ def test_backup_schedules_exist():
 @pytest.mark.unit
 def test_daily_backup_schedule():
     """Test daily backup schedule configuration."""
-    path = os.path.join(os.path.dirname(__file__), '..', '..', 'templates', 'percona-values.yaml')
+    path = os.path.join(os.path.dirname(__file__), '..', '..', '..', 'percona', 'templates', 'percona-values.yaml')
     with open(path, 'r', encoding='utf-8') as f:
         content = f.read()
         content = content.replace('{{NODES}}', '3')
@@ -134,7 +134,7 @@ def test_daily_backup_schedule():
 @pytest.mark.unit
 def test_weekly_backup_schedule():
     """Test weekly backup schedule configuration."""
-    path = os.path.join(os.path.dirname(__file__), '..', '..', 'templates', 'percona-values.yaml')
+    path = os.path.join(os.path.dirname(__file__), '..', '..', '..', 'percona', 'templates', 'percona-values.yaml')
     with open(path, 'r', encoding='utf-8') as f:
         content = f.read()
         content = content.replace('{{NODES}}', '3')
@@ -159,7 +159,7 @@ def test_weekly_backup_schedule():
 @pytest.mark.unit
 def test_monthly_backup_schedule():
     """Test monthly backup schedule configuration."""
-    path = os.path.join(os.path.dirname(__file__), '..', '..', 'templates', 'percona-values.yaml')
+    path = os.path.join(os.path.dirname(__file__), '..', '..', '..', 'percona', 'templates', 'percona-values.yaml')
     with open(path, 'r', encoding='utf-8') as f:
         content = f.read()
         content = content.replace('{{NODES}}', '3')
@@ -184,7 +184,7 @@ def test_monthly_backup_schedule():
 @pytest.mark.unit
 def test_backup_retention_policy():
     """Test that backup retention policies are appropriate."""
-    path = os.path.join(os.path.dirname(__file__), '..', '..', 'templates', 'percona-values.yaml')
+    path = os.path.join(os.path.dirname(__file__), '..', '..', '..', 'percona', 'templates', 'percona-values.yaml')
     with open(path, 'r', encoding='utf-8') as f:
         content = f.read()
         content = content.replace('{{NODES}}', '3')
@@ -208,8 +208,8 @@ def test_backup_retention_policy():
 @pytest.mark.unit
 def test_backup_storage_secret_reference():
     """Test that backup storage references the correct secret."""
-    secret_path = os.path.join(os.path.dirname(__file__), '..', '..', 'templates', 'minio-credentials-secret.yaml')
-    values_path = os.path.join(os.path.dirname(__file__), '..', '..', 'templates', 'percona-values.yaml')
+    secret_path = os.path.join(os.path.dirname(__file__), '..', '..', '..', 'percona', 'templates', 'minio-credentials-secret.yaml')
+    values_path = os.path.join(os.path.dirname(__file__), '..', '..', '..', 'percona', 'templates', 'percona-values.yaml')
     
     with open(secret_path, 'r', encoding='utf-8') as f:
         secret_content = f.read()
@@ -234,7 +234,7 @@ def test_backup_storage_secret_reference():
 @pytest.mark.unit
 def test_backup_schedule_timezones():
     """Test that backup schedules use appropriate times (off-peak hours)."""
-    path = os.path.join(os.path.dirname(__file__), '..', '..', 'templates', 'percona-values.yaml')
+    path = os.path.join(os.path.dirname(__file__), '..', '..', '..', 'percona', 'templates', 'percona-values.yaml')
     with open(path, 'r', encoding='utf-8') as f:
         content = f.read()
         content = content.replace('{{NODES}}', '3')

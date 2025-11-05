@@ -5,13 +5,13 @@ These tests validate the configuration before it's applied to ensure integration
 import yaml
 import os
 import pytest
-from tests.conftest import log_check
+from conftest import log_check
 
 
 @pytest.mark.unit
 def test_litmus_operator_template_valid():
     """Test that litmus-operator.yaml is valid YAML."""
-    path = os.path.join(os.getcwd(), 'templates', 'litmuschaos', 'litmus-operator.yaml')
+    path = os.path.join(os.path.dirname(__file__), '..', 'templates', 'litmuschaos', 'litmus-operator.yaml')
     with open(path, 'r', encoding='utf-8') as f:
         docs = list(yaml.safe_load_all(f))
     log_check("litmus-operator.yaml should contain 4 documents (SA, CR, CRB, Deployment)", "4", f"{len(docs)}", source=path)
@@ -21,7 +21,7 @@ def test_litmus_operator_template_valid():
 @pytest.mark.unit
 def test_litmus_operator_serviceaccount():
     """Test LitmusChaos operator ServiceAccount configuration."""
-    path = os.path.join(os.getcwd(), 'templates', 'litmuschaos', 'litmus-operator.yaml')
+    path = os.path.join(os.path.dirname(__file__), '..', 'templates', 'litmuschaos', 'litmus-operator.yaml')
     with open(path, 'r', encoding='utf-8') as f:
         docs = list(yaml.safe_load_all(f))
     
@@ -34,7 +34,7 @@ def test_litmus_operator_serviceaccount():
 @pytest.mark.unit
 def test_litmus_operator_clusterrole():
     """Test LitmusChaos operator ClusterRole permissions."""
-    path = os.path.join(os.getcwd(), 'templates', 'litmuschaos', 'litmus-operator.yaml')
+    path = os.path.join(os.path.dirname(__file__), '..', 'templates', 'litmuschaos', 'litmus-operator.yaml')
     with open(path, 'r', encoding='utf-8') as f:
         docs = list(yaml.safe_load_all(f))
     
@@ -54,7 +54,7 @@ def test_litmus_operator_clusterrole():
 @pytest.mark.unit
 def test_litmus_operator_deployment():
     """Test LitmusChaos operator Deployment configuration."""
-    path = os.path.join(os.getcwd(), 'templates', 'litmuschaos', 'litmus-operator.yaml')
+    path = os.path.join(os.path.dirname(__file__), '..', 'templates', 'litmuschaos', 'litmus-operator.yaml')
     with open(path, 'r', encoding='utf-8') as f:
         docs = list(yaml.safe_load_all(f))
     
@@ -74,7 +74,7 @@ def test_litmus_operator_deployment():
 @pytest.mark.unit
 def test_litmus_admin_clusterrole_template():
     """Test litmus-admin ClusterRole template."""
-    path = os.path.join(os.getcwd(), 'templates', 'litmuschaos', 'litmus-admin-clusterrole.yaml')
+    path = os.path.join(os.path.dirname(__file__), '..', 'templates', 'litmuschaos', 'litmus-admin-clusterrole.yaml')
     with open(path, 'r', encoding='utf-8') as f:
         cr = yaml.safe_load(f)
     
@@ -94,7 +94,7 @@ def test_litmus_admin_clusterrole_template():
 @pytest.mark.unit
 def test_litmus_admin_clusterrolebinding_template():
     """Test litmus-admin ClusterRoleBinding template."""
-    path = os.path.join(os.getcwd(), 'templates', 'litmuschaos', 'litmus-admin-clusterrolebinding.yaml')
+    path = os.path.join(os.path.dirname(__file__), '..', 'templates', 'litmuschaos', 'litmus-admin-clusterrolebinding.yaml')
     with open(path, 'r', encoding='utf-8') as f:
         content = f.read()
         # Check placeholder exists
@@ -114,7 +114,7 @@ def test_litmus_admin_clusterrolebinding_template():
 @pytest.mark.unit
 def test_pod_delete_chaosexperiment_template():
     """Test pod-delete ChaosExperiment template."""
-    path = os.path.join(os.getcwd(), 'templates', 'litmuschaos', 'pod-delete-chaosexperiment.yaml')
+    path = os.path.join(os.path.dirname(__file__), '..', 'templates', 'litmuschaos', 'pod-delete-chaosexperiment.yaml')
     with open(path, 'r', encoding='utf-8') as f:
         content = f.read()
         # Check placeholder exists

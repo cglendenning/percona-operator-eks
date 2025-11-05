@@ -6,7 +6,7 @@ import base64
 import subprocess
 from kubernetes import client
 from kubernetes import client
-from tests.conftest import TEST_NAMESPACE, TEST_CLUSTER_NAME, TEST_BACKUP_TYPE, TEST_BACKUP_BUCKET, MINIO_NAMESPACE
+from conftest import TEST_NAMESPACE, TEST_CLUSTER_NAME, TEST_BACKUP_TYPE, TEST_BACKUP_BUCKET, MINIO_NAMESPACE
 from rich.console import Console
 
 console = Console()

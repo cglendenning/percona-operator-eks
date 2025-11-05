@@ -4,7 +4,7 @@ Test that Helm release has correct configuration values
 import pytest
 import subprocess
 import yaml
-from tests.conftest import TEST_NAMESPACE, TEST_CLUSTER_NAME, TEST_EXPECTED_NODES
+from conftest import TEST_NAMESPACE, TEST_CLUSTER_NAME, TEST_EXPECTED_NODES
 from rich.console import Console
 
 console = Console()

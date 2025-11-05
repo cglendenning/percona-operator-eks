@@ -3,7 +3,7 @@ Test that ProxySQL pods are distributed across availability zones
 """
 import pytest
 from kubernetes import client
-from tests.conftest import TEST_NAMESPACE, TEST_EXPECTED_NODES
+from conftest import TEST_NAMESPACE, TEST_EXPECTED_NODES
 from rich.console import Console
 
 console = Console()

@@ -6,13 +6,13 @@ import os
 import yaml
 import pytest
 import re
-from tests.conftest import log_check
+from conftest import log_check
 
 
 @pytest.mark.unit
 def test_minio_secret_yaml_valid():
     """Test that MinIO secret YAML is valid."""
-    path = os.path.join(os.path.dirname(__file__), '..', '..', 'templates', 'minio-credentials-secret.yaml')
+    path = os.path.join(os.path.dirname(__file__), '..', '..', '..', 'percona', 'templates', 'minio-credentials-secret.yaml')
     with open(path, 'r', encoding='utf-8') as f:
         content = f.read()
         # Replace placeholders for validation
@@ -35,7 +35,7 @@ def test_minio_secret_yaml_valid():
 @pytest.mark.unit
 def test_minio_secret_template_placeholders():
     """Test that template contains required placeholders."""
-    path = os.path.join(os.path.dirname(__file__), '..', '..', 'templates', 'minio-credentials-secret.yaml')
+    path = os.path.join(os.path.dirname(__file__), '..', '..', '..', 'percona', 'templates', 'minio-credentials-secret.yaml')
     with open(path, 'r', encoding='utf-8') as f:
         content = f.read()
     
@@ -53,7 +53,7 @@ def test_minio_secret_template_placeholders():
 @pytest.mark.unit
 def test_minio_secret_placeholder_substitution():
     """Test that placeholders are correctly substituted."""
-    path = os.path.join(os.path.dirname(__file__), '..', '..', 'templates', 'minio-credentials-secret.yaml')
+    path = os.path.join(os.path.dirname(__file__), '..', '..', '..', 'percona', 'templates', 'minio-credentials-secret.yaml')
     with open(path, 'r', encoding='utf-8') as f:
         content = f.read()
     
@@ -80,8 +80,8 @@ def test_minio_secret_placeholder_substitution():
 @pytest.mark.unit
 def test_minio_secret_name_matches_percona_config():
     """Test that secret name matches what Percona backup config expects."""
-    secret_path = os.path.join(os.path.dirname(__file__), '..', '..', 'templates', 'minio-credentials-secret.yaml')
-    values_path = os.path.join(os.path.dirname(__file__), '..', '..', 'templates', 'percona-values.yaml')
+    secret_path = os.path.join(os.path.dirname(__file__), '..', '..', '..', 'percona', 'templates', 'minio-credentials-secret.yaml')
+    values_path = os.path.join(os.path.dirname(__file__), '..', '..', '..', 'percona', 'templates', 'percona-values.yaml')
     
     with open(secret_path, 'r', encoding='utf-8') as f:
         secret_content = f.read()
@@ -111,7 +111,7 @@ def test_minio_secret_name_matches_percona_config():
 @pytest.mark.unit
 def test_minio_secret_required_fields():
     """Test that secret contains all required fields for S3 backup."""
-    path = os.path.join(os.path.dirname(__file__), '..', '..', 'templates', 'minio-credentials-secret.yaml')
+    path = os.path.join(os.path.dirname(__file__), '..', '..', '..', 'percona', 'templates', 'minio-credentials-secret.yaml')
     with open(path, 'r', encoding='utf-8') as f:
         content = f.read()
         content = content.replace('{{NAMESPACE}}', 'test')

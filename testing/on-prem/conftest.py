@@ -259,45 +259,47 @@ def pytest_runtest_setup(item):
 
 
 def pytest_runtest_logreport(report):
-    """In verbose mode, print a concise pass/fail reason with environment context."""
-    try:
-        verbose = report.config.getoption('verbose', 0) > 0  # type: ignore[attr-defined]
-    except Exception:
-        verbose = False
-    if not verbose:
-        return
-
+    """Print concise pass/fail/skip status, with detailed reasons in verbose mode."""
     # Only log after the test call phase
     if report.when != 'call':
         return
 
-    context = _env_context_summary()
+    # Check verbose mode
+    try:
+        verbose = report.config.getoption('verbose', 0) > 0  # type: ignore[attr-defined]
+    except Exception:
+        verbose = False
+
+    # Always show status
     if report.passed:
-        # Provide a simple success justification indicating assertions held true
-        console.print(f"[green]✓ PASSED[/green] {report.nodeid} [dim]Reason:[/dim] Assertions satisfied under {context}")
+        print("[green]✓ PASSED[/green]")
     elif report.skipped:
-        # Include skip reason if available
-        reason = ""
-        try:
-            if isinstance(report.longrepr, tuple) and len(report.longrepr) >= 3:
-                reason = str(report.longrepr[2])
-            else:
-                reason = str(report.longrepr)
-        except Exception:
-            reason = "(no reason provided)"
-        console.print(f"[yellow]↷ SKIPPED[/yellow] {report.nodeid} [dim]Reason:[/dim] {reason} [dim]| {context}[/dim]")
-    else:
-        # On failure, show a brief failure message (first line of longrepr)
-        msg = ""
-        try:
-            lr = report.longrepr
-            if hasattr(lr, 'reprcrash') and getattr(lr, 'reprcrash') is not None:
-                msg = getattr(lr.reprcrash, 'message', '')
-            else:
-                msg = str(lr).splitlines()[0]
-        except Exception:
-            msg = "(no failure message available)"
-        console.print(f"[red]✗ FAILED[/red] {report.nodeid} [dim]Reason:[/dim] {msg} [dim]| {context}[/dim]")
+        print("[yellow]⊘ SKIPPED[/yellow]")
+        # Show skip reason in verbose mode
+        if verbose:
+            reason = ""
+            try:
+                if isinstance(report.longrepr, tuple) and len(report.longrepr) >= 3:
+                    reason = str(report.longrepr[2])
+                else:
+                    reason = str(report.longrepr)
+            except Exception:
+                reason = "(no reason provided)"
+            print(f"Reason: {reason}")
+    else:  # failed
+        print("[red]✗ FAILED[/red]")
+        # Show failure reason in verbose mode
+        if verbose:
+            msg = ""
+            try:
+                lr = report.longrepr
+                if hasattr(lr, 'reprcrash') and getattr(lr, 'reprcrash') is not None:
+                    msg = getattr(lr.reprcrash, 'message', '')
+                else:
+                    msg = str(lr).splitlines()[0]
+            except Exception:
+                msg = "(no failure message available)"
+            print(f"Reason: {msg}")
 
 @pytest.fixture(scope="session")
 def k8s_client():

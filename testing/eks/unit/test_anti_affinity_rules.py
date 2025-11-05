@@ -5,7 +5,7 @@ Validates that pods are distributed across availability zones per Percona best p
 import os
 import yaml
 import pytest
-from tests.conftest import log_check, TOPOLOGY_KEY, get_values_for_test
+from conftest import log_check, TOPOLOGY_KEY, get_values_for_test
 
 
 @pytest.mark.unit
@@ -16,17 +16,18 @@ def test_pxc_anti_affinity_required():
     pxc = values.get('pxc', {})
     affinity = pxc.get('affinity', {})
     
-    # Check for antiAffinityTopologyKey (PerconaXtraDBCluster CR format)
-    assert 'antiAffinityTopologyKey' in affinity, "PXC must have affinity.antiAffinityTopologyKey configured"
+    # EKS uses full podAntiAffinity structure (raw values file format)
+    assert 'podAntiAffinity' in affinity, "PXC must have affinity.podAntiAffinity configured"
+    pod_anti_affinity = affinity['podAntiAffinity']
+    assert 'requiredDuringSchedulingIgnoredDuringExecution' in pod_anti_affinity, "PXC podAntiAffinity must have required rules"
     
-    topology_key = affinity['antiAffinityTopologyKey']
     log_check(
-        criterion="PXC antiAffinityTopologyKey must be set",
-        expected="non-empty string",
-        actual=f"antiAffinityTopologyKey={topology_key}",
+        criterion="PXC podAntiAffinity must have required scheduling rules",
+        expected="requiredDuringSchedulingIgnoredDuringExecution present",
+        actual=f"rules present=True",
         source=path,
     )
-    assert topology_key, "PXC must have antiAffinityTopologyKey configured"
+    assert len(pod_anti_affinity['requiredDuringSchedulingIgnoredDuringExecution']) > 0, "PXC must have at least one anti-affinity rule"
 
 
 @pytest.mark.unit
@@ -37,22 +38,24 @@ def test_pxc_anti_affinity_topology_distribution():
     pxc = values.get('pxc', {})
     affinity = pxc.get('affinity', {})
     
-    # Define accepted topology keys
-    accepted_keys = ['topology.kubernetes.io/zone', 'failure-domain.beta.kubernetes.io/zone']
-    if TOPOLOGY_KEY == 'kubernetes.io/hostname':
-        accepted_keys = ['kubernetes.io/hostname']
+    # EKS uses full podAntiAffinity structure
+    assert 'podAntiAffinity' in affinity, "PXC must have affinity.podAntiAffinity configured"
+    pod_anti_affinity = affinity['podAntiAffinity']
+    assert 'requiredDuringSchedulingIgnoredDuringExecution' in pod_anti_affinity, "PXC podAntiAffinity must have required rules"
     
-    assert 'antiAffinityTopologyKey' in affinity, "PXC must have affinity.antiAffinityTopologyKey configured"
+    rules = pod_anti_affinity['requiredDuringSchedulingIgnoredDuringExecution']
+    assert len(rules) > 0, "PXC must have at least one anti-affinity rule"
     
-    topology_key = affinity['antiAffinityTopologyKey']
-    topo_found = topology_key in accepted_keys
+    topology_key = rules[0].get('topologyKey')
+    expected_key = TOPOLOGY_KEY  # topology.kubernetes.io/zone for EKS
+    
     log_check(
-        criterion=f"PXC antiAffinityTopologyKey should be in {accepted_keys}",
-        expected=f"in {accepted_keys}",
-        actual=f"antiAffinityTopologyKey={topology_key}, found={topo_found}",
+        criterion=f"PXC podAntiAffinity topologyKey should be {expected_key}",
+        expected=expected_key,
+        actual=f"topologyKey={topology_key}",
         source=path,
     )
-    assert topo_found, f"PXC antiAffinityTopologyKey must be one of {accepted_keys}"
+    assert topology_key == expected_key, f"PXC topologyKey must be {expected_key}"
 
 
 @pytest.mark.unit
@@ -71,16 +74,18 @@ def test_proxysql_anti_affinity_required():
     proxy_name = 'proxysql' if 'proxysql' in values else 'haproxy'
     proxy_affinity = proxy.get('affinity', {})
     
-    assert 'antiAffinityTopologyKey' in proxy_affinity, f"{proxy_name} must have affinity.antiAffinityTopologyKey configured"
+    # EKS uses full podAntiAffinity structure
+    assert 'podAntiAffinity' in proxy_affinity, f"{proxy_name} must have affinity.podAntiAffinity configured"
+    pod_anti_affinity = proxy_affinity['podAntiAffinity']
+    assert 'requiredDuringSchedulingIgnoredDuringExecution' in pod_anti_affinity, f"{proxy_name} podAntiAffinity must have required rules"
     
-    topology_key = proxy_affinity['antiAffinityTopologyKey']
     log_check(
-        criterion=f"{proxy_name} antiAffinityTopologyKey must be set",
-        expected="non-empty string",
-        actual=f"antiAffinityTopologyKey={topology_key}",
+        criterion=f"{proxy_name} podAntiAffinity must have required scheduling rules",
+        expected="requiredDuringSchedulingIgnoredDuringExecution present",
+        actual=f"rules present=True",
         source=path,
     )
-    assert topology_key, f"{proxy_name} must have antiAffinityTopologyKey configured"
+    assert len(pod_anti_affinity['requiredDuringSchedulingIgnoredDuringExecution']) > 0, f"{proxy_name} must have at least one anti-affinity rule"
 
 
 @pytest.mark.unit
@@ -93,21 +98,24 @@ def test_proxysql_anti_affinity_topology_distribution():
     proxy_name = 'proxysql' if 'proxysql' in values else 'haproxy'
     proxy_affinity = proxy.get('affinity', {})
     
-    accepted_keys = ['topology.kubernetes.io/zone', 'failure-domain.beta.kubernetes.io/zone']
-    if TOPOLOGY_KEY == 'kubernetes.io/hostname':
-        accepted_keys = ['kubernetes.io/hostname']
+    # EKS uses full podAntiAffinity structure
+    assert 'podAntiAffinity' in proxy_affinity, f"{proxy_name} must have affinity.podAntiAffinity configured"
+    pod_anti_affinity = proxy_affinity['podAntiAffinity']
+    assert 'requiredDuringSchedulingIgnoredDuringExecution' in pod_anti_affinity, f"{proxy_name} podAntiAffinity must have required rules"
     
-    assert 'antiAffinityTopologyKey' in proxy_affinity, f"{proxy_name} must have affinity.antiAffinityTopologyKey configured"
+    rules = pod_anti_affinity['requiredDuringSchedulingIgnoredDuringExecution']
+    assert len(rules) > 0, f"{proxy_name} must have at least one anti-affinity rule"
     
-    topology_key = proxy_affinity['antiAffinityTopologyKey']
-    topo_found = topology_key in accepted_keys
+    topology_key = rules[0].get('topologyKey')
+    expected_key = TOPOLOGY_KEY  # topology.kubernetes.io/zone for EKS
+    
     log_check(
-        criterion=f"{proxy_name} antiAffinityTopologyKey should be in {accepted_keys}",
-        expected=f"in {accepted_keys}",
-        actual=f"antiAffinityTopologyKey={topology_key}, found={topo_found}",
+        criterion=f"{proxy_name} podAntiAffinity topologyKey should be {expected_key}",
+        expected=expected_key,
+        actual=f"topologyKey={topology_key}",
         source=path,
     )
-    assert topo_found, f"{proxy_name} antiAffinityTopologyKey must be one of {accepted_keys}"
+    assert topology_key == expected_key, f"{proxy_name} topologyKey must be {expected_key}"
 
 
 @pytest.mark.unit
@@ -127,15 +135,19 @@ def test_anti_affinity_prevents_single_host_or_zone_packing():
     proxy_name = 'proxysql' if 'proxysql' in values else 'haproxy'
     proxy_affinity = proxy.get('affinity', {})
     
-    accepted_keys = ['topology.kubernetes.io/zone', 'failure-domain.beta.kubernetes.io/zone'] if TOPOLOGY_KEY != 'kubernetes.io/hostname' else ['kubernetes.io/hostname']
+    expected_key = TOPOLOGY_KEY  # topology.kubernetes.io/zone for EKS
     
-    # Check PXC
-    assert 'antiAffinityTopologyKey' in pxc_affinity, "PXC must have affinity.antiAffinityTopologyKey configured"
-    pxc_has_required = pxc_affinity['antiAffinityTopologyKey'] in accepted_keys
+    # Check PXC - EKS uses full podAntiAffinity structure
+    assert 'podAntiAffinity' in pxc_affinity, "PXC must have affinity.podAntiAffinity configured"
+    pxc_pod_anti_affinity = pxc_affinity['podAntiAffinity']
+    pxc_rules = pxc_pod_anti_affinity.get('requiredDuringSchedulingIgnoredDuringExecution', [])
+    pxc_has_required = len(pxc_rules) > 0 and pxc_rules[0].get('topologyKey') == expected_key
     
-    # Check proxy
-    assert 'antiAffinityTopologyKey' in proxy_affinity, f"{proxy_name} must have affinity.antiAffinityTopologyKey configured"
-    proxy_has_required = proxy_affinity['antiAffinityTopologyKey'] in accepted_keys
+    # Check proxy - EKS uses full podAntiAffinity structure
+    assert 'podAntiAffinity' in proxy_affinity, f"{proxy_name} must have affinity.podAntiAffinity configured"
+    proxy_pod_anti_affinity = proxy_affinity['podAntiAffinity']
+    proxy_rules = proxy_pod_anti_affinity.get('requiredDuringSchedulingIgnoredDuringExecution', [])
+    proxy_has_required = len(proxy_rules) > 0 and proxy_rules[0].get('topologyKey') == expected_key
     
     log_check(
         criterion=f"Both PXC and {proxy_name} must include required anti-affinity topology",

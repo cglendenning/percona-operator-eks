@@ -170,7 +170,7 @@ verify_installation() {
     
     # Test adding repo (will verify later with mirroring)
     log_info "ChartMuseum is ready for chart mirroring"
-    log_info "Run ./scripts/mirror-charts.sh to populate the repository"
+    log_info "Run percona/scripts/mirror-charts.sh to populate the repository"
 }
 
 # Print summary
@@ -188,7 +188,7 @@ print_summary() {
     echo ""
     echo -e "${BOLD}Next Steps:${NC}"
     echo "1. Mirror charts to ChartMuseum:"
-    echo "   ${CYAN}./scripts/mirror-charts.sh${NC}"
+    echo "   ${CYAN}percona/scripts/mirror-charts.sh${NC}"
     echo ""
     echo "2. Add ChartMuseum as a Helm repository:"
     echo "   ${CYAN}helm repo add internal ${CHARTMUSEUM_URL}${NC}"

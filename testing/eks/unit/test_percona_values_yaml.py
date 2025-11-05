@@ -5,13 +5,13 @@ These tests validate the configuration before it's applied to ensure integration
 import yaml
 import os
 import pytest
-from tests.conftest import log_check, ON_PREM, STORAGE_CLASS_NAME
+from conftest import log_check, ON_PREM, STORAGE_CLASS_NAME
 
 
 @pytest.mark.unit
 def test_percona_values_template_valid_yaml():
     """Test that percona-values.yaml is valid YAML."""
-    path = os.path.join(os.getcwd(), 'templates', 'percona-values.yaml')
+    path = os.path.join(os.getcwd(), '..', '..', 'percona', 'templates', 'percona-values.yaml')
     with open(path, 'r', encoding='utf-8') as f:
         content = f.read()
         # Replace placeholder with test value to make valid YAML
@@ -24,7 +24,7 @@ def test_percona_values_template_valid_yaml():
 @pytest.mark.unit
 def test_percona_values_pxc_configuration():
     """Test PXC configuration matches expected values."""
-    path = os.path.join(os.getcwd(), 'templates', 'percona-values.yaml')
+    path = os.path.join(os.getcwd(), '..', '..', 'percona', 'templates', 'percona-values.yaml')
     with open(path, 'r', encoding='utf-8') as f:
         content = f.read()
         # Replace placeholder with test value
@@ -60,7 +60,7 @@ def test_percona_values_proxysql_configuration(request):
     if not request.config.getoption('--proxysql'):
         pytest.skip("ProxySQL tests run only with --proxysql")
     """Test ProxySQL configuration matches expected values."""
-    path = os.path.join(os.getcwd(), 'templates', 'percona-values.yaml')
+    path = os.path.join(os.getcwd(), '..', '..', 'percona', 'templates', 'percona-values.yaml')
     with open(path, 'r', encoding='utf-8') as f:
         content = f.read()
         content = content.replace('{{NODES}}', '3')
@@ -99,7 +99,7 @@ def test_percona_values_haproxy_disabled(request):
     if not request.config.getoption('--proxysql'):
         pytest.skip("This HAProxy-disabled test is only relevant when ProxySQL is enabled")
     """Test that HAProxy is disabled."""
-    path = os.path.join(os.getcwd(), 'templates', 'percona-values.yaml')
+    path = os.path.join(os.getcwd(), '..', '..', 'percona', 'templates', 'percona-values.yaml')
     with open(path, 'r', encoding='utf-8') as f:
         content = f.read()
         content = content.replace('{{NODES}}', '3')
@@ -110,7 +110,7 @@ def test_percona_values_haproxy_disabled(request):
 @pytest.mark.unit
 def test_percona_values_backup_configuration():
     """Test backup configuration matches expected values."""
-    path = os.path.join(os.getcwd(), 'templates', 'percona-values.yaml')
+    path = os.path.join(os.getcwd(), '..', '..', 'percona', 'templates', 'percona-values.yaml')
     with open(path, 'r', encoding='utf-8') as f:
         content = f.read()
         content = content.replace('{{NODES}}', '3')
@@ -163,7 +163,7 @@ def test_percona_values_backup_configuration():
 @pytest.mark.unit
 def test_percona_values_template_has_nodes_placeholder():
     """Test that template contains NODES placeholder for substitution."""
-    path = os.path.join(os.getcwd(), 'templates', 'percona-values.yaml')
+    path = os.path.join(os.getcwd(), '..', '..', 'percona', 'templates', 'percona-values.yaml')
     with open(path, 'r', encoding='utf-8') as f:
         content = f.read()
     log_check("Template should contain {{NODES}} placeholder", "present=True", f"present={{'{{NODES}}' in content}}", source=path)

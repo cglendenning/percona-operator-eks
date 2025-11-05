@@ -3,7 +3,7 @@ Test that PXC resources match expected values (500m CPU, 1Gi memory request)
 """
 import pytest
 from kubernetes import client
-from tests.conftest import TEST_NAMESPACE
+from conftest import TEST_NAMESPACE
 from rich.console import Console
 
 console = Console()

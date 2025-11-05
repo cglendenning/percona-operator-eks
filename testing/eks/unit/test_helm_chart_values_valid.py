@@ -4,8 +4,8 @@ Test that Helm chart can be rendered with default values
 import pytest
 import subprocess
 import yaml
-from tests.conftest import TEST_NAMESPACE, TEST_CLUSTER_NAME, TEST_EXPECTED_NODES
-from tests.conftest import log_check
+from conftest import TEST_NAMESPACE, TEST_CLUSTER_NAME, TEST_EXPECTED_NODES
+from conftest import log_check
 from rich.console import Console
 
 console = Console()

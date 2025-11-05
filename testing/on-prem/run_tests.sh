@@ -5,9 +5,8 @@ set -euo pipefail
 # Can be run manually on Mac or in GitLab CI
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 
-cd "$PROJECT_ROOT"
+cd "$SCRIPT_DIR"
 
 # Setup logging to /tmp with timestamp
 LOG_TIMESTAMP=$(date +"%Y%m%d_%H%M%S")
@@ -93,7 +92,7 @@ show_usage() {
     echo "      Any unrecognized flags are forwarded to pytest. Useful ones:"
     echo "        --proxysql         Run ProxySQL tests (skip HAProxy tests)"
     echo "        -k <expr>         Filter tests by keyword"
-    echo "        <nodeid>          Run a specific test (e.g., tests/unit/test_x.py::test_y)"
+    echo "        <nodeid>          Run a specific test (e.g., unit/test_x.py::test_y)"
     echo ""
     echo -e "${BLUE}Examples:${NC}"
     echo "  # Run all tests (unit, integration, resiliency, DR scenarios)"
@@ -121,7 +120,7 @@ show_usage() {
     echo "  $0 --no-integration-tests --no-resiliency-tests -- --proxysql"
     echo ""
     echo "  # Run a single unit test"
-    echo "  $0 --no-integration-tests --no-resiliency-tests tests/unit/test_percona_values_yaml.py::test_percona_values_pxc_configuration"
+    echo "  $0 --no-integration-tests --no-resiliency-tests unit/test_percona_values_yaml.py::test_percona_values_pxc_configuration"
     echo ""
     echo -e "${BLUE}Environment Variables:${NC}"
     echo "  TEST_NAMESPACE          Kubernetes namespace (default: percona)"
@@ -257,7 +256,7 @@ fi
 
 source venv/bin/activate
 pip install --upgrade pip >/dev/null 2>&1
-pip install -q -r tests/requirements.txt
+pip install -q -r requirements.txt
 
 verbose_echo -e "${GREEN}✓ Dependencies installed${NC}"
 verbose_echo ""
@@ -627,7 +626,7 @@ fi
 
 # Add HTML report if requested
 if [ "${GENERATE_HTML_REPORT:-}" == "true" ]; then
-    PYTEST_OPTS+=("--html=tests/report.html" "--self-contained-html")
+    PYTEST_OPTS+=("--html=report.html" "--self-contained-html")
 fi
 
 # Add coverage if requested
@@ -665,7 +664,7 @@ run_category() {
     local FINAL_TEST_PATH="$test_path"
     
     # Check if passthrough contains a test path/nodeid
-    for arg in "${PYTEST_PASSTHROUGH[@]}"; do
+    for arg in "${PYTEST_PASSTHROUGH[@]+"${PYTEST_PASSTHROUGH[@]}"}"}; do
         # If it looks like a test path (starts with tests/ or contains ::), use it as the path
         if [[ "$arg" =~ ^tests/ ]] || [[ "$arg" =~ :: ]]; then
             FINAL_TEST_PATH="$arg"
@@ -713,7 +712,7 @@ run_category() {
 
 # Check if a specific test path/nodeid was provided
 SPECIFIC_TEST_PATH=""
-for arg in "${PYTEST_PASSTHROUGH[@]}"; do
+for arg in "${PYTEST_PASSTHROUGH[@]+"${PYTEST_PASSTHROUGH[@]}"}"}; do
     if [[ "$arg" =~ ^tests/ ]] || [[ "$arg" =~ :: ]]; then
         SPECIFIC_TEST_PATH="$arg"
         break
@@ -732,7 +731,7 @@ if [ -n "$SPECIFIC_TEST_PATH" ]; then
     
     SPECIFIC_OPTS=("${PYTEST_OPTS[@]}")
     # Add passthrough args (excluding the test path which we'll use separately)
-    for arg in "${PYTEST_PASSTHROUGH[@]}"; do
+    for arg in "${PYTEST_PASSTHROUGH[@]+"${PYTEST_PASSTHROUGH[@]}"}"}; do
         if [[ "$arg" != "$SPECIFIC_TEST_PATH" ]]; then
             SPECIFIC_OPTS+=("$arg")
         fi
@@ -773,21 +772,21 @@ if [ -n "$SPECIFIC_TEST_PATH" ]; then
 else
     # Run by category as before
     if [ "$NO_UNIT" == "false" ]; then
-        run_category "Unit tests" "unit" false "tests/unit"
+        run_category "Unit tests" "unit" false "unit"
         [ $? -ne 0 ] && TEST_RESULT=1
     fi
 
     if [ "$NO_INTEGRATION" == "false" ]; then
-        run_category "Integration tests" "integration" false "tests/integration"
+        run_category "Integration tests" "integration" false "integration"
         [ $? -ne 0 ] && TEST_RESULT=1
     fi
 
     if [ "$NO_RESILIENCY" == "false" ]; then
         # Run resiliency (non-DR) first, then DR scenarios
-        run_category "Resiliency tests" "resiliency and not dr" true "tests/resiliency"
+        run_category "Resiliency tests" "resiliency and not dr" true "resiliency"
         [ $? -ne 0 ] && TEST_RESULT=1
         if [ "$NO_DR" == "false" ]; then
-            run_category "DR scenario tests" "dr" true "tests/resiliency"
+            run_category "DR scenario tests" "dr" true "resiliency"
             [ $? -ne 0 ] && TEST_RESULT=1
         fi
     fi
@@ -824,7 +823,7 @@ fi
 
 if [ "${GENERATE_HTML_REPORT:-}" == "true" ]; then
     echo ""
-    echo -e "${GREEN}HTML report generated: tests/report.html${NC}"
+    echo -e "${GREEN}HTML report generated: report.html${NC}"
 fi
 
 # Show log file location

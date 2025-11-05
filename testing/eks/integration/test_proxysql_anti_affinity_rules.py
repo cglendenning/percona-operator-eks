@@ -3,7 +3,7 @@ Test that ProxySQL StatefulSet has anti-affinity rules
 """
 import pytest
 from kubernetes import client
-from tests.conftest import TEST_NAMESPACE, TEST_EXPECTED_NODES
+from conftest import TEST_NAMESPACE, TEST_EXPECTED_NODES
 from rich.console import Console
 
 console = Console()

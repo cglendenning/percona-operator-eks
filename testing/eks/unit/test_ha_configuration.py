@@ -5,13 +5,13 @@ Validates HA settings match Percona best practices for v1.18.
 import os
 import yaml
 import pytest
-from tests.conftest import log_check
+from conftest import log_check
 
 
 @pytest.mark.unit
 def test_minimum_cluster_size_for_ha():
     """Test that cluster size meets minimum for high availability."""
-    path = os.path.join(os.path.dirname(__file__), '..', '..', 'templates', 'percona-values.yaml')
+    path = os.path.join(os.path.dirname(__file__), '..', '..', '..', 'percona', 'templates', 'percona-values.yaml')
     
     # Minimum 3 nodes required for quorum-based HA
     with open(path, 'r', encoding='utf-8') as f:
@@ -31,7 +31,7 @@ def test_odd_node_count_preference():
     """Test that odd node counts are preferred for quorum (3, 5, 7 nodes)."""
     # Odd numbers prevent split-brain scenarios in quorum-based systems
     
-    path = os.path.join(os.path.dirname(__file__), '..', '..', 'templates', 'percona-values.yaml')
+    path = os.path.join(os.path.dirname(__file__), '..', '..', '..', 'percona', 'templates', 'percona-values.yaml')
     
     # Test with odd node count (recommended)
     with open(path, 'r', encoding='utf-8') as f:
@@ -59,7 +59,7 @@ def test_odd_node_count_preference():
 @pytest.mark.unit
 def test_pdb_maintains_quorum():
     """Test that PDB settings maintain quorum during disruptions."""
-    path = os.path.join(os.path.dirname(__file__), '..', '..', 'templates', 'percona-values.yaml')
+    path = os.path.join(os.path.dirname(__file__), '..', '..', '..', 'percona', 'templates', 'percona-values.yaml')
     
     for node_count in [3, 5, 7]:
         with open(path, 'r', encoding='utf-8') as f:
@@ -82,7 +82,7 @@ def test_pdb_maintains_quorum():
 @pytest.mark.unit
 def test_multi_az_anti_affinity():
     """Test that anti-affinity rules ensure multi-AZ deployment."""
-    path = os.path.join(os.path.dirname(__file__), '..', '..', 'templates', 'percona-values.yaml')
+    path = os.path.join(os.path.dirname(__file__), '..', '..', '..', 'percona', 'templates', 'percona-values.yaml')
     with open(path, 'r', encoding='utf-8') as f:
         content = f.read()
         content = content.replace('{{NODES}}', '3')
@@ -110,7 +110,7 @@ def test_multi_az_anti_affinity():
 @pytest.mark.unit
 def test_backup_enabled_for_ha():
     """Test that backups are enabled for disaster recovery."""
-    path = os.path.join(os.path.dirname(__file__), '..', '..', 'templates', 'percona-values.yaml')
+    path = os.path.join(os.path.dirname(__file__), '..', '..', '..', 'percona', 'templates', 'percona-values.yaml')
     with open(path, 'r', encoding='utf-8') as f:
         content = f.read()
         content = content.replace('{{NODES}}', '3')
@@ -123,7 +123,7 @@ def test_backup_enabled_for_ha():
 @pytest.mark.unit
 def test_pitr_enabled_for_point_in_time_recovery():
     """Test that PITR is enabled for point-in-time recovery."""
-    path = os.path.join(os.path.dirname(__file__), '..', '..', 'templates', 'percona-values.yaml')
+    path = os.path.join(os.path.dirname(__file__), '..', '..', '..', 'percona', 'templates', 'percona-values.yaml')
     with open(path, 'r', encoding='utf-8') as f:
         content = f.read()
         content = content.replace('{{NODES}}', '3')
@@ -136,7 +136,7 @@ def test_pitr_enabled_for_point_in_time_recovery():
 @pytest.mark.unit
 def test_proxysql_enabled_for_ha():
     """Test that ProxySQL is enabled (required for HA load balancing)."""
-    path = os.path.join(os.path.dirname(__file__), '..', '..', 'templates', 'percona-values.yaml')
+    path = os.path.join(os.path.dirname(__file__), '..', '..', '..', 'percona', 'templates', 'percona-values.yaml')
     with open(path, 'r', encoding='utf-8') as f:
         content = f.read()
         content = content.replace('{{NODES}}', '3')
@@ -149,7 +149,7 @@ def test_proxysql_enabled_for_ha():
 @pytest.mark.unit
 def test_haproxy_disabled_when_proxysql_enabled():
     """Test that HAProxy is disabled when ProxySQL is enabled (avoids conflicts)."""
-    path = os.path.join(os.path.dirname(__file__), '..', '..', 'templates', 'percona-values.yaml')
+    path = os.path.join(os.path.dirname(__file__), '..', '..', '..', 'percona', 'templates', 'percona-values.yaml')
     with open(path, 'r', encoding='utf-8') as f:
         content = f.read()
         content = content.replace('{{NODES}}', '3')
@@ -164,7 +164,7 @@ def test_haproxy_disabled_when_proxysql_enabled():
 @pytest.mark.unit
 def test_statefulset_replicas_match_for_ha():
     """Test that PXC and ProxySQL replicas match (required for proper HA)."""
-    path = os.path.join(os.path.dirname(__file__), '..', '..', 'templates', 'percona-values.yaml')
+    path = os.path.join(os.path.dirname(__file__), '..', '..', '..', 'percona', 'templates', 'percona-values.yaml')
     with open(path, 'r', encoding='utf-8') as f:
         content = f.read()
         content = content.replace('{{NODES}}', '3')

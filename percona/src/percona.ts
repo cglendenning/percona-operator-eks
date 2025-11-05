@@ -538,7 +538,7 @@ async function installOperator(ns: string) {
 async function clusterValues(nodes: number, accountId: string): Promise<string> {
   const { readFile } = await import('fs/promises');
   const { resolve } = await import('path');
-  const templatePath = resolve(process.cwd(), 'templates', 'percona-values.yaml');
+  const templatePath = resolve(process.cwd(), 'percona', 'templates', 'percona-values.yaml');
   let content = await readFile(templatePath, 'utf8');
   content = content.replace(/\{\{NODES\}\}/g, nodes.toString());
   return content;
@@ -549,7 +549,7 @@ async function createStorageClass() {
   const { execa } = await import('execa');
   const { readFile } = await import('fs/promises');
   const { resolve } = await import('path');
-  const templatePath = resolve(process.cwd(), 'templates', 'storageclass-gp3.yaml');
+  const templatePath = resolve(process.cwd(), 'percona', 'templates', 'storageclass-gp3.yaml');
   const storageClassYaml = await readFile(templatePath, 'utf8');
   const proc = execa('kubectl', ['apply', '-f', '-'], { stdio: ['pipe', 'inherit', 'inherit'] });
   proc.stdin?.write(storageClassYaml);
@@ -1112,7 +1112,7 @@ async function createMinIOCredentialsSecret(ns: string, accessKey: string, secre
   const { resolve } = await import('path');
   
   try {
-    const templatePath = resolve(process.cwd(), 'templates', 'minio-credentials-secret.yaml');
+    const templatePath = resolve(process.cwd(), 'percona', 'templates', 'minio-credentials-secret.yaml');
     let content = await readFile(templatePath, 'utf8');
     content = content
       .replace(/\{\{NAMESPACE\}\}/g, ns)
@@ -1845,7 +1845,7 @@ async function installChartMuseum() {
   
   // Run the setup script
   try {
-    const scriptPath = resolve(process.cwd(), 'scripts', 'setup-chartmuseum.sh');
+    const scriptPath = resolve(process.cwd(), 'percona', 'scripts', 'setup-chartmuseum.sh');
     logInfo('Running ChartMuseum setup script...');
     await run('bash', [scriptPath], { stdio: 'inherit' });
     
@@ -1936,7 +1936,7 @@ async function mirrorChartsToChartMuseum() {
     }
     
     // Run the mirror script with localhost URL
-    const scriptPath = resolve(process.cwd(), 'scripts', 'mirror-charts.sh');
+    const scriptPath = resolve(process.cwd(), 'percona', 'scripts', 'mirror-charts.sh');
     logInfo('Running chart mirroring script...');
     await run('bash', [scriptPath], { 
       stdio: 'inherit',
@@ -1956,7 +1956,7 @@ async function mirrorChartsToChartMuseum() {
   } catch (error) {
     logError(`Failed to mirror charts: ${error}`);
     logError('Chart mirroring is required for the internal Helm chart repository');
-    logError('You can run it manually with: ./percona/scripts/mirror-charts.sh');
+    logError('You can run it manually with: percona/scripts/mirror-charts.sh');
     throw error;
   } finally {
     // Clean up port-forward after mirroring

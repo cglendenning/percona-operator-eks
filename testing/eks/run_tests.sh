@@ -5,9 +5,8 @@ set -euo pipefail
 # Can be run manually on Mac or in GitLab CI
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 
-cd "$PROJECT_ROOT"
+cd "$SCRIPT_DIR"
 
 # Setup logging to /tmp with timestamp
 LOG_TIMESTAMP=$(date +"%Y%m%d_%H%M%S")
@@ -85,15 +84,11 @@ show_usage() {
     echo -e "  ${GREEN}--verbose, -v${NC}"
     echo "      Show verbose output including setup, Python version, configuration, etc."
     echo ""
-    echo -e "  ${GREEN}--on-prem${NC}"
-    echo "      On-prem mode: relax EKS/AWS-specific assertions and prefer hostname-based anti-affinity"
-    echo "      Auto-detects Fleet configurations (fleet.yaml) and extracts chart URL and values files"
-    echo ""
     echo -e "  ${GREEN}[Pytest passthrough]${NC}"
     echo "      Any unrecognized flags are forwarded to pytest. Useful ones:"
     echo "        --proxysql         Run ProxySQL tests (skip HAProxy tests)"
     echo "        -k <expr>         Filter tests by keyword"
-    echo "        <nodeid>          Run a specific test (e.g., tests/unit/test_x.py::test_y)"
+    echo "        <nodeid>          Run a specific test (e.g., unit/test_x.py::test_y)"
     echo ""
     echo -e "${BLUE}Examples:${NC}"
     echo "  # Run all tests (unit, integration, resiliency, DR scenarios)"
@@ -114,14 +109,11 @@ show_usage() {
     echo "  # Run only integration tests"
     echo "  $0 --no-unit-tests --no-resiliency-tests --no-dr-tests"
     echo ""
-    echo "  # On-prem mode with defaults (hostname topology, standard storageclass)"
-    echo "  $0 --on-prem --no-integration-tests --no-resiliency-tests"
-    echo ""
     echo "  # Run only ProxySQL tests (skip HAProxy)"
     echo "  $0 --no-integration-tests --no-resiliency-tests -- --proxysql"
     echo ""
     echo "  # Run a single unit test"
-    echo "  $0 --no-integration-tests --no-resiliency-tests tests/unit/test_percona_values_yaml.py::test_percona_values_pxc_configuration"
+    echo "  $0 --no-integration-tests --no-resiliency-tests unit/test_percona_values_yaml.py::test_percona_values_pxc_configuration"
     echo ""
     echo -e "${BLUE}Environment Variables:${NC}"
     echo "  TEST_NAMESPACE          Kubernetes namespace (default: percona)"
@@ -132,23 +124,13 @@ show_usage() {
     echo "  RESILIENCY_MTTR_TIMEOUT_SECONDS  MTTR timeout for resiliency tests (default: 120)"
     echo "  GENERATE_HTML_REPORT    Set to 'true' to generate HTML test report"
     echo "  GENERATE_COVERAGE       Set to 'true' to generate coverage report"
-    echo "  ON_PREM                 'true' to enable on-prem defaults (also via --on-prem)"
-    echo "  STORAGE_CLASS_NAME      StorageClass name for on-prem (default: standard in on-prem)"
-    echo "  TOPOLOGY_KEY            Anti-affinity topology key (default: hostname in on-prem, zone in EKS)"
-    echo "  VALUES_FILE             Path to values file to test (default: percona/templates/percona-values.yaml)"
-    echo "  VALUES_ROOT_KEY         Root key wrapper if present (e.g., pxc-db)"
-    echo "  PXC_PATH                Dot-path to PXC section (e.g., pxc-db.pxc)"
-    echo "  PROXYSQL_PATH           Dot-path to ProxySQL section"
-    echo "  HAPROXY_PATH            Dot-path to HAProxy section"
-    echo "  BACKUP_PATH             Dot-path to backup section (or backup-enabled normalization)"
-    echo "  FLEET_YAML              Path to fleet.yaml (default: ./fleet.yaml if present in on-prem mode)"
-    echo "  FLEET_TARGET            Fleet targetCustomization name to use (default: auto-detect or first)"
+    echo "  STORAGE_CLASS_NAME      EKS StorageClass name (default: gp3)"
+    echo "  TOPOLOGY_KEY            Anti-affinity topology key (default: topology.kubernetes.io/zone)"
     echo ""
 }
 
 # Parse arguments for help and verbose flags (before any setup work)
 VERBOSE=false
-ON_PREM=false
 for arg in "$@"; do
     case $arg in
         -h|--help)
@@ -158,11 +140,11 @@ for arg in "$@"; do
         --verbose|-v)
             VERBOSE=true
             ;;
-        --on-prem)
-            ON_PREM=true
-            ;;
     esac
 done
+
+# Export VERBOSE so pytest hooks can check it
+export VERBOSE
 
 # Verbose output function
 verbose_echo() {
@@ -257,7 +239,7 @@ fi
 
 source venv/bin/activate
 pip install --upgrade pip >/dev/null 2>&1
-pip install -q -r tests/requirements.txt
+pip install -q -r requirements.txt
 
 verbose_echo -e "${GREEN}✓ Dependencies installed${NC}"
 verbose_echo ""
@@ -271,158 +253,10 @@ export TEST_OPERATOR_NAMESPACE=${TEST_OPERATOR_NAMESPACE:-$TEST_NAMESPACE}
 export MINIO_NAMESPACE=${MINIO_NAMESPACE:-minio}
 export CHAOS_NAMESPACE=${CHAOS_NAMESPACE:-litmus}
 export CHARTMUSEUM_NAMESPACE=${CHARTMUSEUM_NAMESPACE:-chartmuseum}
-export ON_PREM=${ON_PREM}
-# On-prem sensible defaults
-if [ "$ON_PREM" = "true" ]; then
-    export STORAGE_CLASS_NAME=${STORAGE_CLASS_NAME:-standard}
-    export TOPOLOGY_KEY=${TOPOLOGY_KEY:-kubernetes.io/hostname}
-    
-    # Fleet configuration detection (on-prem environments often use Fleet)
-    FLEET_YAML=${FLEET_YAML:-./fleet.yaml}
-    if [ -f "$FLEET_YAML" ] && command -v python3 >/dev/null 2>&1 && command -v helm >/dev/null 2>&1; then
-        verbose_echo -e "${BLUE}Detected Fleet configuration: $FLEET_YAML${NC}"
-        
-        # Extract Fleet configuration and render manifest using Python
-        FLEET_RENDER=$(python3 - <<'PYTHON_SCRIPT'
-import sys
-import yaml
-import os
-import subprocess
-import tempfile
-import re
-from datetime import datetime
+# EKS defaults
+export STORAGE_CLASS_NAME=${STORAGE_CLASS_NAME:-gp3}
+export TOPOLOGY_KEY=${TOPOLOGY_KEY:-topology.kubernetes.io/zone}
 
-fleet_path = os.getenv('FLEET_YAML', './fleet.yaml')
-fleet_target = os.getenv('FLEET_TARGET', '')
-
-try:
-    with open(fleet_path, 'r') as f:
-        fleet = yaml.safe_load(f)
-    
-    # Extract base helm config
-    helm_config = fleet.get('helm', {})
-    chart_url = helm_config.get('chart', '')
-    release_name = helm_config.get('releaseName', 'pxc-cluster')
-    base_namespace = helm_config.get('targetNamespace', 'percona')
-    base_values_files = helm_config.get('valuesFiles', [])
-    
-    # Find target customization
-    target_customizations = fleet.get('targetCustomizations', [])
-    target_values_files = []
-    target_namespace = base_namespace
-    
-    if fleet_target:
-        for target in target_customizations:
-            if target.get('name') == fleet_target:
-                target_helm = target.get('helm', {})
-                target_values_files = target_helm.get('valuesFiles', [])
-                target_namespace = target.get('namespace') or target_helm.get('targetNamespace', base_namespace)
-                break
-    elif target_customizations:
-        target = target_customizations[0]
-        target_helm = target.get('helm', {})
-        target_values_files = target_helm.get('valuesFiles', [])
-        target_namespace = target.get('namespace') or target_helm.get('targetNamespace', base_namespace)
-    
-    # Combine values files (base + target-specific)
-    all_values_files = base_values_files + target_values_files
-    
-    # Build helm template command
-    helm_cmd = ['helm', 'template', release_name, chart_url, '--insecure-skip-tls-verify']
-    if target_namespace:
-        helm_cmd.extend(['--namespace', target_namespace])
-    
-    for vf in all_values_files:
-        helm_cmd.extend(['-f', vf])
-    
-    # Run helm template
-    result = subprocess.run(helm_cmd, capture_output=True, text=True, check=True)
-    rendered_manifest = result.stdout
-    
-    # Redact secrets
-    manifest_docs = list(yaml.safe_load_all(rendered_manifest))
-    for doc in manifest_docs:
-        if doc and doc.get('kind') == 'Secret' and 'data' in doc:
-            for key in doc['data']:
-                doc['data'][key] = '[REDACTED]'
-        if doc and doc.get('kind') == 'Secret' and 'stringData' in doc:
-            for key in doc['stringData']:
-                doc['stringData'][key] = '[REDACTED]'
-    
-    # Save to temp file
-    timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-    temp_file = f'/tmp/fleet-rendered-{timestamp}.yaml'
-    with open(temp_file, 'w') as f:
-        yaml.dump_all(manifest_docs, f, default_flow_style=False)
-    
-    # Print results
-    print(f"CHART_URL={chart_url}")
-    print(f"RELEASE_NAME={release_name}")
-    print(f"NAMESPACE={target_namespace}")
-    print(f"RENDERED_MANIFEST={temp_file}")
-    if all_values_files:
-        print(f"VALUES_FILES={','.join(all_values_files)}")
-    
-except subprocess.CalledProcessError as e:
-    print(f"ERROR=helm template failed: {e.stderr}", file=sys.stderr)
-    sys.exit(1)
-except Exception as e:
-    print(f"ERROR={str(e)}", file=sys.stderr)
-    sys.exit(1)
-PYTHON_SCRIPT
-)
-        
-        if [ $? -eq 0 ]; then
-            # Parse output
-            while IFS='=' read -r key value; do
-                case $key in
-                    CHART_URL)
-                        FLEET_CHART_URL="$value"
-                        verbose_echo "  Chart URL: $FLEET_CHART_URL"
-                        ;;
-                    RELEASE_NAME)
-                        FLEET_RELEASE_NAME="$value"
-                        verbose_echo "  Release Name: $FLEET_RELEASE_NAME"
-                        ;;
-                    NAMESPACE)
-                        if [ -z "${TEST_NAMESPACE:-}" ] || [ "$TEST_NAMESPACE" = "percona" ]; then
-                            export TEST_NAMESPACE="$value"
-                            verbose_echo "  Namespace: $TEST_NAMESPACE (from Fleet)"
-                        fi
-                        ;;
-                    RENDERED_MANIFEST)
-                        export FLEET_RENDERED_MANIFEST="$value"
-                        verbose_echo "  Rendered Manifest: $FLEET_RENDERED_MANIFEST"
-                        ;;
-                    VALUES_FILES)
-                        IFS=',' read -ra VF_ARRAY <<< "$value"
-                        if [ ${#VF_ARRAY[@]} -gt 0 ] && [ -z "${VALUES_FILE:-}" ]; then
-                            export VALUES_FILE="${VF_ARRAY[0]}"
-                            verbose_echo "  Primary Values File: $VALUES_FILE"
-                        fi
-                        ;;
-                esac
-            done <<< "$FLEET_RENDER"
-            
-            # Auto-detect schema from first values file if present
-            if [ -n "${VALUES_FILE:-}" ] && [ -f "$VALUES_FILE" ]; then
-                if grep -q '^pxc-db:' "$VALUES_FILE" 2>/dev/null; then
-                    verbose_echo "  Detected pxc-db wrapper in values"
-                    export VALUES_ROOT_KEY=${VALUES_ROOT_KEY:-pxc-db}
-                    export PXC_PATH=${PXC_PATH:-pxc-db.pxc}
-                    export PROXYSQL_PATH=${PROXYSQL_PATH:-pxc-db.proxysql}
-                    export HAPROXY_PATH=${HAPROXY_PATH:-pxc-db.haproxy}
-                    export BACKUP_PATH=${BACKUP_PATH:-pxc-db.backup}
-                fi
-            fi
-        else
-            verbose_echo -e "${YELLOW}⚠ Could not render Fleet manifest${NC}"
-        fi
-    fi
-else
-    export STORAGE_CLASS_NAME=${STORAGE_CLASS_NAME:-gp3}
-    export TOPOLOGY_KEY=${TOPOLOGY_KEY:-topology.kubernetes.io/zone}
-fi
 
 # Auto-detect node count from cluster if not set
 if [ -z "${TEST_EXPECTED_NODES:-}" ]; then
@@ -453,7 +287,7 @@ verbose_echo "  Operator Namespace: $TEST_OPERATOR_NAMESPACE"
 verbose_echo "  MinIO Namespace: $MINIO_NAMESPACE"
 verbose_echo "  Chaos Namespace: $CHAOS_NAMESPACE"
 verbose_echo "  ChartMuseum Namespace: $CHARTMUSEUM_NAMESPACE"
-verbose_echo "  Mode: $( [ \"$ON_PREM\" = \"true\" ] && echo on-prem || echo eks/aws )"
+verbose_echo "  Mode: eks/aws"
 verbose_echo "  StorageClass Name: $STORAGE_CLASS_NAME"
 verbose_echo "  Anti-affinity Topology Key: $TOPOLOGY_KEY"
 verbose_echo "  Cluster Name: $TEST_CLUSTER_NAME"
@@ -533,7 +367,7 @@ done
 
 # Initialize pytest options
 # Default: minimal output (just test names and PASS/FAIL)
-# Verbose: detailed output with traces
+# Verbose: detailed output with traces and context
 if [ "$VERBOSE" = "true" ]; then
     PYTEST_OPTS=(
         "-v"
@@ -544,7 +378,7 @@ if [ "$VERBOSE" = "true" ]; then
 else
     # Minimal output: show test names with PASS/FAIL status
     PYTEST_OPTS=(
-        "-v"  # Verbose: show test names (but we'll suppress other verbose output)
+        "-v"  # Show individual test names
         "--tb=line"  # Minimal traceback (one line) for failures only
         "--color=yes"
         "-rN"  # No extra summary details for passed tests
@@ -627,7 +461,7 @@ fi
 
 # Add HTML report if requested
 if [ "${GENERATE_HTML_REPORT:-}" == "true" ]; then
-    PYTEST_OPTS+=("--html=tests/report.html" "--self-contained-html")
+    PYTEST_OPTS+=("--html=report.html" "--self-contained-html")
 fi
 
 # Add coverage if requested
@@ -665,7 +499,7 @@ run_category() {
     local FINAL_TEST_PATH="$test_path"
     
     # Check if passthrough contains a test path/nodeid
-    for arg in "${PYTEST_PASSTHROUGH[@]}"; do
+    for arg in "${PYTEST_PASSTHROUGH[@]+"${PYTEST_PASSTHROUGH[@]}"}"; do
         # If it looks like a test path (starts with tests/ or contains ::), use it as the path
         if [[ "$arg" =~ ^tests/ ]] || [[ "$arg" =~ :: ]]; then
             FINAL_TEST_PATH="$arg"
@@ -677,43 +511,15 @@ run_category() {
 
     if [ "$VERBOSE" = "true" ]; then
         echo -e "${BLUE}=== ${category_name} ===${NC}"
-        pytest "${OPTS[@]}" "$FINAL_TEST_PATH"
-        return $?
-    else
-        TEMP_OUTPUT=$(mktemp)
-        pytest "${OPTS[@]}" "$FINAL_TEST_PATH" > "$TEMP_OUTPUT" 2>&1
-        local rc=$?
-        awk '
-        /^tests\/.*::/ {
-            test_name = $1
-            if (match($0, /PASSED|FAILED|ERROR/)) {
-                status_line = $0
-                if (match(status_line, /PASSED/)) status = "PASSED"
-                else if (match(status_line, /FAILED/)) status = "FAILED"
-                else if (match(status_line, /ERROR/)) status = "ERROR"
-                print test_name " " status
-            } else {
-                pending_test = test_name
-            }
-        }
-        /PASSED|FAILED|ERROR/ {
-            if (pending_test != "" && !/^tests\//) {
-                if (match($0, /PASSED/)) status = "PASSED"
-                else if (match($0, /FAILED/)) status = "FAILED"
-                else if (match($0, /ERROR/)) status = "ERROR"
-                print pending_test " " status
-                pending_test = ""
-            }
-        }
-        ' "$TEMP_OUTPUT"
-        rm -f "$TEMP_OUTPUT"
-        return $rc
     fi
+    # Always show pytest output (it's already concise in non-verbose mode)
+    pytest "${OPTS[@]}" "$FINAL_TEST_PATH"
+    return $?
 }
 
 # Check if a specific test path/nodeid was provided
 SPECIFIC_TEST_PATH=""
-for arg in "${PYTEST_PASSTHROUGH[@]}"; do
+for arg in "${PYTEST_PASSTHROUGH[@]+"${PYTEST_PASSTHROUGH[@]}"}"; do
     if [[ "$arg" =~ ^tests/ ]] || [[ "$arg" =~ :: ]]; then
         SPECIFIC_TEST_PATH="$arg"
         break
@@ -732,62 +538,33 @@ if [ -n "$SPECIFIC_TEST_PATH" ]; then
     
     SPECIFIC_OPTS=("${PYTEST_OPTS[@]}")
     # Add passthrough args (excluding the test path which we'll use separately)
-    for arg in "${PYTEST_PASSTHROUGH[@]}"; do
+    for arg in "${PYTEST_PASSTHROUGH[@]+"${PYTEST_PASSTHROUGH[@]}"}"; do
         if [[ "$arg" != "$SPECIFIC_TEST_PATH" ]]; then
             SPECIFIC_OPTS+=("$arg")
         fi
     done
     
-    if [ "$VERBOSE" = "true" ]; then
-        pytest "${SPECIFIC_OPTS[@]}" "$SPECIFIC_TEST_PATH"
-        TEST_RESULT=$?
-    else
-        TEMP_OUTPUT=$(mktemp)
-        pytest "${SPECIFIC_OPTS[@]}" "$SPECIFIC_TEST_PATH" > "$TEMP_OUTPUT" 2>&1
-        TEST_RESULT=$?
-        awk '
-        /^tests\/.*::/ {
-            test_name = $1
-            if (match($0, /PASSED|FAILED|ERROR/)) {
-                status_line = $0
-                if (match(status_line, /PASSED/)) status = "PASSED"
-                else if (match(status_line, /FAILED/)) status = "FAILED"
-                else if (match(status_line, /ERROR/)) status = "ERROR"
-                print test_name " " status
-            } else {
-                pending_test = test_name
-            }
-        }
-        /PASSED|FAILED|ERROR/ {
-            if (pending_test != "" && !/^tests\//) {
-                if (match($0, /PASSED/)) status = "PASSED"
-                else if (match($0, /FAILED/)) status = "FAILED"
-                else if (match($0, /ERROR/)) status = "ERROR"
-                print pending_test " " status
-                pending_test = ""
-            }
-        }
-        ' "$TEMP_OUTPUT"
-        rm -f "$TEMP_OUTPUT"
-    fi
+    # Always show pytest output (it's already concise in non-verbose mode)
+    pytest "${SPECIFIC_OPTS[@]}" "$SPECIFIC_TEST_PATH"
+    TEST_RESULT=$?
 else
     # Run by category as before
     if [ "$NO_UNIT" == "false" ]; then
-        run_category "Unit tests" "unit" false "tests/unit"
+        run_category "Unit tests" "unit" false "unit"
         [ $? -ne 0 ] && TEST_RESULT=1
     fi
 
     if [ "$NO_INTEGRATION" == "false" ]; then
-        run_category "Integration tests" "integration" false "tests/integration"
+        run_category "Integration tests" "integration" false "integration"
         [ $? -ne 0 ] && TEST_RESULT=1
     fi
 
     if [ "$NO_RESILIENCY" == "false" ]; then
         # Run resiliency (non-DR) first, then DR scenarios
-        run_category "Resiliency tests" "resiliency and not dr" true "tests/resiliency"
+        run_category "Resiliency tests" "resiliency and not dr" true "resiliency"
         [ $? -ne 0 ] && TEST_RESULT=1
         if [ "$NO_DR" == "false" ]; then
-            run_category "DR scenario tests" "dr" true "tests/resiliency"
+            run_category "DR scenario tests" "dr" true "resiliency"
             [ $? -ne 0 ] && TEST_RESULT=1
         fi
     fi
@@ -824,7 +601,7 @@ fi
 
 if [ "${GENERATE_HTML_REPORT:-}" == "true" ]; then
     echo ""
-    echo -e "${GREEN}HTML report generated: tests/report.html${NC}"
+    echo -e "${GREEN}HTML report generated: report.html${NC}"
 fi
 
 # Show log file location

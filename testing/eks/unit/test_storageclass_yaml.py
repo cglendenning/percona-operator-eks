@@ -1,12 +1,12 @@
 import yaml
 import os
 import pytest
-from tests.conftest import log_check
+from conftest import log_check
 
 
 @pytest.mark.unit
 def test_storageclass_gp3_template_valid():
-    path = os.path.join(os.getcwd(), 'templates', 'storageclass-gp3.yaml')
+    path = os.path.join(os.getcwd(), '..', '..', 'percona', 'templates', 'storageclass-gp3.yaml')
     with open(path, 'r', encoding='utf-8') as f:
         sc = yaml.safe_load(f)
 

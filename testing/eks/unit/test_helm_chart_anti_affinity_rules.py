@@ -5,8 +5,8 @@ Test that Helm chart includes anti-affinity rules in PerconaXtraDBCluster spec
 import pytest
 import subprocess
 import yaml
-from tests.conftest import TEST_NAMESPACE, TEST_CLUSTER_NAME, TEST_EXPECTED_NODES
-from tests.conftest import log_check
+from conftest import TEST_NAMESPACE, TEST_CLUSTER_NAME, TEST_EXPECTED_NODES
+from conftest import log_check
 
 @pytest.mark.unit
 def test_helm_chart_anti_affinity_rules(chartmuseum_port_forward):

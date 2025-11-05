@@ -5,7 +5,7 @@ import os
 import time
 import pytest
 from rich.console import Console
-from tests.conftest import TEST_NAMESPACE, TEST_CLUSTER_NAME, TEST_EXPECTED_NODES
+from conftest import TEST_NAMESPACE, TEST_CLUSTER_NAME, TEST_EXPECTED_NODES
 from tests.resiliency.helpers import (
     wait_for_cluster_recovery,
     DEFAULT_MTTR_TIMEOUT

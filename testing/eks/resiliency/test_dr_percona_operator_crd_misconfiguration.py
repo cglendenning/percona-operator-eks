@@ -17,7 +17,7 @@ from tests.resiliency.helpers import (
     wait_for_service_recovery,
     wait_for_pod_recovery
 )
-from tests.conftest import TEST_NAMESPACE, TEST_CLUSTER_NAME, CHAOS_NAMESPACE
+from conftest import TEST_NAMESPACE, TEST_CLUSTER_NAME, CHAOS_NAMESPACE
 
 
 @pytest.mark.dr

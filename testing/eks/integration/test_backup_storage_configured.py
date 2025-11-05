@@ -6,7 +6,7 @@ import json
 import subprocess
 import yaml
 from kubernetes import client
-from tests.conftest import TEST_NAMESPACE, TEST_CLUSTER_NAME, TEST_BACKUP_TYPE, TEST_BACKUP_BUCKET
+from conftest import TEST_NAMESPACE, TEST_CLUSTER_NAME, TEST_BACKUP_TYPE, TEST_BACKUP_BUCKET
 from rich.console import Console
 
 console = Console()
