@@ -40,16 +40,25 @@ def test_haproxy_pdb_and_affinity_if_present(is_proxysql):
             log_check("HAProxy PDB maxUnavailable should be >= 0", ">= 0", f"{max_unavailable}", source=path)
             assert int(max_unavailable) >= 0
 
-    # Anti-affinity checks if present
-    affinity = (haproxy.get('affinity') or {}).get('podAntiAffinity', {})
-    required = affinity.get('requiredDuringSchedulingIgnoredDuringExecution', [])
-    if required:
+    # Anti-affinity checks if present (on-prem uses antiAffinityTopologyKey)
+    affinity = haproxy.get('affinity') or {}
+    if 'antiAffinityTopologyKey' in affinity:
+        topology_key = affinity['antiAffinityTopologyKey']
         accepted_keys = ['topology.kubernetes.io/zone', 'failure-domain.beta.kubernetes.io/zone']
         if TOPOLOGY_KEY == 'kubernetes.io/hostname':
             accepted_keys = ['kubernetes.io/hostname', 'topology.kubernetes.io/zone', 'failure-domain.beta.kubernetes.io/zone']
-        topo_found = any((r.get('topologyKey') in accepted_keys) for r in required)
-        log_check("HAProxy anti-affinity uses required topology key", f"in {accepted_keys}", f"found={topo_found}", source=path)
-        assert topo_found
+        log_check("HAProxy antiAffinityTopologyKey uses required topology key", f"in {accepted_keys}", f"{topology_key}", source=path)
+        assert topology_key in accepted_keys, f"HAProxy antiAffinityTopologyKey must be in {accepted_keys}, got {topology_key}"
+    elif 'podAntiAffinity' in affinity:
+        pod_anti_affinity = affinity['podAntiAffinity']
+        required = pod_anti_affinity.get('requiredDuringSchedulingIgnoredDuringExecution', [])
+        if required:
+            accepted_keys = ['topology.kubernetes.io/zone', 'failure-domain.beta.kubernetes.io/zone']
+            if TOPOLOGY_KEY == 'kubernetes.io/hostname':
+                accepted_keys = ['kubernetes.io/hostname', 'topology.kubernetes.io/zone', 'failure-domain.beta.kubernetes.io/zone']
+            topo_found = any((r.get('topologyKey') in accepted_keys) for r in required)
+            log_check("HAProxy anti-affinity uses required topology key", f"in {accepted_keys}", f"found={topo_found}", source=path)
+            assert topo_found
 
 
 @pytest.mark.unit

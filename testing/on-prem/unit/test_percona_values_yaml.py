@@ -35,15 +35,23 @@ def test_percona_values_pxc_configuration():
     log_check("pxc.persistence.storageClass should match expected", f"{expected_sc}", f"{pxc['persistence']['storageClass']}", source=path); assert pxc['persistence']['storageClass'] == expected_sc
     log_check("pxc.pdb.maxUnavailable should be 1", "1", f"{pxc['podDisruptionBudget']['maxUnavailable']}", source=path); assert pxc['podDisruptionBudget']['maxUnavailable'] == 1
     
-    # Check anti-affinity
-    affinity = pxc['affinity']['podAntiAffinity']
-    required = affinity['requiredDuringSchedulingIgnoredDuringExecution'][0]
-    log_check("PXC anti-affinity topologyKey should be topology.kubernetes.io/zone", "topology.kubernetes.io/zone", f"{required['topologyKey']}", source=path); assert required['topologyKey'] == 'topology.kubernetes.io/zone'
-    label_selector = required['labelSelector']
-    match_expr = label_selector['matchExpressions'][0]
-    log_check("PXC anti-affinity selector key", "app.kubernetes.io/component", f"{match_expr['key']}", source=path); assert match_expr['key'] == 'app.kubernetes.io/component'
-    log_check("PXC anti-affinity selector operator", "In", f"{match_expr['operator']}", source=path); assert match_expr['operator'] == 'In'
-    log_check("PXC anti-affinity selector values", "['pxc']", f"{match_expr['values']}", source=path); assert match_expr['values'] == ['pxc']
+    # Check anti-affinity (on-prem uses antiAffinityTopologyKey)
+    affinity = pxc['affinity']
+    if 'antiAffinityTopologyKey' in affinity:
+        topology_key = affinity['antiAffinityTopologyKey']
+        log_check("PXC anti-affinity topologyKey should be kubernetes.io/hostname", "kubernetes.io/hostname", f"{topology_key}", source=path)
+        assert topology_key == 'kubernetes.io/hostname', f"Expected kubernetes.io/hostname, got {topology_key}"
+    elif 'podAntiAffinity' in affinity:
+        pod_anti_affinity = affinity['podAntiAffinity']
+        required = pod_anti_affinity['requiredDuringSchedulingIgnoredDuringExecution'][0]
+        log_check("PXC anti-affinity topologyKey should be topology.kubernetes.io/zone", "topology.kubernetes.io/zone", f"{required['topologyKey']}", source=path); assert required['topologyKey'] == 'topology.kubernetes.io/zone'
+        label_selector = required['labelSelector']
+        match_expr = label_selector['matchExpressions'][0]
+        log_check("PXC anti-affinity selector key", "app.kubernetes.io/component", f"{match_expr['key']}", source=path); assert match_expr['key'] == 'app.kubernetes.io/component'
+        log_check("PXC anti-affinity selector operator", "In", f"{match_expr['operator']}", source=path); assert match_expr['operator'] == 'In'
+        log_check("PXC anti-affinity selector values", "['pxc']", f"{match_expr['values']}", source=path); assert match_expr['values'] == ['pxc']
+    else:
+        assert False, "PXC must have anti-affinity configured (antiAffinityTopologyKey or podAntiAffinity)"
 
 
 @pytest.mark.unit
@@ -63,15 +71,23 @@ def test_percona_values_proxysql_configuration(request):
     log_check("proxysql.limits.cpu", "500m", f"{proxysql['resources']['limits']['cpu']}", source=path); assert proxysql['resources']['limits']['cpu'] == '500m'
     log_check("proxysql.pdb.maxUnavailable", "1", f"{proxysql['podDisruptionBudget']['maxUnavailable']}", source=path); assert proxysql['podDisruptionBudget']['maxUnavailable'] == 1
     
-    # Check anti-affinity
-    affinity = proxysql['affinity']['podAntiAffinity']
-    required = affinity['requiredDuringSchedulingIgnoredDuringExecution'][0]
-    log_check("ProxySQL anti-affinity topologyKey", "topology.kubernetes.io/zone", f"{required['topologyKey']}", source=path); assert required['topologyKey'] == 'topology.kubernetes.io/zone'
-    label_selector = required['labelSelector']
-    match_expr = label_selector['matchExpressions'][0]
-    log_check("ProxySQL anti-affinity selector key", "app.kubernetes.io/component", f"{match_expr['key']}", source=path); assert match_expr['key'] == 'app.kubernetes.io/component'
-    log_check("ProxySQL anti-affinity selector operator", "In", f"{match_expr['operator']}", source=path); assert match_expr['operator'] == 'In'
-    log_check("ProxySQL anti-affinity selector values", "['proxysql']", f"{match_expr['values']}", source=path); assert match_expr['values'] == ['proxysql']
+    # Check anti-affinity (on-prem uses antiAffinityTopologyKey)
+    affinity = proxysql['affinity']
+    if 'antiAffinityTopologyKey' in affinity:
+        topology_key = affinity['antiAffinityTopologyKey']
+        log_check("ProxySQL anti-affinity topologyKey should be kubernetes.io/hostname", "kubernetes.io/hostname", f"{topology_key}", source=path)
+        assert topology_key == 'kubernetes.io/hostname', f"Expected kubernetes.io/hostname, got {topology_key}"
+    elif 'podAntiAffinity' in affinity:
+        pod_anti_affinity = affinity['podAntiAffinity']
+        required = pod_anti_affinity['requiredDuringSchedulingIgnoredDuringExecution'][0]
+        log_check("ProxySQL anti-affinity topologyKey", "topology.kubernetes.io/zone", f"{required['topologyKey']}", source=path); assert required['topologyKey'] == 'topology.kubernetes.io/zone'
+        label_selector = required['labelSelector']
+        match_expr = label_selector['matchExpressions'][0]
+        log_check("ProxySQL anti-affinity selector key", "app.kubernetes.io/component", f"{match_expr['key']}", source=path); assert match_expr['key'] == 'app.kubernetes.io/component'
+        log_check("ProxySQL anti-affinity selector operator", "In", f"{match_expr['operator']}", source=path); assert match_expr['operator'] == 'In'
+        log_check("ProxySQL anti-affinity selector values", "['proxysql']", f"{match_expr['values']}", source=path); assert match_expr['values'] == ['proxysql']
+    else:
+        assert False, "ProxySQL must have anti-affinity configured (antiAffinityTopologyKey or podAntiAffinity)"
     
     # Check volume spec
     volume_spec = proxysql['volumeSpec']['persistentVolumeClaim']

@@ -71,36 +71,61 @@ def test_multi_az_anti_affinity():
     """Test that anti-affinity rules ensure multi-AZ deployment."""
     values, path = get_values_for_test()
     
-    # PXC should have topology-based anti-affinity
-    pxc_rules = values['pxc']['affinity']['podAntiAffinity']['requiredDuringSchedulingIgnoredDuringExecution']
+    # On-prem uses antiAffinityTopologyKey (Percona operator field)
+    pxc_affinity = values['pxc']['affinity']
     
-    # Check for zone or hostname topology key (on-prem may use hostname)
-    pxc_has_topology = any(
-        rule.get('topologyKey') in ['topology.kubernetes.io/zone', 'failure-domain.beta.kubernetes.io/zone', 'kubernetes.io/hostname']
-        for rule in pxc_rules
-    )
-    
-    assert pxc_has_topology, "PXC must have topology-based anti-affinity for HA"
+    # Check for antiAffinityTopologyKey (on-prem uses simplified configuration)
+    if 'antiAffinityTopologyKey' in pxc_affinity:
+        topology_key = pxc_affinity['antiAffinityTopologyKey']
+        log_check(
+            "PXC antiAffinityTopologyKey must be set",
+            "kubernetes.io/hostname or zone key",
+            f"{topology_key}",
+            source=path
+        )
+        assert topology_key in ['kubernetes.io/hostname', 'topology.kubernetes.io/zone', 'failure-domain.beta.kubernetes.io/zone'], \
+            f"PXC antiAffinityTopologyKey must be set to a valid topology key, got: {topology_key}"
+    elif 'podAntiAffinity' in pxc_affinity:
+        # Fallback to podAntiAffinity for EKS-style configuration
+        pxc_rules = pxc_affinity['podAntiAffinity']['requiredDuringSchedulingIgnoredDuringExecution']
+        pxc_has_topology = any(
+            rule.get('topologyKey') in ['topology.kubernetes.io/zone', 'failure-domain.beta.kubernetes.io/zone', 'kubernetes.io/hostname']
+            for rule in pxc_rules
+        )
+        assert pxc_has_topology, "PXC must have topology-based anti-affinity for HA"
+    else:
+        assert False, "PXC must have anti-affinity configured (antiAffinityTopologyKey or podAntiAffinity)"
     
     # On-prem uses HAProxy by default, check proxy anti-affinity accordingly
     if values.get('proxysql', {}).get('enabled'):
-        proxysql_rules = values['proxysql']['affinity']['podAntiAffinity']['requiredDuringSchedulingIgnoredDuringExecution']
-        proxysql_has_topology = any(
-            rule.get('topologyKey') in ['topology.kubernetes.io/zone', 'failure-domain.beta.kubernetes.io/zone', 'kubernetes.io/hostname']
-            for rule in proxysql_rules
-        )
-        assert proxysql_has_topology, "ProxySQL must have topology-based anti-affinity for HA"
+        proxysql_affinity = values['proxysql'].get('affinity', {})
+        if 'antiAffinityTopologyKey' in proxysql_affinity:
+            topology_key = proxysql_affinity['antiAffinityTopologyKey']
+            assert topology_key in ['kubernetes.io/hostname', 'topology.kubernetes.io/zone', 'failure-domain.beta.kubernetes.io/zone'], \
+                f"ProxySQL antiAffinityTopologyKey must be set to a valid topology key, got: {topology_key}"
+        elif 'podAntiAffinity' in proxysql_affinity:
+            proxysql_rules = proxysql_affinity['podAntiAffinity']['requiredDuringSchedulingIgnoredDuringExecution']
+            proxysql_has_topology = any(
+                rule.get('topologyKey') in ['topology.kubernetes.io/zone', 'failure-domain.beta.kubernetes.io/zone', 'kubernetes.io/hostname']
+                for rule in proxysql_rules
+            )
+            assert proxysql_has_topology, "ProxySQL must have topology-based anti-affinity for HA"
     elif values.get('haproxy', {}).get('enabled'):
         # HAProxy anti-affinity is optional but recommended
         haproxy_affinity = values['haproxy'].get('affinity', {})
         if haproxy_affinity:
-            haproxy_rules = haproxy_affinity.get('podAntiAffinity', {}).get('requiredDuringSchedulingIgnoredDuringExecution', [])
-            if haproxy_rules:
-                haproxy_has_topology = any(
-                    rule.get('topologyKey') in ['topology.kubernetes.io/zone', 'failure-domain.beta.kubernetes.io/zone', 'kubernetes.io/hostname']
-                    for rule in haproxy_rules
-                )
-                assert haproxy_has_topology, "HAProxy must have topology-based anti-affinity for HA"
+            if 'antiAffinityTopologyKey' in haproxy_affinity:
+                topology_key = haproxy_affinity['antiAffinityTopologyKey']
+                assert topology_key in ['kubernetes.io/hostname', 'topology.kubernetes.io/zone', 'failure-domain.beta.kubernetes.io/zone'], \
+                    f"HAProxy antiAffinityTopologyKey must be set to a valid topology key, got: {topology_key}"
+            elif 'podAntiAffinity' in haproxy_affinity:
+                haproxy_rules = haproxy_affinity['podAntiAffinity'].get('requiredDuringSchedulingIgnoredDuringExecution', [])
+                if haproxy_rules:
+                    haproxy_has_topology = any(
+                        rule.get('topologyKey') in ['topology.kubernetes.io/zone', 'failure-domain.beta.kubernetes.io/zone', 'kubernetes.io/hostname']
+                        for rule in haproxy_rules
+                    )
+                    assert haproxy_has_topology, "HAProxy must have topology-based anti-affinity for HA"
 
 
 @pytest.mark.unit
