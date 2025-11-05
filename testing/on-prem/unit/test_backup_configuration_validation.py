@@ -148,12 +148,11 @@ def test_daily_backup_schedule():
     values, path = get_values_for_test()
     
     schedules = values['backup'].get('schedule', [])
-    if not schedules:
-        pytest.skip("No backup schedules configured")
+    assert len(schedules) > 0, "Backup schedules are required for on-prem DR strategy"
     
     daily = next((s for s in schedules if s['name'] == 'daily-backup'), None)
     if not daily:
-        pytest.skip("Daily backup schedule not configured")
+        pytest.skip("Daily backup schedule not configured (has schedules but no 'daily-backup')")
     
     # Validate cron schedule format
     cron = parse_cron_schedule(daily['schedule'])
@@ -174,12 +173,11 @@ def test_weekly_backup_schedule():
     values, path = get_values_for_test()
     
     schedules = values['backup'].get('schedule', [])
-    if not schedules:
-        pytest.skip("No backup schedules configured")
+    assert len(schedules) > 0, "Backup schedules are required for on-prem DR strategy"
     
     weekly = next((s for s in schedules if s['name'] == 'weekly-backup'), None)
     if not weekly:
-        pytest.skip("Weekly backup schedule not configured")
+        pytest.skip("Weekly backup schedule not configured (has schedules but no 'weekly-backup')")
     
     # Validate cron schedule format
     cron = parse_cron_schedule(weekly['schedule'])
@@ -200,12 +198,11 @@ def test_monthly_backup_schedule():
     values, path = get_values_for_test()
     
     schedules = values['backup'].get('schedule', [])
-    if not schedules:
-        pytest.skip("No backup schedules configured")
+    assert len(schedules) > 0, "Backup schedules are required for on-prem DR strategy"
     
     monthly = next((s for s in schedules if s['name'] == 'monthly-backup'), None)
     if not monthly:
-        pytest.skip("Monthly backup schedule not configured")
+        pytest.skip("Monthly backup schedule not configured (has schedules but no 'monthly-backup')")
     
     # Validate cron schedule format
     cron = parse_cron_schedule(monthly['schedule'])
@@ -226,8 +223,7 @@ def test_backup_retention_policy():
     values, path = get_values_for_test()
     
     schedules = values['backup'].get('schedule', [])
-    if not schedules:
-        pytest.skip("No backup schedules configured")
+    assert len(schedules) > 0, "Backup schedules are required for on-prem DR strategy"
     
     for schedule in schedules:
         retention = schedule['retention']
@@ -254,8 +250,7 @@ def test_backup_schedule_timezones():
     values, path = get_values_for_test()
     
     schedules = values['backup'].get('schedule', [])
-    if not schedules:
-        pytest.skip("No backup schedules configured")
+    assert len(schedules) > 0, "Backup schedules are required for on-prem DR strategy"
     
     for schedule in schedules:
         cron = parse_cron_schedule(schedule['schedule'])
