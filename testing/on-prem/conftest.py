@@ -60,15 +60,15 @@ TEST_BACKUP_BUCKET = os.getenv('TEST_BACKUP_BUCKET', '')
 TEST_OPERATOR_NAMESPACE = os.getenv('TEST_OPERATOR_NAMESPACE', TEST_NAMESPACE)
 MINIO_NAMESPACE = os.getenv('MINIO_NAMESPACE', 'minio')
 CHAOS_NAMESPACE = os.getenv('CHAOS_NAMESPACE', 'litmus')
-ON_PREM = os.getenv('ON_PREM', 'false').lower() == 'true'
-STORAGE_CLASS_NAME = os.getenv('STORAGE_CLASS_NAME', 'gp3' if not ON_PREM else 'standard')
-TOPOLOGY_KEY = os.getenv('TOPOLOGY_KEY', 'topology.kubernetes.io/zone' if not ON_PREM else 'kubernetes.io/hostname')
+ON_PREM = True  # On-prem test suite always uses on-prem mode
+STORAGE_CLASS_NAME = os.getenv('STORAGE_CLASS_NAME', 'standard')  # On-prem default
+TOPOLOGY_KEY = os.getenv('TOPOLOGY_KEY', 'kubernetes.io/hostname')  # On-prem default
 
 # Schema mapping environment overrides
-# Note: On-prem always uses Fleet rendered manifest (FLEET_RENDERED_MANIFEST)
-# VALUES_FILE is kept for compatibility but not used in on-prem deployments
+# On-prem always uses Fleet rendered manifest (FLEET_RENDERED_MANIFEST)
 PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))
-VALUES_FILE = os.getenv('VALUES_FILE', os.path.join(PROJECT_ROOT, 'percona', 'templates', 'percona-values.yaml'))
+# VALUES_FILE not used in on-prem, kept for conftest compatibility
+VALUES_FILE = ""
 VALUES_ROOT_KEY = os.getenv('VALUES_ROOT_KEY', '')  # e.g., 'pxc-db'
 PXC_PATH = os.getenv('PXC_PATH', '')                # e.g., 'pxc-db.pxc'
 PROXYSQL_PATH = os.getenv('PROXYSQL_PATH', '')      # e.g., 'pxc-db.proxysql'
@@ -124,27 +124,11 @@ def _load_values_yaml() -> dict:
             console.print(f"[yellow]⚠ Warning: Failed to load Fleet manifest: {e}[/yellow]")
             return {}
     
-    # On-prem should always have Fleet manifest - if not, fail clearly
-    if ON_PREM:
-        console.print("[red]✗ Error: On-prem tests require Fleet rendered manifest[/red]")
-        console.print(f"[yellow]FLEET_RENDERED_MANIFEST not set or file not found[/yellow]")
-        console.print(f"[yellow]Current value: {FLEET_RENDERED_MANIFEST or 'not set'}[/yellow]")
-        return {}
-    
-    # Fallback for non-on-prem (should not be used in this test suite)
-    if not os.path.exists(VALUES_FILE):
-        console.print(f"[red]✗ Error: Values file not found: {VALUES_FILE}[/red]")
-        return {}
-    
-    with open(VALUES_FILE, 'r', encoding='utf-8') as f:
-        content = f.read()
-    # Replace common placeholders
-    content = content.replace('{{NODES}}', '3')
-    try:
-        import yaml
-        return yaml.safe_load(content) or {}
-    except Exception:
-        return {}
+    # On-prem requires Fleet manifest
+    console.print("[red]✗ Error: On-prem tests require Fleet rendered manifest[/red]")
+    console.print(f"[yellow]FLEET_RENDERED_MANIFEST not set or file not found[/yellow]")
+    console.print(f"[yellow]Current value: {FLEET_RENDERED_MANIFEST or 'not set'}[/yellow]")
+    return {}
 
 
 def get_normalized_values():

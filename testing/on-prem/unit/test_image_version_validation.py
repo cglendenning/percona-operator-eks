@@ -6,17 +6,13 @@ import os
 import yaml
 import pytest
 import re
-from conftest import log_check
+from conftest import log_check, get_values_for_test
 
 
 @pytest.mark.unit
 def test_proxysql_image_version():
     """Test that ProxySQL image version is specified and valid."""
-    path = os.path.join(os.path.dirname(__file__), '..', '..', '..', 'percona', 'templates', 'percona-values.yaml')
-    with open(path, 'r', encoding='utf-8') as f:
-        content = f.read()
-        content = content.replace('{{NODES}}', '3')
-        values = yaml.safe_load(content)
+    values, path = get_values_for_test()
     
     proxysql = values['proxysql']
     log_check(
@@ -50,11 +46,7 @@ def test_proxysql_image_version():
 @pytest.mark.unit
 def test_proxysql_image_version_pinned():
     """Test that ProxySQL image version is pinned (not 'latest')."""
-    path = os.path.join(os.path.dirname(__file__), '..', '..', '..', 'percona', 'templates', 'percona-values.yaml')
-    with open(path, 'r', encoding='utf-8') as f:
-        content = f.read()
-        content = content.replace('{{NODES}}', '3')
-        values = yaml.safe_load(content)
+    values, path = get_values_for_test()
     
     image = values['proxysql']['image']
     image_tag = image.split(':')[1]
@@ -72,11 +64,7 @@ def test_proxysql_image_version_pinned():
 @pytest.mark.unit
 def test_proxysql_image_compatibility():
     """Test that ProxySQL image version is compatible with Percona Operator v1.18."""
-    path = os.path.join(os.path.dirname(__file__), '..', '..', '..', 'percona', 'templates', 'percona-values.yaml')
-    with open(path, 'r', encoding='utf-8') as f:
-        content = f.read()
-        content = content.replace('{{NODES}}', '3')
-        values = yaml.safe_load(content)
+    values, path = get_values_for_test()
     
     image = values['proxysql']['image']
     image_tag = image.split(':')[1]
@@ -96,11 +84,7 @@ def test_proxysql_image_compatibility():
 @pytest.mark.unit
 def test_pxc_image_version_uses_operator_default():
     """Test that PXC image version uses operator defaults (best practice)."""
-    path = os.path.join(os.path.dirname(__file__), '..', '..', '..', 'percona', 'templates', 'percona-values.yaml')
-    with open(path, 'r', encoding='utf-8') as f:
-        content = f.read()
-        content = content.replace('{{NODES}}', '3')
-        values = yaml.safe_load(content)
+    values, path = get_values_for_test()
     
     pxc = values['pxc']
     
@@ -122,11 +106,7 @@ def test_pxc_image_version_uses_operator_default():
 @pytest.mark.unit
 def test_image_registry_configured():
     """Test that images use appropriate registry (percona registry preferred)."""
-    path = os.path.join(os.path.dirname(__file__), '..', '..', '..', 'percona', 'templates', 'percona-values.yaml')
-    with open(path, 'r', encoding='utf-8') as f:
-        content = f.read()
-        content = content.replace('{{NODES}}', '3')
-        values = yaml.safe_load(content)
+    values, path = get_values_for_test()
     
     # ProxySQL should use percona registry or official registry
     proxysql_image = values['proxysql']['image']
@@ -143,15 +123,7 @@ def test_image_registry_configured():
 @pytest.mark.unit
 def test_image_pull_policy_not_always():
     """Test that image pull policy is not 'Always' (security best practice)."""
-    # Note: This test documents best practice
-    # Percona Operator typically uses IfNotPresent or the operator's default
-    # 'Always' is not recommended for production as it can cause unnecessary pulls
-    
-    path = os.path.join(os.path.dirname(__file__), '..', '..', '..', 'percona', 'templates', 'percona-values.yaml')
-    with open(path, 'r', encoding='utf-8') as f:
-        content = f.read()
-        content = content.replace('{{NODES}}', '3')
-        values = yaml.safe_load(content)
+    values, path = get_values_for_test()
     
     # Check if imagePullPolicy is specified anywhere
     # If specified, it should not be 'Always' for production workloads
@@ -169,4 +141,3 @@ def test_image_pull_policy_not_always():
         log_check("PXC imagePullPolicy should not be 'Always'", "!= Always", f"{pull_policy}", source=path)
         assert pull_policy != 'Always', \
             "imagePullPolicy should not be 'Always' - use 'IfNotPresent' or operator default"
-

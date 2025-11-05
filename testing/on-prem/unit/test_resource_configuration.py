@@ -6,7 +6,7 @@ import os
 import yaml
 import pytest
 import re
-from conftest import log_check
+from conftest import log_check, get_values_for_test
 
 
 def parse_resource_value(value_str):
@@ -51,11 +51,7 @@ def parse_resource_value(value_str):
 @pytest.mark.unit
 def test_pxc_resource_requests():
     """Test PXC resource requests meet minimum requirements."""
-    path = os.path.join(os.path.dirname(__file__), '..', '..', '..', 'percona', 'templates', 'percona-values.yaml')
-    with open(path, 'r', encoding='utf-8') as f:
-        content = f.read()
-        content = content.replace('{{NODES}}', '3')
-        values = yaml.safe_load(content)
+    values, path = get_values_for_test()
     
     pxc_resources = values['pxc']['resources']
     
@@ -72,11 +68,7 @@ def test_pxc_resource_requests():
 @pytest.mark.unit
 def test_pxc_resource_limits():
     """Test PXC resource limits are set appropriately."""
-    path = os.path.join(os.path.dirname(__file__), '..', '..', '..', 'percona', 'templates', 'percona-values.yaml')
-    with open(path, 'r', encoding='utf-8') as f:
-        content = f.read()
-        content = content.replace('{{NODES}}', '3')
-        values = yaml.safe_load(content)
+    values, path = get_values_for_test()
     
     pxc_resources = values['pxc']['resources']
     
@@ -105,11 +97,7 @@ def test_pxc_resource_limits():
 @pytest.mark.unit
 def test_proxysql_resource_requests():
     """Test ProxySQL resource requests meet minimum requirements."""
-    path = os.path.join(os.path.dirname(__file__), '..', '..', '..', 'percona', 'templates', 'percona-values.yaml')
-    with open(path, 'r', encoding='utf-8') as f:
-        content = f.read()
-        content = content.replace('{{NODES}}', '3')
-        values = yaml.safe_load(content)
+    values, path = get_values_for_test()
     
     proxysql_resources = values['proxysql']['resources']
     
@@ -126,11 +114,7 @@ def test_proxysql_resource_requests():
 @pytest.mark.unit
 def test_proxysql_resource_limits():
     """Test ProxySQL resource limits are set appropriately."""
-    path = os.path.join(os.path.dirname(__file__), '..', '..', '..', 'percona', 'templates', 'percona-values.yaml')
-    with open(path, 'r', encoding='utf-8') as f:
-        content = f.read()
-        content = content.replace('{{NODES}}', '3')
-        values = yaml.safe_load(content)
+    values, path = get_values_for_test()
     
     proxysql_resources = values['proxysql']['resources']
     
@@ -147,11 +131,7 @@ def test_proxysql_resource_limits():
 @pytest.mark.unit
 def test_pxc_storage_size():
     """Test PXC storage size meets minimum requirements."""
-    path = os.path.join(os.path.dirname(__file__), '..', '..', '..', 'percona', 'templates', 'percona-values.yaml')
-    with open(path, 'r', encoding='utf-8') as f:
-        content = f.read()
-        content = content.replace('{{NODES}}', '3')
-        values = yaml.safe_load(content)
+    values, path = get_values_for_test()
     
     storage_size = values['pxc']['persistence']['size']
     size_bytes = parse_resource_value(storage_size)
@@ -164,11 +144,7 @@ def test_pxc_storage_size():
 @pytest.mark.unit
 def test_proxysql_storage_size():
     """Test ProxySQL storage size meets minimum requirements."""
-    path = os.path.join(os.path.dirname(__file__), '..', '..', '..', 'percona', 'templates', 'percona-values.yaml')
-    with open(path, 'r', encoding='utf-8') as f:
-        content = f.read()
-        content = content.replace('{{NODES}}', '3')
-        values = yaml.safe_load(content)
+    values, path = get_values_for_test()
     
     storage_size = values['proxysql']['volumeSpec']['persistentVolumeClaim']['resources']['requests']['storage']
     size_bytes = parse_resource_value(storage_size)
@@ -181,11 +157,7 @@ def test_proxysql_storage_size():
 @pytest.mark.unit
 def test_resources_use_read_write_once():
     """Test that all persistent volumes use ReadWriteOnce access mode."""
-    path = os.path.join(os.path.dirname(__file__), '..', '..', '..', 'percona', 'templates', 'percona-values.yaml')
-    with open(path, 'r', encoding='utf-8') as f:
-        content = f.read()
-        content = content.replace('{{NODES}}', '3')
-        values = yaml.safe_load(content)
+    values, path = get_values_for_test()
     
     # PXC access mode
     pxc_access_mode = values['pxc']['persistence']['accessMode']
@@ -194,4 +166,3 @@ def test_resources_use_read_write_once():
     # ProxySQL access modes
     proxysql_access_modes = values['proxysql']['volumeSpec']['persistentVolumeClaim']['accessModes']
     log_check("ProxySQL accessModes should include ReadWriteOnce", "contains", f"{proxysql_access_modes}", source=path); assert 'ReadWriteOnce' in proxysql_access_modes, "ProxySQL should use ReadWriteOnce"
-

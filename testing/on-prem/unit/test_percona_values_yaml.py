@@ -1,22 +1,17 @@
 """
-Unit tests for Percona Helm values template.
-These tests validate the configuration before it's applied to ensure integration tests will pass.
+Unit tests for Percona configuration from Fleet.
+These tests validate the Fleet-rendered configuration before it's applied to ensure integration tests will pass.
 """
 import yaml
 import os
 import pytest
-from conftest import log_check, ON_PREM, STORAGE_CLASS_NAME
+from conftest import log_check, STORAGE_CLASS_NAME, get_values_for_test
 
 
 @pytest.mark.unit
 def test_percona_values_template_valid_yaml():
     """Test that percona-values.yaml is valid YAML."""
-    path = os.path.join(os.getcwd(), '..', '..', 'percona', 'templates', 'percona-values.yaml')
-    with open(path, 'r', encoding='utf-8') as f:
-        content = f.read()
-        # Replace placeholder with test value to make valid YAML
-        content = content.replace('{{NODES}}', '3')
-        values = yaml.safe_load(content)
+    values, path = get_values_for_test()
     log_check("percona-values.yaml should parse to valid YAML", "not None", f"is None={values is None}", source=path)
     assert values is not None
 
@@ -24,12 +19,7 @@ def test_percona_values_template_valid_yaml():
 @pytest.mark.unit
 def test_percona_values_pxc_configuration():
     """Test PXC configuration matches expected values."""
-    path = os.path.join(os.getcwd(), '..', '..', 'percona', 'templates', 'percona-values.yaml')
-    with open(path, 'r', encoding='utf-8') as f:
-        content = f.read()
-        # Replace placeholder with test value
-        content = content.replace('{{NODES}}', '3')
-        values = yaml.safe_load(content)
+    values, path = get_values_for_test()
     
     pxc = values['pxc']
     log_check("pxc.size must be 3 after substitution", "3", f"{pxc['size']}", source=path); assert pxc['size'] == 3
@@ -40,10 +30,9 @@ def test_percona_values_pxc_configuration():
     log_check("pxc.persistence.enabled should be true", "True", f"{pxc['persistence']['enabled']}", source=path); assert pxc['persistence']['enabled'] is True
     log_check("pxc.persistence.size should be 20Gi", "20Gi", f"{pxc['persistence']['size']}", source=path); assert pxc['persistence']['size'] == '20Gi'
     log_check("pxc.persistence.accessMode should be ReadWriteOnce", "ReadWriteOnce", f"{pxc['persistence']['accessMode']}", source=path); assert pxc['persistence']['accessMode'] == 'ReadWriteOnce'
-    # In on-prem mode, storage class would be overridden by Fleet/values files, so skip this check
-    if not ON_PREM:
-        expected_sc = 'gp3'
-        log_check("pxc.persistence.storageClass should match expected", f"{expected_sc}", f"{pxc['persistence']['storageClass']}", source=path); assert pxc['persistence']['storageClass'] == expected_sc
+    # Storage class comes from Fleet configuration
+    expected_sc = STORAGE_CLASS_NAME
+    log_check("pxc.persistence.storageClass should match expected", f"{expected_sc}", f"{pxc['persistence']['storageClass']}", source=path); assert pxc['persistence']['storageClass'] == expected_sc
     log_check("pxc.pdb.maxUnavailable should be 1", "1", f"{pxc['podDisruptionBudget']['maxUnavailable']}", source=path); assert pxc['podDisruptionBudget']['maxUnavailable'] == 1
     
     # Check anti-affinity
@@ -62,11 +51,7 @@ def test_percona_values_proxysql_configuration(request):
     if not request.config.getoption('--proxysql'):
         pytest.skip("ProxySQL tests run only with --proxysql")
     """Test ProxySQL configuration matches expected values."""
-    path = os.path.join(os.getcwd(), '..', '..', 'percona', 'templates', 'percona-values.yaml')
-    with open(path, 'r', encoding='utf-8') as f:
-        content = f.read()
-        content = content.replace('{{NODES}}', '3')
-        values = yaml.safe_load(content)
+    values, path = get_values_for_test()
     
     proxysql = values['proxysql']
     log_check("proxysql.enabled should be true", "True", f"{proxysql['enabled']}", source=path); assert proxysql['enabled'] is True
@@ -92,7 +77,7 @@ def test_percona_values_proxysql_configuration(request):
     volume_spec = proxysql['volumeSpec']['persistentVolumeClaim']
     log_check("ProxySQL PVC accessModes", "['ReadWriteOnce']", f"{volume_spec['accessModes']}", source=path); assert volume_spec['accessModes'] == ['ReadWriteOnce']
     log_check("ProxySQL PVC requests.storage", "5Gi", f"{volume_spec['resources']['requests']['storage']}", source=path); assert volume_spec['resources']['requests']['storage'] == '5Gi'
-    expected_sc = STORAGE_CLASS_NAME if ON_PREM else 'gp3'
+    expected_sc = STORAGE_CLASS_NAME
     log_check("ProxySQL PVC storageClassName", f"{expected_sc}", f"{volume_spec['storageClassName']}", source=path); assert volume_spec['storageClassName'] == expected_sc
 
 
@@ -101,22 +86,14 @@ def test_percona_values_haproxy_disabled(request):
     if not request.config.getoption('--proxysql'):
         pytest.skip("This HAProxy-disabled test is only relevant when ProxySQL is enabled")
     """Test that HAProxy is disabled."""
-    path = os.path.join(os.getcwd(), '..', '..', 'percona', 'templates', 'percona-values.yaml')
-    with open(path, 'r', encoding='utf-8') as f:
-        content = f.read()
-        content = content.replace('{{NODES}}', '3')
-        values = yaml.safe_load(content)
+    values, path = get_values_for_test()
     log_check("haproxy.enabled should be false", "False", f"{values['haproxy']['enabled']}", source=path); assert values['haproxy']['enabled'] is False
 
 
 @pytest.mark.unit
 def test_percona_values_backup_configuration():
     """Test backup configuration matches expected values."""
-    path = os.path.join(os.getcwd(), '..', '..', 'percona', 'templates', 'percona-values.yaml')
-    with open(path, 'r', encoding='utf-8') as f:
-        content = f.read()
-        content = content.replace('{{NODES}}', '3')
-        values = yaml.safe_load(content)
+    values, path = get_values_for_test()
     
     backup = values['backup']
     log_check("backup.enabled should be true", "True", f"{backup['enabled']}", source=path); assert backup['enabled'] is True
@@ -164,10 +141,9 @@ def test_percona_values_backup_configuration():
 
 @pytest.mark.unit
 def test_percona_values_template_has_nodes_placeholder():
-    """Test that template contains NODES placeholder for substitution."""
-    path = os.path.join(os.getcwd(), '..', '..', 'percona', 'templates', 'percona-values.yaml')
-    with open(path, 'r', encoding='utf-8') as f:
-        content = f.read()
-    log_check("Template should contain {{NODES}} placeholder", "present=True", f"present={{'{{NODES}}' in content}}", source=path)
-    assert '{{NODES}}' in content
+    """Test that Fleet configuration is valid (placeholder test not applicable for Fleet)."""
+    # This test checks template placeholders which don't exist in Fleet-rendered manifests
+    # Fleet renders the actual values, so we just verify the configuration is valid
+    values, path = get_values_for_test()
+    assert values is not None, "Fleet configuration should be valid"
 

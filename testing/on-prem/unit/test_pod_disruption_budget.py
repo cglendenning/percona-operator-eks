@@ -5,17 +5,13 @@ Validates that PDBs are configured to ensure high availability.
 import os
 import yaml
 import pytest
-from conftest import log_check
+from conftest import log_check, get_values_for_test
 
 
 @pytest.mark.unit
 def test_pxc_pod_disruption_budget_exists():
     """Test that PXC has Pod Disruption Budget configured."""
-    path = os.path.join(os.path.dirname(__file__), '..', '..', '..', 'percona', 'templates', 'percona-values.yaml')
-    with open(path, 'r', encoding='utf-8') as f:
-        content = f.read()
-        content = content.replace('{{NODES}}', '3')
-        values = yaml.safe_load(content)
+    values, path = get_values_for_test()
     
     criterion = "PXC values must include podDisruptionBudget key"
     expected_desc = "key present"
@@ -27,11 +23,7 @@ def test_pxc_pod_disruption_budget_exists():
 @pytest.mark.unit
 def test_pxc_pod_disruption_budget_max_unavailable():
     """Test that PXC PDB has appropriate maxUnavailable setting."""
-    path = os.path.join(os.path.dirname(__file__), '..', '..', '..', 'percona', 'templates', 'percona-values.yaml')
-    with open(path, 'r', encoding='utf-8') as f:
-        content = f.read()
-        content = content.replace('{{NODES}}', '3')
-        values = yaml.safe_load(content)
+    values, path = get_values_for_test()
     
     pdb = values['pxc']['podDisruptionBudget']
     
@@ -54,11 +46,7 @@ def test_pxc_pod_disruption_budget_max_unavailable():
 @pytest.mark.unit
 def test_proxysql_pod_disruption_budget_exists():
     """Test that ProxySQL has Pod Disruption Budget configured."""
-    path = os.path.join(os.path.dirname(__file__), '..', '..', '..', 'percona', 'templates', 'percona-values.yaml')
-    with open(path, 'r', encoding='utf-8') as f:
-        content = f.read()
-        content = content.replace('{{NODES}}', '3')
-        values = yaml.safe_load(content)
+    values, path = get_values_for_test()
     
     criterion = "ProxySQL values must include podDisruptionBudget key"
     expected_desc = "key present"
@@ -70,11 +58,7 @@ def test_proxysql_pod_disruption_budget_exists():
 @pytest.mark.unit
 def test_proxysql_pod_disruption_budget_max_unavailable():
     """Test that ProxySQL PDB has appropriate maxUnavailable setting."""
-    path = os.path.join(os.path.dirname(__file__), '..', '..', '..', 'percona', 'templates', 'percona-values.yaml')
-    with open(path, 'r', encoding='utf-8') as f:
-        content = f.read()
-        content = content.replace('{{NODES}}', '3')
-        values = yaml.safe_load(content)
+    values, path = get_values_for_test()
     
     pdb = values['proxysql']['podDisruptionBudget']
     
@@ -93,11 +77,7 @@ def test_proxysql_pod_disruption_budget_max_unavailable():
 @pytest.mark.unit
 def test_pdb_allows_rolling_updates():
     """Test that PDB settings allow safe rolling updates."""
-    path = os.path.join(os.path.dirname(__file__), '..', '..', '..', 'percona', 'templates', 'percona-values.yaml')
-    with open(path, 'r', encoding='utf-8') as f:
-        content = f.read()
-        content = content.replace('{{NODES}}', '3')
-        values = yaml.safe_load(content)
+    values, path = get_values_for_test()
     
     # For 3-node cluster with maxUnavailable=1
     # This allows rolling updates: update 1 pod at a time while 2 remain available
@@ -125,33 +105,26 @@ def test_pdb_allows_rolling_updates():
 @pytest.mark.unit
 def test_pdb_maintains_quorum():
     """Test that PDB settings maintain quorum for PXC cluster."""
-    path = os.path.join(os.path.dirname(__file__), '..', '..', '..', 'percona', 'templates', 'percona-values.yaml')
+    values, path = get_values_for_test()
     
-    # Test with different node counts
-    for node_count in [3, 5, 7]:
-        with open(path, 'r', encoding='utf-8') as f:
-            content = f.read()
-            content = content.replace('{{NODES}}', str(node_count))
-            values = yaml.safe_load(content)
-        
-        pdb = values['pxc']['podDisruptionBudget']
-        max_unavailable = pdb.get('maxUnavailable', 0)
-        
-        # For quorum: (n/2) + 1 nodes must be available
-        # With maxUnavailable=1, for 3-node: 2 available (quorum OK)
-        # For 5-node: 4 available (quorum OK)
-        # For 7-node: 6 available (quorum OK)
-        available_during_disruption = node_count - max_unavailable
-        
-        # Quorum = floor(n/2) + 1
-        quorum = (node_count // 2) + 1
-        
-        log_check(
-            criterion=f"For {node_count}-node cluster, available during disruption must be >= quorum {quorum}",
-            expected=f">= {quorum}",
-            actual=f"available_during_disruption = {available_during_disruption} (maxUnavailable={max_unavailable})",
-            source=path,
-        )
-        assert available_during_disruption >= quorum, \
-            f"For {node_count}-node cluster, maxUnavailable={max_unavailable} must maintain quorum of {quorum}"
-
+    node_count = values['pxc']['size']
+    pdb = values['pxc']['podDisruptionBudget']
+    max_unavailable = pdb.get('maxUnavailable', 0)
+    
+    # For quorum: (n/2) + 1 nodes must be available
+    # With maxUnavailable=1, for 3-node: 2 available (quorum OK)
+    # For 5-node: 4 available (quorum OK)
+    # For 7-node: 6 available (quorum OK)
+    available_during_disruption = node_count - max_unavailable
+    
+    # Quorum = floor(n/2) + 1
+    quorum = (node_count // 2) + 1
+    
+    log_check(
+        criterion=f"For {node_count}-node cluster, available during disruption must be >= quorum {quorum}",
+        expected=f">= {quorum}",
+        actual=f"available_during_disruption = {available_during_disruption} (maxUnavailable={max_unavailable})",
+        source=path,
+    )
+    assert available_during_disruption >= quorum, \
+        f"For {node_count}-node cluster, maxUnavailable={max_unavailable} must maintain quorum of {quorum}"
