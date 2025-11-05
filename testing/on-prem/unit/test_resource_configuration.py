@@ -95,46 +95,6 @@ def test_pxc_resource_limits():
 
 
 @pytest.mark.unit
-def test_proxysql_resource_requests(request):
-    """Test ProxySQL resource requests meet minimum requirements."""
-    if not request.config.getoption('--proxysql'):
-        pytest.skip("ProxySQL tests only run with --proxysql flag (on-prem uses HAProxy by default)")
-    
-    values, path = get_values_for_test()
-    
-    proxysql_resources = values['proxysql']['resources']
-    
-    # Minimum CPU request: 100m
-    cpu_request = parse_resource_value(proxysql_resources['requests']['cpu'])
-    log_check("ProxySQL min CPU request", ">= 100m", f"{cpu_request}m", source=path); assert cpu_request >= 100, "ProxySQL minimum CPU request is 100m"
-    
-    # Minimum memory request: 256Mi
-    memory_request = parse_resource_value(proxysql_resources['requests']['memory'])
-    min_memory_bytes = 256 * 1024 * 1024  # 256Mi
-    log_check("ProxySQL min memory request", ">= 256Mi", f"{int(memory_request)} bytes", source=path); assert memory_request >= min_memory_bytes, "ProxySQL minimum memory request is 256Mi"
-
-
-@pytest.mark.unit
-def test_proxysql_resource_limits(request):
-    """Test ProxySQL resource limits are set appropriately."""
-    if not request.config.getoption('--proxysql'):
-        pytest.skip("ProxySQL tests only run with --proxysql flag (on-prem uses HAProxy by default)")
-    
-    values, path = get_values_for_test()
-    
-    proxysql_resources = values['proxysql']['resources']
-    
-    # Limits should be >= requests
-    cpu_limit = parse_resource_value(proxysql_resources['limits']['cpu'])
-    cpu_request = parse_resource_value(proxysql_resources['requests']['cpu'])
-    log_check("ProxySQL CPU limit >= request", ">= request", f"limit={cpu_limit}m, request={cpu_request}m", source=path); assert cpu_limit >= cpu_request, "CPU limit must be >= request"
-    
-    memory_limit = parse_resource_value(proxysql_resources['limits']['memory'])
-    memory_request = parse_resource_value(proxysql_resources['requests']['memory'])
-    log_check("ProxySQL memory limit >= request", ">= request", f"limit={int(memory_limit)}, request={int(memory_request)}", source=path); assert memory_limit >= memory_request, "Memory limit must be >= request"
-
-
-@pytest.mark.unit
 def test_pxc_storage_size():
     """Test PXC storage size meets minimum requirements."""
     values, path = get_values_for_test()
@@ -148,31 +108,11 @@ def test_pxc_storage_size():
 
 
 @pytest.mark.unit
-def test_proxysql_storage_size(request):
-    """Test ProxySQL storage size meets minimum requirements."""
-    if not request.config.getoption('--proxysql'):
-        pytest.skip("ProxySQL tests only run with --proxysql flag (on-prem uses HAProxy by default)")
-    
-    values, path = get_values_for_test()
-    
-    storage_size = values['proxysql']['volumeSpec']['persistentVolumeClaim']['resources']['requests']['storage']
-    size_bytes = parse_resource_value(storage_size)
-    
-    # Minimum 5Gi for ProxySQL
-    min_storage = 5 * 1024 * 1024 * 1024  # 5Gi
-    log_check("ProxySQL minimum storage size", ">= 5Gi", f"{int(size_bytes)} bytes", source=path); assert size_bytes >= min_storage, "ProxySQL minimum storage is 5Gi"
-
-
-@pytest.mark.unit
-def test_resources_use_read_write_once(request):
+def test_resources_use_read_write_once():
     """Test that all persistent volumes use ReadWriteOnce access mode."""
     values, path = get_values_for_test()
     
     # PXC access mode
     pxc_access_mode = values['pxc']['persistence']['accessMode']
-    log_check("PXC accessMode should be ReadWriteOnce", "ReadWriteOnce", f"{pxc_access_mode}", source=path); assert pxc_access_mode == 'ReadWriteOnce', "PXC should use ReadWriteOnce"
-    
-    # ProxySQL access modes (only if ProxySQL is enabled)
-    if values.get('proxysql', {}).get('enabled') and request.config.getoption('--proxysql'):
-        proxysql_access_modes = values['proxysql']['volumeSpec']['persistentVolumeClaim']['accessModes']
-        log_check("ProxySQL accessModes should include ReadWriteOnce", "contains", f"{proxysql_access_modes}", source=path); assert 'ReadWriteOnce' in proxysql_access_modes, "ProxySQL should use ReadWriteOnce"
+    log_check("PXC accessMode should be ReadWriteOnce", "ReadWriteOnce", f"{pxc_access_mode}", source=path)
+    assert pxc_access_mode == 'ReadWriteOnce', "PXC should use ReadWriteOnce"

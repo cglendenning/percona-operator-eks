@@ -36,12 +36,6 @@ def pytest_addoption(parser):
         default=False,
         help='Trigger chaos experiments before running resiliency tests'
     )
-    parser.addoption(
-        '--proxysql',
-        action='store_true',
-        default=False,
-        help='Environment uses ProxySQL (run ProxySQL tests and skip HAProxy tests)'
-    )
 
 # Pytest markers for test categorization
 pytest_plugins = []
@@ -165,14 +159,6 @@ def get_normalized_values():
 @pytest.fixture(scope='session')
 def values_norm():
     return get_normalized_values()
-
-
-@pytest.fixture(scope='session')
-def is_proxysql(request):
-    try:
-        return bool(request.config.getoption('--proxysql'))
-    except Exception:
-        return False
 
 
 def get_values_for_test():

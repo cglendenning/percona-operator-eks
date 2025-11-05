@@ -1,6 +1,5 @@
 """
-Unit tests for HAProxy configuration in Percona values.
-Run by default (HAProxy-first environments). If --proxysql is set, these tests are skipped.
+Unit tests for HAProxy configuration in Percona values (on-prem uses HAProxy).
 """
 import os
 import pytest
@@ -8,10 +7,8 @@ from conftest import log_check, TOPOLOGY_KEY, get_values_for_test
 
 
 @pytest.mark.unit
-def test_haproxy_enabled(is_proxysql, values_norm):
-    if is_proxysql:
-        pytest.skip("Skipping HAProxy tests when --proxysql is set")
-
+def test_haproxy_enabled():
+    """Test that HAProxy is enabled (on-prem default)."""
     values, path = get_values_for_test()
 
     haproxy = values.get('haproxy', {})
@@ -22,10 +19,8 @@ def test_haproxy_enabled(is_proxysql, values_norm):
 
 
 @pytest.mark.unit
-def test_haproxy_pdb_and_affinity_if_present(is_proxysql):
-    if is_proxysql:
-        pytest.skip("Skipping HAProxy tests when --proxysql is set")
-
+def test_haproxy_pdb_and_affinity_if_present():
+    """Test HAProxy PDB and affinity configuration."""
     values, path = get_values_for_test()
 
     haproxy = values.get('haproxy', {})
@@ -62,10 +57,8 @@ def test_haproxy_pdb_and_affinity_if_present(is_proxysql):
 
 
 @pytest.mark.unit
-def test_haproxy_resources_if_present(is_proxysql):
-    if is_proxysql:
-        pytest.skip("Skipping HAProxy tests when --proxysql is set")
-
+def test_haproxy_resources_if_present():
+    """Test HAProxy resource configuration."""
     values, path = get_values_for_test()
 
     haproxy = values.get('haproxy', {})

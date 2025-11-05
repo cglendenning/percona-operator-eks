@@ -55,11 +55,6 @@ export FLEET_TARGET=k8s-dev
 ./run_tests.sh --on-prem tests/unit/test_anti_affinity_rules.py::test_pxc_anti_affinity_required
 ```
 
-### Run ProxySQL tests (instead of HAProxy)
-```bash
-./run_tests.sh --on-prem -- --proxysql
-```
-
 ## On-Premise Configuration
 
 This test suite assumes:

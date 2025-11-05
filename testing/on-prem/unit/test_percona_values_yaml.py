@@ -55,55 +55,11 @@ def test_percona_values_pxc_configuration():
 
 
 @pytest.mark.unit
-def test_percona_values_proxysql_configuration(request):
-    if not request.config.getoption('--proxysql'):
-        pytest.skip("ProxySQL tests run only with --proxysql")
-    """Test ProxySQL configuration matches expected values."""
+def test_percona_values_haproxy_enabled():
+    """Test that HAProxy is enabled (on-prem uses HAProxy, not ProxySQL)."""
     values, path = get_values_for_test()
-    
-    proxysql = values['proxysql']
-    log_check("proxysql.enabled should be true", "True", f"{proxysql['enabled']}", source=path); assert proxysql['enabled'] is True
-    log_check("proxysql.size should be 3", "3", f"{proxysql['size']}", source=path); assert proxysql['size'] == 3
-    log_check("proxysql.image matches expected", "percona/proxysql2:2.7.3", f"{proxysql['image']}", source=path); assert proxysql['image'] == 'percona/proxysql2:2.7.3'
-    log_check("proxysql.requests.memory", "256Mi", f"{proxysql['resources']['requests']['memory']}", source=path); assert proxysql['resources']['requests']['memory'] == '256Mi'
-    log_check("proxysql.requests.cpu", "100m", f"{proxysql['resources']['requests']['cpu']}", source=path); assert proxysql['resources']['requests']['cpu'] == '100m'
-    log_check("proxysql.limits.memory", "512Mi", f"{proxysql['resources']['limits']['memory']}", source=path); assert proxysql['resources']['limits']['memory'] == '512Mi'
-    log_check("proxysql.limits.cpu", "500m", f"{proxysql['resources']['limits']['cpu']}", source=path); assert proxysql['resources']['limits']['cpu'] == '500m'
-    log_check("proxysql.pdb.maxUnavailable", "1", f"{proxysql['podDisruptionBudget']['maxUnavailable']}", source=path); assert proxysql['podDisruptionBudget']['maxUnavailable'] == 1
-    
-    # Check anti-affinity (on-prem uses antiAffinityTopologyKey)
-    affinity = proxysql['affinity']
-    if 'antiAffinityTopologyKey' in affinity:
-        topology_key = affinity['antiAffinityTopologyKey']
-        log_check("ProxySQL anti-affinity topologyKey should be kubernetes.io/hostname", "kubernetes.io/hostname", f"{topology_key}", source=path)
-        assert topology_key == 'kubernetes.io/hostname', f"Expected kubernetes.io/hostname, got {topology_key}"
-    elif 'podAntiAffinity' in affinity:
-        pod_anti_affinity = affinity['podAntiAffinity']
-        required = pod_anti_affinity['requiredDuringSchedulingIgnoredDuringExecution'][0]
-        log_check("ProxySQL anti-affinity topologyKey", "topology.kubernetes.io/zone", f"{required['topologyKey']}", source=path); assert required['topologyKey'] == 'topology.kubernetes.io/zone'
-        label_selector = required['labelSelector']
-        match_expr = label_selector['matchExpressions'][0]
-        log_check("ProxySQL anti-affinity selector key", "app.kubernetes.io/component", f"{match_expr['key']}", source=path); assert match_expr['key'] == 'app.kubernetes.io/component'
-        log_check("ProxySQL anti-affinity selector operator", "In", f"{match_expr['operator']}", source=path); assert match_expr['operator'] == 'In'
-        log_check("ProxySQL anti-affinity selector values", "['proxysql']", f"{match_expr['values']}", source=path); assert match_expr['values'] == ['proxysql']
-    else:
-        assert False, "ProxySQL must have anti-affinity configured (antiAffinityTopologyKey or podAntiAffinity)"
-    
-    # Check volume spec
-    volume_spec = proxysql['volumeSpec']['persistentVolumeClaim']
-    log_check("ProxySQL PVC accessModes", "['ReadWriteOnce']", f"{volume_spec['accessModes']}", source=path); assert volume_spec['accessModes'] == ['ReadWriteOnce']
-    log_check("ProxySQL PVC requests.storage", "5Gi", f"{volume_spec['resources']['requests']['storage']}", source=path); assert volume_spec['resources']['requests']['storage'] == '5Gi'
-    expected_sc = STORAGE_CLASS_NAME
-    log_check("ProxySQL PVC storageClassName", f"{expected_sc}", f"{volume_spec['storageClassName']}", source=path); assert volume_spec['storageClassName'] == expected_sc
-
-
-@pytest.mark.unit
-def test_percona_values_haproxy_disabled(request):
-    if not request.config.getoption('--proxysql'):
-        pytest.skip("This HAProxy-disabled test is only relevant when ProxySQL is enabled")
-    """Test that HAProxy is disabled."""
-    values, path = get_values_for_test()
-    log_check("haproxy.enabled should be false", "False", f"{values['haproxy']['enabled']}", source=path); assert values['haproxy']['enabled'] is False
+    log_check("haproxy.enabled should be true", "True", f"{values['haproxy']['enabled']}", source=path)
+    assert values['haproxy']['enabled'] is True, "On-prem should use HAProxy for load balancing"
 
 
 @pytest.mark.unit

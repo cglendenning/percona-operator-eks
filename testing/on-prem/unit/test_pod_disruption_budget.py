@@ -44,44 +44,7 @@ def test_pxc_pod_disruption_budget_max_unavailable():
 
 
 @pytest.mark.unit
-def test_proxysql_pod_disruption_budget_exists(request):
-    """Test that ProxySQL has Pod Disruption Budget configured."""
-    if not request.config.getoption('--proxysql'):
-        pytest.skip("ProxySQL tests only run with --proxysql flag (on-prem uses HAProxy by default)")
-    
-    values, path = get_values_for_test()
-    
-    criterion = "ProxySQL values must include podDisruptionBudget key"
-    expected_desc = "key present"
-    actual_desc = f"keys={sorted(list(values['proxysql'].keys()))}"
-    log_check(criterion=criterion, expected=expected_desc, actual=actual_desc, source=path)
-    assert 'podDisruptionBudget' in values['proxysql'], "ProxySQL must have Pod Disruption Budget configured"
-
-
-@pytest.mark.unit
-def test_proxysql_pod_disruption_budget_max_unavailable(request):
-    """Test that ProxySQL PDB has appropriate maxUnavailable setting."""
-    if not request.config.getoption('--proxysql'):
-        pytest.skip("ProxySQL tests only run with --proxysql flag (on-prem uses HAProxy by default)")
-    
-    values, path = get_values_for_test()
-    
-    pdb = values['proxysql']['podDisruptionBudget']
-    
-    # ProxySQL should also have maxUnavailable=1 to ensure availability
-    max_unavailable = pdb.get('maxUnavailable', 0)
-    log_check(
-        criterion="ProxySQL PDB maxUnavailable must be 1 to ensure availability",
-        expected="1",
-        actual=f"proxysql pdb maxUnavailable = {max_unavailable}",
-        source=path,
-    )
-    assert max_unavailable == 1, \
-        "ProxySQL PDB maxUnavailable should be 1 to ensure high availability"
-
-
-@pytest.mark.unit
-def test_pdb_allows_rolling_updates(request):
+def test_pdb_allows_rolling_updates():
     """Test that PDB settings allow safe rolling updates."""
     values, path = get_values_for_test()
     
@@ -97,17 +60,8 @@ def test_pdb_allows_rolling_updates(request):
     )
     assert pxc_pdb.get('maxUnavailable') == 1
     
-    # Check proxy PDB (ProxySQL or HAProxy depending on configuration)
-    if values.get('proxysql', {}).get('enabled') and request.config.getoption('--proxysql'):
-        proxysql_pdb = values['proxysql']['podDisruptionBudget']
-        log_check(
-            criterion="Rolling updates: ProxySQL PDB maxUnavailable must be 1",
-            expected="1",
-            actual=f"proxysql pdb maxUnavailable = {proxysql_pdb.get('maxUnavailable')}",
-            source=path,
-        )
-        assert proxysql_pdb.get('maxUnavailable') == 1
-    elif values.get('haproxy', {}).get('enabled'):
+    # Check HAProxy PDB (on-prem uses HAProxy)
+    if values.get('haproxy', {}).get('enabled'):
         haproxy_pdb = values['haproxy'].get('podDisruptionBudget', {})
         if haproxy_pdb:
             max_unavailable = haproxy_pdb.get('maxUnavailable', 0)
