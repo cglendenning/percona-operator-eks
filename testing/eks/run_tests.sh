@@ -8,6 +8,9 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 cd "$SCRIPT_DIR"
 
+# Set PYTHONPATH so conftest can be imported as a module
+export PYTHONPATH="${SCRIPT_DIR}:${PYTHONPATH:-}"
+
 # Setup logging to /tmp with timestamp
 LOG_TIMESTAMP=$(date +"%Y%m%d_%H%M%S")
 LOG_FILE="/tmp/percona_tests_${LOG_TIMESTAMP}.log"
@@ -238,10 +241,57 @@ else
 fi
 
 source venv/bin/activate
-pip install --upgrade pip >/dev/null 2>&1
-pip install -q -r requirements.txt
+
+# Verify we're actually using the venv Python
+VENV_PYTHON="$SCRIPT_DIR/venv/bin/python"
+if [ ! -x "$VENV_PYTHON" ]; then
+    echo -e "${RED}✗ Virtual environment Python not found at $VENV_PYTHON${NC}" >&2
+    exit 1
+fi
+
+# Use venv Python explicitly for all operations
+"$VENV_PYTHON" -m pip install --upgrade pip >/dev/null 2>&1
+"$VENV_PYTHON" -m pip install -q -r requirements.txt
 
 verbose_echo -e "${GREEN}✓ Dependencies installed${NC}"
+
+# Validate conftest can be imported (fail fast with diagnostics)
+# Use venv Python explicitly to avoid system Python
+verbose_echo -e "${BLUE}Validating test configuration...${NC}"
+CONFTEST_CHECK=$("$VENV_PYTHON" -c "
+import sys
+import os
+sys.path.insert(0, os.getcwd())
+try:
+    import conftest
+    print('OK')
+except ImportError as e:
+    print(f'ERROR: {e}')
+    print(f'Python executable: {sys.executable}')
+    print(f'sys.path: {sys.path}')
+    print(f'PYTHONPATH: {os.environ.get(\"PYTHONPATH\", \"not set\")}')
+    print(f'cwd: {os.getcwd()}')
+    print(f'conftest.py exists: {os.path.exists(\"conftest.py\")}')
+" 2>&1)
+
+if [[ "$CONFTEST_CHECK" != "OK" ]]; then
+    echo -e "${RED}✗ Failed to import conftest module${NC}" >&2
+    echo -e "${RED}This will cause 'ModuleNotFoundError: No module named conftest'${NC}" >&2
+    echo ""
+    echo -e "${YELLOW}Diagnostic information:${NC}"
+    echo "$CONFTEST_CHECK"
+    echo ""
+    echo -e "${YELLOW}Current directory: ${NC}$(pwd)"
+    echo -e "${YELLOW}PYTHONPATH: ${NC}${PYTHONPATH:-not set}"
+    echo -e "${YELLOW}conftest.py exists: ${NC}$([ -f conftest.py ] && echo yes || echo no)"
+    echo -e "${YELLOW}Venv Python: ${NC}$VENV_PYTHON"
+    echo -e "${YELLOW}Which python: ${NC}$(which python)"
+    echo ""
+    echo -e "${RED}Please report this error - the test setup is misconfigured${NC}"
+    exit 1
+fi
+
+verbose_echo -e "${GREEN}✓ Test configuration validated (using $VENV_PYTHON)${NC}"
 verbose_echo ""
 
 # Set default environment variables if not set
@@ -513,7 +563,8 @@ run_category() {
         echo -e "${BLUE}=== ${category_name} ===${NC}"
     fi
     # Always show pytest output (it's already concise in non-verbose mode)
-    pytest "${OPTS[@]}" "$FINAL_TEST_PATH"
+    # Use venv Python explicitly to ensure correct environment
+    "$VENV_PYTHON" -m pytest "${OPTS[@]}" "$FINAL_TEST_PATH"
     return $?
 }
 
@@ -545,7 +596,8 @@ if [ -n "$SPECIFIC_TEST_PATH" ]; then
     done
     
     # Always show pytest output (it's already concise in non-verbose mode)
-    pytest "${SPECIFIC_OPTS[@]}" "$SPECIFIC_TEST_PATH"
+    # Use venv Python explicitly to ensure correct environment
+    "$VENV_PYTHON" -m pytest "${SPECIFIC_OPTS[@]}" "$SPECIFIC_TEST_PATH"
     TEST_RESULT=$?
 else
     # Run by category as before
