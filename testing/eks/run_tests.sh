@@ -135,7 +135,7 @@ show_usage() {
     echo "  ON_PREM                 'true' to enable on-prem defaults (also via --on-prem)"
     echo "  STORAGE_CLASS_NAME      StorageClass name for on-prem (default: standard in on-prem)"
     echo "  TOPOLOGY_KEY            Anti-affinity topology key (default: hostname in on-prem, zone in EKS)"
-    echo "  VALUES_FILE             Path to values file to test (default: templates/percona-values.yaml)"
+    echo "  VALUES_FILE             Path to values file to test (default: percona/templates/percona-values.yaml)"
     echo "  VALUES_ROOT_KEY         Root key wrapper if present (e.g., pxc-db)"
     echo "  PXC_PATH                Dot-path to PXC section (e.g., pxc-db.pxc)"
     echo "  PROXYSQL_PATH           Dot-path to ProxySQL section"

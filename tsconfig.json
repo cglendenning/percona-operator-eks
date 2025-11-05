@@ -7,9 +7,9 @@
     "forceConsistentCasingInFileNames": true,
     "strict": true,
     "skipLibCheck": true,
-    "outDir": "dist"
+    "outDir": "percona/dist"
   },
-  "include": ["src/**/*"]
+  "include": ["percona/src/**/*"]
 }
 
 

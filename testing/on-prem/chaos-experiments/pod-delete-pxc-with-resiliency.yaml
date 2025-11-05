@@ -1,0 +1,91 @@
+apiVersion: litmuschaos.io/v1alpha1
+kind: ChaosEngine
+metadata:
+  name: pxc-pod-delete
+  namespace: percona
+  labels:
+    chaos-type: pod-delete
+    component: pxc
+spec:
+  appinfo:
+    appns: percona
+    applabel: 'app.kubernetes.io/component=pxc'
+    appkind: 'statefulset'
+  chaosServiceAccount: litmus-admin
+  monitoring: false
+  jobCleanUpPolicy: 'retain'
+  experiments:
+    - name: pod-delete
+      spec:
+        components:
+          env:
+            - name: TOTAL_CHAOS_DURATION
+              value: '60'
+            - name: CHAOS_INTERVAL
+              value: '10'
+            - name: FORCE
+              value: 'false'
+            - name: RANDOMNESS
+              value: 'true'
+            - name: RESILIENCY_TEST_TYPE
+              value: 'statefulset_recovery'
+            - name: RESILIENCY_STATEFULSET_NAME
+              value: ''  # Will be auto-detected
+            - name: RESILIENCY_EXPECTED_REPLICAS
+              value: '3'
+            - name: RESILIENCY_MTTR_TIMEOUT_SECONDS
+              value: '120'
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: resiliency-test-pxc-pod-delete
+  namespace: percona
+spec:
+  template:
+    spec:
+      serviceAccountName: litmus-admin
+      restartPolicy: OnFailure
+      containers:
+      - name: resiliency-test
+        image: python:3.9-slim
+        command:
+        - /bin/sh
+        - -c
+        - |
+          pip install -q kubernetes rich
+          python -c "
+          import os
+          import sys
+          sys.path.insert(0, '/tests')
+          from tests.resiliency.chaos_integration import run_resiliency_test_from_chaos_event
+          success = run_resiliency_test_from_chaos_event('pxc-pod-delete', 'litmus')
+          sys.exit(0 if success else 1)
+          "
+        env:
+        - name: CHAOS_ENGINE_NAME
+          value: 'pxc-pod-delete'
+        - name: CHAOS_NAMESPACE
+          value: 'litmus'
+        - name: TEST_NAMESPACE
+          value: 'percona'
+        - name: TEST_CLUSTER_NAME
+          value: 'pxc-cluster'
+        - name: TEST_EXPECTED_NODES
+          value: '3'
+        - name: RESILIENCY_TEST_TYPE
+          value: 'statefulset_recovery'
+        - name: RESILIENCY_EXPECTED_REPLICAS
+          value: '3'
+        - name: RESILIENCY_MTTR_TIMEOUT_SECONDS
+          value: '120'
+        - name: RESILIENCY_POLL_INTERVAL_SECONDS
+          value: '15'
+        volumeMounts:
+        - name: test-code
+          mountPath: /tests
+      volumes:
+      - name: test-code
+        configMap:
+          name: resiliency-test-code
+

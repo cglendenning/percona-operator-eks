@@ -65,7 +65,7 @@ STORAGE_CLASS_NAME = os.getenv('STORAGE_CLASS_NAME', 'gp3' if not ON_PREM else '
 TOPOLOGY_KEY = os.getenv('TOPOLOGY_KEY', 'topology.kubernetes.io/zone' if not ON_PREM else 'kubernetes.io/hostname')
 
 # Schema mapping environment overrides
-VALUES_FILE = os.getenv('VALUES_FILE', os.path.join(os.getcwd(), 'templates', 'percona-values.yaml'))
+VALUES_FILE = os.getenv('VALUES_FILE', os.path.join(os.getcwd(), 'percona', 'templates', 'percona-values.yaml'))
 VALUES_ROOT_KEY = os.getenv('VALUES_ROOT_KEY', '')  # e.g., 'pxc-db'
 PXC_PATH = os.getenv('PXC_PATH', '')                # e.g., 'pxc-db.pxc'
 PROXYSQL_PATH = os.getenv('PROXYSQL_PATH', '')      # e.g., 'pxc-db.proxysql'
@@ -192,7 +192,7 @@ def get_values_for_test():
         return (raw, FLEET_RENDERED_MANIFEST)
     else:
         # Use raw values file
-        path = os.path.join(os.getcwd(), 'templates', 'percona-values.yaml')
+        path = os.path.join(os.getcwd(), 'percona', 'templates', 'percona-values.yaml')
         with open(path, 'r', encoding='utf-8') as f:
             content = f.read()
         content = content.replace('{{NODES}}', '3')

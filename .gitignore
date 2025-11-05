@@ -15,15 +15,21 @@ __pycache__/
 .Python
 env/
 *.egg-info/
-dist/
 build/
 
+# TypeScript compiled output
+percona/dist/
+
 # Test artifacts
-tests/report.html
-tests/report.xml
+testing/*/report.html
+testing/*/report.xml
+testing/*/.pytest_cache/
+testing/*/__pycache__/
 .pytest_cache/
 .coverage
 htmlcov/
+/tmp/percona_tests_*.log
+/tmp/fleet-rendered-*.yaml
 
 # IDE
 .vscode/

@@ -1868,7 +1868,7 @@ async function installChartMuseum() {
   } catch (error) {
     logError(`Failed to install ChartMuseum: ${error}`);
     logError('ChartMuseum is required for the internal Helm chart repository');
-    logError('You can install it manually with: ./scripts/setup-chartmuseum.sh');
+    logError('You can install it manually with: ./percona/scripts/setup-chartmuseum.sh');
     throw error;
   }
 }
@@ -1956,7 +1956,7 @@ async function mirrorChartsToChartMuseum() {
   } catch (error) {
     logError(`Failed to mirror charts: ${error}`);
     logError('Chart mirroring is required for the internal Helm chart repository');
-    logError('You can run it manually with: ./scripts/mirror-charts.sh');
+    logError('You can run it manually with: ./percona/scripts/mirror-charts.sh');
     throw error;
   } finally {
     // Clean up port-forward after mirroring
@@ -2174,7 +2174,7 @@ async function installLitmusChaos() {
     logSuccess('✓ LitmusChaos installed successfully');
   } catch (error) {
     logWarn(`Failed to install LitmusChaos: ${error}`);
-    logWarn('You can install it manually later with: ./scripts/install-litmus.sh');
+    logWarn('You can install it manually later with: ./percona/scripts/install-litmus.sh');
   }
 }
 

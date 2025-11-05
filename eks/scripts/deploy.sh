@@ -23,7 +23,7 @@ OS_TYPE=$(detect_os)
 
 # Configuration
 STACK_NAME="percona-eks-cluster"
-TEMPLATE_FILE="cloudformation/eks-cluster.yaml"
+TEMPLATE_FILE="eks/cloudformation/eks-cluster.yaml"
 REGION="us-east-1"
 CLUSTER_NAME="percona-eks"
 NODE_INSTANCE_TYPE="m5.large"

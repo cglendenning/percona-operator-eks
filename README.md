@@ -1,124 +1,92 @@
-## Percona Operator For XtraDB Cluster On EKS 
+## Percona Operator For XtraDB Cluster
 
-Automated deployment of EKS cluster with Percona XtraDB Cluster operator via CloudFormation and TypeScript.
+Automated deployment and testing of Percona XtraDB Cluster on Kubernetes (EKS and on-premise).
+
+### Repository Structure
+
+- `eks/` - AWS EKS cluster deployment (CloudFormation, scripts)
+- `percona/` - Percona XtraDB Cluster deployment (operators, templates, automation)
+- `testing/` - Test suites
+  - `eks/` - EKS-specific test suite (multi-AZ, gp3 storage, zone topology)
+  - `on-prem/` - On-premise test suite (Fleet integration, hostname topology, custom storage)
+- `node_modules/`, `package.json` - Node.js tooling dependencies
+- `tsconfig.json` - TypeScript configuration
 
 ### Prerequisites
 - Node.js 18+
 - Binaries on PATH:
-  - awscli (`aws --version`)
+  - awscli (`aws --version`) - for EKS deployments
   - kubectl (`kubectl version --client`)
   - helm (`helm version`)
+  - python3 (`python3 --version`) - for tests
 
-### AWS authentication options
-Choose one of the following:
+### Quick Start
 
-**Option 1: AWS SSO (Recommended)**
-
-Check if you already have SSO configured:
-```bash
-cat ~/.aws/config
-```
-
-If you see an existing profile with `sso_session` configured, use it:
-```bash
-aws sso login --profile <profile-name>
-export AWS_PROFILE=<profile-name>
-```
-
-Otherwise, set up a new SSO profile (requires SSO start URL from your AWS admin):
-```bash
-aws configure sso
-aws sso login --profile <profile>
-export AWS_PROFILE=<profile>
-```
-
-**Option 2: Access keys**
-```bash
-aws configure
-export AWS_PROFILE=default
-```
-
-**Option 3: Environment variables**
-```bash
-export AWS_ACCESS_KEY_ID=<key>
-export AWS_SECRET_ACCESS_KEY=<secret>
-export AWS_SESSION_TOKEN=<token>  # optional
-```
-
-Confirm authentication: `aws sts get-caller-identity`
-
-### Install dependencies
+1. **Install dependencies:**
 ```bash
 npm install
 ```
 
-### EKS cluster deployment
-Deploy EKS cluster with 3 node groups (one per AZ):
+2. **Deploy EKS cluster (AWS only):**
 ```bash
-./scripts/deploy.sh
+./eks/scripts/deploy.sh
 ```
+See `eks/README.md` for detailed EKS deployment instructions.
 
-Or with verbose output:
-```bash
-./scripts/deploy.sh -vv
-```
-
-The deployment script:
-- Creates VPC with 3 public + 3 private subnets across us-east-1a, us-east-1c, us-east-1d
-- Deploys 3 EKS managed node groups (1 per AZ) with m5.large On-Demand instances
-- Installs EBS CSI driver, VPC CNI, CoreDNS, kube-proxy, and metrics-server add-ons
-- Updates kubeconfig automatically
-- Verifies multi-AZ node distribution
-
-### Percona operator and cluster
-Install operator and 3-node cluster in namespace `percona`:
+3. **Install Percona operator and cluster:**
 ```bash
 npm run percona -- install --namespace percona --name pxc-cluster --nodes 3
 ```
 
-This command will automatically:
-- Install MinIO from external repo (bootstrap component)
-- Install and configure ChartMuseum (internal Helm chart repository with local storage)
-- Mirror all required charts (Percona, MinIO, LitmusChaos) to ChartMuseum
-- Install the Percona operator (from internal ChartMuseum)
-- Install the Percona cluster (from internal ChartMuseum)
-- Install LitmusChaos for chaos engineering
+See `percona/README.md` for detailed Percona deployment instructions, configuration options, and troubleshooting.
 
-**Note:** MinIO is installed from the external `minio/minio` chart repository as a bootstrap step, since ChartMuseum doesn't exist yet. After ChartMuseum is set up and charts are mirrored, all subsequent installations use the internal ChartMuseum repository.
-
-Uninstall and cleanup PVCs:
+**Quick uninstall:**
 ```bash
 npm run percona -- uninstall --namespace percona --name pxc-cluster
 ```
 
-This command will automatically uninstall:
-- Percona cluster and operator
-- MinIO
-- LitmusChaos
-- ChartMuseum
+### Run Tests
 
-### Cost-saving: Tear Down EKS When Not in Use
-Delete the entire stack to avoid charges (can be recreated quickly):
+#### EKS Test Suite
+For AWS EKS environments:
+```bash
+cd testing/eks
+./run_tests.sh
+```
+
+See `testing/eks/README.md` for detailed EKS testing instructions.
+
+#### On-Premise Test Suite
+For on-premise/VMware Kubernetes environments with Fleet:
+```bash
+cd testing/on-prem
+export FLEET_YAML=./fleet.yaml
+export FLEET_TARGET=k8s-dev
+./run_tests.sh --on-prem
+```
+
+See `testing/on-prem/README.md` for detailed on-premise testing instructions.
+
+### Tear Down EKS Cluster
+
+When not actively using the EKS cluster, tear it down to avoid charges:
+
+```bash
+./eks/scripts/cleanup.sh
+```
+
+Or manually via AWS CLI:
 ```bash
 aws cloudformation delete-stack --stack-name percona-eks-cluster --region us-east-1
 aws cloudformation wait stack-delete-complete --stack-name percona-eks-cluster --region us-east-1
 ```
 
-**Verify the stack is completely deleted:**
-```bash
-aws cloudformation describe-stacks --stack-name percona-eks-cluster --region us-east-1
-# Expected output: "Stack with id percona-eks-cluster does not exist"
-# OR: An error indicating the stack was not found
-```
-
-This deletes everything (cluster, nodes, network). EBS volumes with data are also deleted.
-
-**Costs while deleted: $0**
+See `eks/README.md` for detailed cost information and recommended workflows.
 
 To recreate the cluster when needed:
 ```bash
-./scripts/deploy.sh              # Creates EKS cluster (~15-20 min)
-npm run percona -- install  # Installs Percona (~10-15 min)
+./eks/scripts/deploy.sh         # Creates EKS cluster (~15-20 min)
+npm run percona -- install      # Installs Percona (~10-15 min)
 ```
 
 Total recreation time: ~25-35 minutes
@@ -274,7 +242,7 @@ export CLUSTER_NAME="percona-eks"
 export AWS_REGION="us-east-1"
 
 # Run the setup script
-./scripts/setup-chartmuseum.sh
+./percona/scripts/setup-chartmuseum.sh
 ```
 
 This script will:
@@ -289,7 +257,7 @@ This script will:
 
 ```bash
 # Mirror all charts (ChartMuseum URL is auto-detected)
-./scripts/mirror-charts.sh
+./percona/scripts/mirror-charts.sh
 ```
 
 This will download and upload:
@@ -357,7 +325,7 @@ export STORAGE_SIZE="50Gi"  # Persistent volume size
 export SERVICE_TYPE="ClusterIP"  # Service type (ClusterIP for internal only)
 
 # Run setup script
-./scripts/setup-chartmuseum.sh
+./percona/scripts/setup-chartmuseum.sh
 ```
 
 **The script will:**
@@ -406,7 +374,7 @@ The `scripts/mirror-charts.sh` script handles downloading and uploading all requ
 # 3. Download charts locally
 # 4. Push them to ChartMuseum using the helm-push plugin
 
-./scripts/mirror-charts.sh
+./percona/scripts/mirror-charts.sh
 ```
 
 #### Configuration
@@ -441,7 +409,7 @@ export CHARTMUSEUM_URL="http://chartmuseum.chartmuseum.svc.cluster.local"
 export SERVICE_TYPE="LoadBalancer"
 
 # Then run setup
-./scripts/setup-chartmuseum.sh
+./percona/scripts/setup-chartmuseum.sh
 ```
 
 #### Automation: Keep Charts Updated
@@ -1159,7 +1127,7 @@ To run chaos experiments continuously and randomly:
 kubectl get pods -n litmus
 
 # If not installed, install it (or it's installed automatically with npm run percona -- install):
-./scripts/install-litmus.sh
+./percona/scripts/install-litmus.sh
 ```
 
 **2. Create a scheduled chaos workflow:**
@@ -1233,7 +1201,7 @@ LitmusChaos is automatically installed when you run `npm run percona -- install`
 **Install LitmusChaos:**
 ```bash
 # Option 1: Use the installation script
-./scripts/install-litmus.sh
+./percona/scripts/install-litmus.sh
 
 # Option 2: Manual installation (exact command from official docs)
 helm repo add litmuschaos https://litmuschaos.github.io/litmus-helm/
@@ -1267,7 +1235,7 @@ kubectl delete namespace litmus
 **Reinstall LitmusChaos:**
 ```bash
 # Simply run the install command again
-./scripts/install-litmus.sh
+./percona/scripts/install-litmus.sh
 
 # Or manually:
 kubectl create ns litmus
