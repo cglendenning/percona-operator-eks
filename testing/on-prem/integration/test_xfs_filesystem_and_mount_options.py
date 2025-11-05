@@ -15,7 +15,7 @@ import pytest
 import re
 from kubernetes import client
 from kubernetes.stream import stream
-from tests.conftest import TEST_NAMESPACE
+from conftest import TEST_NAMESPACE
 from rich.console import Console
 
 console = Console()

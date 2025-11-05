@@ -5,7 +5,7 @@ import os
 import time
 import pytest
 from rich.console import Console
-from tests.conftest import TEST_NAMESPACE
+from conftest import TEST_NAMESPACE
 from tests.resiliency.helpers import (
     wait_for_statefulset_recovery,
     DEFAULT_MTTR_TIMEOUT

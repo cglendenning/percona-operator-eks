@@ -105,7 +105,7 @@ def create_individual_test_file(test_dir, category, test_name, imports, method_s
 """
 import pytest
 from rich.console import Console
-from tests.conftest import TEST_NAMESPACE, TEST_EXPECTED_NODES, TEST_CLUSTER_NAME, TEST_BACKUP_TYPE, TEST_BACKUP_BUCKET
+from conftest import TEST_NAMESPACE, TEST_EXPECTED_NODES, TEST_CLUSTER_NAME, TEST_BACKUP_TYPE, TEST_BACKUP_BUCKET
 
 console = Console()
 

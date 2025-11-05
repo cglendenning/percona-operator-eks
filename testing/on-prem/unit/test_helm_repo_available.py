@@ -4,7 +4,7 @@ Test that Percona Helm repo is available
 import pytest
 import subprocess
 from rich.console import Console
-from tests.conftest import log_check
+from conftest import log_check
 
 console = Console()
 

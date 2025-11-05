@@ -4,7 +4,7 @@ Test that gp3 storage class has correct parameters
 import pytest
 from kubernetes import client
 from kubernetes import client
-from tests.conftest import kubectl_cmd, TEST_NAMESPACE, TEST_CLUSTER_NAME, TEST_EXPECTED_NODES, ON_PREM, STORAGE_CLASS_NAME
+from conftest import kubectl_cmd, TEST_NAMESPACE, TEST_CLUSTER_NAME, TEST_EXPECTED_NODES, ON_PREM, STORAGE_CLASS_NAME
 from rich.console import Console
 
 console = Console()

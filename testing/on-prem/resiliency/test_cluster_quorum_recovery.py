@@ -4,7 +4,7 @@ Tests that cluster maintains and recovers quorum after node failures.
 """
 import pytest
 import time
-from tests.conftest import TEST_NAMESPACE, TEST_CLUSTER_NAME
+from conftest import TEST_NAMESPACE, TEST_CLUSTER_NAME
 from kubernetes import client
 from rich.console import Console
 

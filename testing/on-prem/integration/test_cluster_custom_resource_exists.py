@@ -4,7 +4,7 @@ Test that PXC custom resource exists
 import pytest
 from kubernetes import client
 from kubernetes import client
-from tests.conftest import kubectl_cmd, TEST_NAMESPACE, TEST_CLUSTER_NAME, TEST_EXPECTED_NODES
+from conftest import kubectl_cmd, TEST_NAMESPACE, TEST_CLUSTER_NAME, TEST_EXPECTED_NODES
 from rich.console import Console
 
 console = Console()

@@ -5,13 +5,13 @@ Validates that PDBs are configured to ensure high availability.
 import os
 import yaml
 import pytest
-from tests.conftest import log_check
+from conftest import log_check
 
 
 @pytest.mark.unit
 def test_pxc_pod_disruption_budget_exists():
     """Test that PXC has Pod Disruption Budget configured."""
-    path = os.path.join(os.path.dirname(__file__), '..', '..', 'templates', 'percona-values.yaml')
+    path = os.path.join(os.path.dirname(__file__), '..', '..', '..', 'percona', 'templates', 'percona-values.yaml')
     with open(path, 'r', encoding='utf-8') as f:
         content = f.read()
         content = content.replace('{{NODES}}', '3')
@@ -27,7 +27,7 @@ def test_pxc_pod_disruption_budget_exists():
 @pytest.mark.unit
 def test_pxc_pod_disruption_budget_max_unavailable():
     """Test that PXC PDB has appropriate maxUnavailable setting."""
-    path = os.path.join(os.path.dirname(__file__), '..', '..', 'templates', 'percona-values.yaml')
+    path = os.path.join(os.path.dirname(__file__), '..', '..', '..', 'percona', 'templates', 'percona-values.yaml')
     with open(path, 'r', encoding='utf-8') as f:
         content = f.read()
         content = content.replace('{{NODES}}', '3')
@@ -54,7 +54,7 @@ def test_pxc_pod_disruption_budget_max_unavailable():
 @pytest.mark.unit
 def test_proxysql_pod_disruption_budget_exists():
     """Test that ProxySQL has Pod Disruption Budget configured."""
-    path = os.path.join(os.path.dirname(__file__), '..', '..', 'templates', 'percona-values.yaml')
+    path = os.path.join(os.path.dirname(__file__), '..', '..', '..', 'percona', 'templates', 'percona-values.yaml')
     with open(path, 'r', encoding='utf-8') as f:
         content = f.read()
         content = content.replace('{{NODES}}', '3')
@@ -70,7 +70,7 @@ def test_proxysql_pod_disruption_budget_exists():
 @pytest.mark.unit
 def test_proxysql_pod_disruption_budget_max_unavailable():
     """Test that ProxySQL PDB has appropriate maxUnavailable setting."""
-    path = os.path.join(os.path.dirname(__file__), '..', '..', 'templates', 'percona-values.yaml')
+    path = os.path.join(os.path.dirname(__file__), '..', '..', '..', 'percona', 'templates', 'percona-values.yaml')
     with open(path, 'r', encoding='utf-8') as f:
         content = f.read()
         content = content.replace('{{NODES}}', '3')
@@ -93,7 +93,7 @@ def test_proxysql_pod_disruption_budget_max_unavailable():
 @pytest.mark.unit
 def test_pdb_allows_rolling_updates():
     """Test that PDB settings allow safe rolling updates."""
-    path = os.path.join(os.path.dirname(__file__), '..', '..', 'templates', 'percona-values.yaml')
+    path = os.path.join(os.path.dirname(__file__), '..', '..', '..', 'percona', 'templates', 'percona-values.yaml')
     with open(path, 'r', encoding='utf-8') as f:
         content = f.read()
         content = content.replace('{{NODES}}', '3')
@@ -125,7 +125,7 @@ def test_pdb_allows_rolling_updates():
 @pytest.mark.unit
 def test_pdb_maintains_quorum():
     """Test that PDB settings maintain quorum for PXC cluster."""
-    path = os.path.join(os.path.dirname(__file__), '..', '..', 'templates', 'percona-values.yaml')
+    path = os.path.join(os.path.dirname(__file__), '..', '..', '..', 'percona', 'templates', 'percona-values.yaml')
     
     # Test with different node counts
     for node_count in [3, 5, 7]:

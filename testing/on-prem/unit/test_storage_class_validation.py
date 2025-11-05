@@ -5,18 +5,21 @@ Validates Percona best practices for storage configuration.
 import os
 import yaml
 import pytest
-from tests.conftest import log_check, ON_PREM, STORAGE_CLASS_NAME
+from conftest import log_check, ON_PREM, STORAGE_CLASS_NAME
 
 
 @pytest.mark.unit
 def test_storage_class_yaml_valid():
     """Test that storage class YAML is valid."""
-    path = os.path.join(os.path.dirname(__file__), '..', '..', 'templates', 'storageclass-gp3.yaml')
+    if ON_PREM:
+        pytest.skip("Skipping EKS-specific storage class tests in on-prem mode")
+    
+    path = os.path.join(os.path.dirname(__file__), '..', '..', '..', 'percona', 'templates', 'storageclass-gp3.yaml')
     with open(path, 'r', encoding='utf-8') as f:
         content = f.read()
         sc = yaml.safe_load(content)
     
-    expected_name = 'gp3' if not ON_PREM else STORAGE_CLASS_NAME
+    expected_name = 'gp3'
     log_check(
         criterion=f"StorageClass YAML should define kind=StorageClass and name={expected_name}",
         expected=f"kind=StorageClass, name={expected_name}",
@@ -31,12 +34,14 @@ def test_storage_class_yaml_valid():
 @pytest.mark.unit
 def test_storage_class_gp3_configuration():
     """Test storage class configuration matches Percona best practices."""
-    path = os.path.join(os.path.dirname(__file__), '..', '..', 'templates', 'storageclass-gp3.yaml')
+    if ON_PREM:
+        pytest.skip("Skipping EKS-specific storage class tests in on-prem mode")
+    
+    path = os.path.join(os.path.dirname(__file__), '..', '..', '..', 'percona', 'templates', 'storageclass-gp3.yaml')
     with open(path, 'r', encoding='utf-8') as f:
         sc = yaml.safe_load(f)
     
-    # GP3 on EKS; on-prem may differ (skip provisioner/type strictness)
-    expected_name = 'gp3' if not ON_PREM else STORAGE_CLASS_NAME
+    expected_name = 'gp3'
     log_check("StorageClass name", expected_name, f"name={sc['metadata']['name']}", source=path)
     assert sc['metadata']['name'] == expected_name
     if not ON_PREM:
@@ -57,7 +62,7 @@ def test_storage_class_gp3_configuration():
 @pytest.mark.unit
 def test_storage_class_default_annotation():
     """Test that gp3 is set as default storage class."""
-    path = os.path.join(os.path.dirname(__file__), '..', '..', 'templates', 'storageclass-gp3.yaml')
+    path = os.path.join(os.path.dirname(__file__), '..', '..', '..', 'percona', 'templates', 'storageclass-gp3.yaml')
     with open(path, 'r', encoding='utf-8') as f:
         sc = yaml.safe_load(f)
     
@@ -70,7 +75,7 @@ def test_storage_class_default_annotation():
 @pytest.mark.unit
 def test_storage_class_reclaim_policy():
     """Test that reclaim policy is appropriate."""
-    path = os.path.join(os.path.dirname(__file__), '..', '..', 'templates', 'storageclass-gp3.yaml')
+    path = os.path.join(os.path.dirname(__file__), '..', '..', '..', 'percona', 'templates', 'storageclass-gp3.yaml')
     with open(path, 'r', encoding='utf-8') as f:
         sc = yaml.safe_load(f)
     
@@ -83,7 +88,7 @@ def test_storage_class_reclaim_policy():
 @pytest.mark.unit
 def test_percona_values_uses_gp3_storage_class():
     """Test that Percona values template uses gp3 storage class."""
-    path = os.path.join(os.path.dirname(__file__), '..', '..', 'templates', 'percona-values.yaml')
+    path = os.path.join(os.path.dirname(__file__), '..', '..', '..', 'percona', 'templates', 'percona-values.yaml')
     with open(path, 'r', encoding='utf-8') as f:
         content = f.read()
         content = content.replace('{{NODES}}', '3')

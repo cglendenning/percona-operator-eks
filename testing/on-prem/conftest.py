@@ -65,7 +65,9 @@ STORAGE_CLASS_NAME = os.getenv('STORAGE_CLASS_NAME', 'gp3' if not ON_PREM else '
 TOPOLOGY_KEY = os.getenv('TOPOLOGY_KEY', 'topology.kubernetes.io/zone' if not ON_PREM else 'kubernetes.io/hostname')
 
 # Schema mapping environment overrides
-VALUES_FILE = os.getenv('VALUES_FILE', os.path.join(os.getcwd(), 'percona', 'templates', 'percona-values.yaml'))
+# Values file path (two directories up from testing/on-prem/ to project root, then into percona/)
+PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))
+VALUES_FILE = os.getenv('VALUES_FILE', os.path.join(PROJECT_ROOT, 'percona', 'templates', 'percona-values.yaml'))
 VALUES_ROOT_KEY = os.getenv('VALUES_ROOT_KEY', '')  # e.g., 'pxc-db'
 PXC_PATH = os.getenv('PXC_PATH', '')                # e.g., 'pxc-db.pxc'
 PROXYSQL_PATH = os.getenv('PROXYSQL_PATH', '')      # e.g., 'pxc-db.proxysql'
@@ -192,7 +194,7 @@ def get_values_for_test():
         return (raw, FLEET_RENDERED_MANIFEST)
     else:
         # Use raw values file
-        path = os.path.join(os.getcwd(), 'percona', 'templates', 'percona-values.yaml')
+        path = VALUES_FILE
         with open(path, 'r', encoding='utf-8') as f:
             content = f.read()
         content = content.replace('{{NODES}}', '3')
@@ -201,20 +203,31 @@ def get_values_for_test():
         return (values, path)
 
 
-def log_check(criterion: str, expected: str, actual: str, *, source: str | None = None) -> None:
-    """Emit a standardized criterion/result line for verbose runs.
-
+def log_check(criterion: str, expected: str, actual: str, source: str = ""):
+    """
+    Log a criterion/result pair for test assertions in verbose mode.
+    Only prints detailed information when verbose mode is enabled.
+    
     Example:
       Criterion: pxc size should be in [3,5]
       Result:    pxc size = 3 (source: templates/percona-values.yaml)
     """
+    import os
+    # Check if run_tests.sh was invoked with --verbose
+    verbose = os.getenv('VERBOSE') == 'true'
+    
+    if not verbose:
+        return
+    
     prefix = "[dim]"
-    suffix = "[/dim]"
-    console.print(f"{prefix}Criterion:{suffix} {criterion}")
     if source:
-        console.print(f"{prefix}Result:{suffix} {actual} (source: {source})")
+        print(f"{prefix}Criterion: {criterion}")
+        print(f"{prefix}Expected:  {expected}")
+        print(f"{prefix}Actual:    {actual} (source: {source})")
     else:
-        console.print(f"{prefix}Result:{suffix} {actual}")
+        print(f"{prefix}Criterion: {criterion}")
+        print(f"{prefix}Expected:  {expected}")
+        print(f"{prefix}Actual:    {actual}")
 
 def _env_context_summary():
     """Return a concise single-line environment context summary for logs."""
@@ -233,73 +246,57 @@ def _env_context_summary():
 
 
 def pytest_runtest_setup(item):
-    """In verbose mode, print the test's docstring before it runs."""
-    try:
-        verbose = item.config.getoption('verbose', 0) > 0
-    except Exception:
-        verbose = False
-    if not verbose:
-        return
-
-    # Safely obtain the test object's docstring
-    doc = None
-    try:
-        obj = getattr(item, 'obj', None)
-        if obj is not None:
-            doc = inspect.getdoc(obj) or obj.__doc__
-    except Exception:
-        doc = None
-
-    console.print("\n[bold blue]=== Test:[/bold blue] " + item.nodeid)
-    if doc:
-        # Print only the first paragraph for brevity
-        first_para = str(doc).strip().split('\n\n', 1)[0]
-        console.print("[dim]Description:[/dim] " + first_para)
-    console.print("[dim]Context:[/dim] " + _env_context_summary())
+    """
+    Hook to run before each test (setup phase).
+    Display test description in verbose mode.
+    """
+    import os
+    # Check if run_tests.sh was invoked with --verbose
+    verbose = os.getenv('VERBOSE') == 'true'
+    
+    if verbose:
+        # Get the test's docstring if available
+        if item.obj.__doc__:
+            desc = item.obj.__doc__.strip().split('\n')[0]
+            print(f"\n=== Test: {item.nodeid}")
+            print(f"Context: namespace={TEST_NAMESPACE}, operator_ns={TEST_OPERATOR_NAMESPACE}, "
+                  f"minio_ns={MINIO_NAMESPACE}, chaos_ns={CHAOS_NAMESPACE}, cluster={TEST_CLUSTER_NAME}, "
+                  f"expected_nodes={TEST_EXPECTED_NODES}, backup_type={TEST_BACKUP_TYPE}, "
+                  f"backup_bucket={TEST_BACKUP_BUCKET}")
+            print(f"Description: {desc}")
 
 
 def pytest_runtest_logreport(report):
-    """Print concise pass/fail/skip status, with detailed reasons in verbose mode."""
-    # Only log after the test call phase
-    if report.when != 'call':
+    """
+    Hook to run after each test phase (call phase).
+    Display detailed pass/fail/skip information in verbose mode only.
+    """
+    # Check if run_tests.sh was invoked with --verbose flag
+    import os
+    verbose = os.getenv('VERBOSE') == 'true'
+    
+    # Only show extra status when run_tests.sh --verbose was used
+    if not verbose:
         return
-
-    # Check verbose mode
-    try:
-        verbose = report.config.getoption('verbose', 0) > 0  # type: ignore[attr-defined]
-    except Exception:
-        verbose = False
-
-    # Always show status
-    if report.passed:
-        print("[green]✓ PASSED[/green]")
-    elif report.skipped:
-        print("[yellow]⊘ SKIPPED[/yellow]")
-        # Show skip reason in verbose mode
-        if verbose:
-            reason = ""
-            try:
-                if isinstance(report.longrepr, tuple) and len(report.longrepr) >= 3:
-                    reason = str(report.longrepr[2])
-                else:
-                    reason = str(report.longrepr)
-            except Exception:
-                reason = "(no reason provided)"
-            print(f"Reason: {reason}")
-    else:  # failed
-        print("[red]✗ FAILED[/red]")
-        # Show failure reason in verbose mode
-        if verbose:
-            msg = ""
-            try:
-                lr = report.longrepr
-                if hasattr(lr, 'reprcrash') and getattr(lr, 'reprcrash') is not None:
-                    msg = getattr(lr.reprcrash, 'message', '')
-                else:
-                    msg = str(lr).splitlines()[0]
-            except Exception:
-                msg = "(no failure message available)"
-            print(f"Reason: {msg}")
+    
+    # ANSI color codes for terminal output
+    GREEN = '\033[0;32m'
+    RED = '\033[0;31m'
+    YELLOW = '\033[1;33m'
+    NC = '\033[0m'  # No Color
+    
+    # In verbose mode, show status on new line with details
+    if report.when == "call":
+        if report.passed:
+            print(f"\n{GREEN}✓ PASSED{NC}")
+        elif report.failed:
+            print(f"\n{RED}✗ FAILED{NC}")
+            if report.longrepr:
+                print(f"Reason: {report.longreprtext}")
+        elif report.skipped:
+            print(f"\n{YELLOW}⊘ SKIPPED{NC}")
+            if hasattr(report, 'wasxfail'):
+                print(f"Reason: {report.wasxfail}")
 
 @pytest.fixture(scope="session")
 def k8s_client():

@@ -1,12 +1,12 @@
 import yaml
 import os
 import pytest
-from tests.conftest import log_check
+from conftest import log_check
 
 
 @pytest.mark.unit
 def test_minio_credentials_secret_template_valid():
-    path = os.path.join(os.getcwd(), 'templates', 'minio-credentials-secret.yaml')
+    path = os.path.join(os.getcwd(), '..', '..', 'percona', 'templates', 'minio-credentials-secret.yaml')
     with open(path, 'r', encoding='utf-8') as f:
         content = f.read()
         # Check placeholders exist in template

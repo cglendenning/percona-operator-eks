@@ -2,7 +2,7 @@ import io
 import os
 import re
 import yaml
-from tests.conftest import log_check
+from conftest import log_check
 
 
 def extract_backup_yaml_from_cluster_values(ts_source: str) -> str:

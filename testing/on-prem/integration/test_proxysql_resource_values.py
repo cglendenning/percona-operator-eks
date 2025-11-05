@@ -3,7 +3,7 @@ Test that ProxySQL resources match expected values (100m CPU, 256Mi memory reque
 """
 import pytest
 from kubernetes import client
-from tests.conftest import TEST_NAMESPACE
+from conftest import TEST_NAMESPACE
 from rich.console import Console
 
 console = Console()

@@ -5,7 +5,7 @@ Validates that pods are distributed across availability zones per Percona best p
 import os
 import yaml
 import pytest
-from tests.conftest import log_check, TOPOLOGY_KEY, get_values_for_test
+from conftest import log_check, TOPOLOGY_KEY, get_values_for_test
 
 
 @pytest.mark.unit
@@ -16,17 +16,29 @@ def test_pxc_anti_affinity_required():
     pxc = values.get('pxc', {})
     affinity = pxc.get('affinity', {})
     
-    # Check for antiAffinityTopologyKey (PerconaXtraDBCluster CR format)
-    assert 'antiAffinityTopologyKey' in affinity, "PXC must have affinity.antiAffinityTopologyKey configured"
-    
-    topology_key = affinity['antiAffinityTopologyKey']
-    log_check(
-        criterion="PXC antiAffinityTopologyKey must be set",
-        expected="non-empty string",
-        actual=f"antiAffinityTopologyKey={topology_key}",
-        source=path,
-    )
-    assert topology_key, "PXC must have antiAffinityTopologyKey configured"
+    # Check for antiAffinityTopologyKey (PerconaXtraDBCluster CR format from Fleet)
+    # OR podAntiAffinity (raw values format)
+    if 'antiAffinityTopologyKey' in affinity:
+        topology_key = affinity['antiAffinityTopologyKey']
+        log_check(
+            criterion="PXC antiAffinityTopologyKey must be set",
+            expected="non-empty string",
+            actual=f"antiAffinityTopologyKey={topology_key}",
+            source=path,
+        )
+        assert topology_key, "PXC must have antiAffinityTopologyKey configured"
+    elif 'podAntiAffinity' in affinity:
+        pod_anti_affinity = affinity['podAntiAffinity']
+        log_check(
+            criterion="PXC must have podAntiAffinity configured",
+            expected="requiredDuringSchedulingIgnoredDuringExecution present",
+            actual=f"podAntiAffinity present with {len(pod_anti_affinity.get('requiredDuringSchedulingIgnoredDuringExecution', []))} rules",
+            source=path,
+        )
+        assert 'requiredDuringSchedulingIgnoredDuringExecution' in pod_anti_affinity
+        assert len(pod_anti_affinity['requiredDuringSchedulingIgnoredDuringExecution']) > 0
+    else:
+        pytest.fail("PXC must have either antiAffinityTopologyKey or podAntiAffinity configured")
 
 
 @pytest.mark.unit
@@ -37,22 +49,36 @@ def test_pxc_anti_affinity_topology_distribution():
     pxc = values.get('pxc', {})
     affinity = pxc.get('affinity', {})
     
-    # Define accepted topology keys
+    # Define accepted topology keys based on environment
     accepted_keys = ['topology.kubernetes.io/zone', 'failure-domain.beta.kubernetes.io/zone']
     if TOPOLOGY_KEY == 'kubernetes.io/hostname':
         accepted_keys = ['kubernetes.io/hostname']
     
-    assert 'antiAffinityTopologyKey' in affinity, "PXC must have affinity.antiAffinityTopologyKey configured"
-    
-    topology_key = affinity['antiAffinityTopologyKey']
-    topo_found = topology_key in accepted_keys
-    log_check(
-        criterion=f"PXC antiAffinityTopologyKey should be in {accepted_keys}",
-        expected=f"in {accepted_keys}",
-        actual=f"antiAffinityTopologyKey={topology_key}, found={topo_found}",
-        source=path,
-    )
-    assert topo_found, f"PXC antiAffinityTopologyKey must be one of {accepted_keys}"
+    # Check Fleet CR format or raw values format
+    if 'antiAffinityTopologyKey' in affinity:
+        topology_key = affinity['antiAffinityTopologyKey']
+        topo_found = topology_key in accepted_keys
+        log_check(
+            criterion=f"PXC antiAffinityTopologyKey should be in {accepted_keys}",
+            expected=f"in {accepted_keys}",
+            actual=f"antiAffinityTopologyKey={topology_key}, found={topo_found}",
+            source=path,
+        )
+        assert topo_found, f"PXC antiAffinityTopologyKey must be one of {accepted_keys}"
+    elif 'podAntiAffinity' in affinity:
+        pod_anti_affinity = affinity['podAntiAffinity']
+        required = pod_anti_affinity['requiredDuringSchedulingIgnoredDuringExecution'][0]
+        topology_key = required['topologyKey']
+        topo_found = topology_key in accepted_keys
+        log_check(
+            criterion=f"PXC podAntiAffinity topologyKey should be in {accepted_keys}",
+            expected=f"in {accepted_keys}",
+            actual=f"topologyKey={topology_key}, found={topo_found}",
+            source=path,
+        )
+        assert topo_found, f"PXC topologyKey must be one of {accepted_keys}"
+    else:
+        pytest.fail("PXC must have either antiAffinityTopologyKey or podAntiAffinity configured")
 
 
 @pytest.mark.unit
@@ -71,16 +97,28 @@ def test_proxysql_anti_affinity_required():
     proxy_name = 'proxysql' if 'proxysql' in values else 'haproxy'
     proxy_affinity = proxy.get('affinity', {})
     
-    assert 'antiAffinityTopologyKey' in proxy_affinity, f"{proxy_name} must have affinity.antiAffinityTopologyKey configured"
-    
-    topology_key = proxy_affinity['antiAffinityTopologyKey']
-    log_check(
-        criterion=f"{proxy_name} antiAffinityTopologyKey must be set",
-        expected="non-empty string",
-        actual=f"antiAffinityTopologyKey={topology_key}",
-        source=path,
-    )
-    assert topology_key, f"{proxy_name} must have antiAffinityTopologyKey configured"
+    # Check Fleet CR format or raw values format
+    if 'antiAffinityTopologyKey' in proxy_affinity:
+        topology_key = proxy_affinity['antiAffinityTopologyKey']
+        log_check(
+            criterion=f"{proxy_name} antiAffinityTopologyKey must be set",
+            expected="non-empty string",
+            actual=f"antiAffinityTopologyKey={topology_key}",
+            source=path,
+        )
+        assert topology_key, f"{proxy_name} must have antiAffinityTopologyKey configured"
+    elif 'podAntiAffinity' in proxy_affinity:
+        pod_anti_affinity = proxy_affinity['podAntiAffinity']
+        log_check(
+            criterion=f"{proxy_name} must have podAntiAffinity configured",
+            expected="requiredDuringSchedulingIgnoredDuringExecution present",
+            actual=f"podAntiAffinity present with {len(pod_anti_affinity.get('requiredDuringSchedulingIgnoredDuringExecution', []))} rules",
+            source=path,
+        )
+        assert 'requiredDuringSchedulingIgnoredDuringExecution' in pod_anti_affinity
+        assert len(pod_anti_affinity['requiredDuringSchedulingIgnoredDuringExecution']) > 0
+    else:
+        pytest.fail(f"{proxy_name} must have either antiAffinityTopologyKey or podAntiAffinity configured")
 
 
 @pytest.mark.unit
@@ -97,17 +135,31 @@ def test_proxysql_anti_affinity_topology_distribution():
     if TOPOLOGY_KEY == 'kubernetes.io/hostname':
         accepted_keys = ['kubernetes.io/hostname']
     
-    assert 'antiAffinityTopologyKey' in proxy_affinity, f"{proxy_name} must have affinity.antiAffinityTopologyKey configured"
-    
-    topology_key = proxy_affinity['antiAffinityTopologyKey']
-    topo_found = topology_key in accepted_keys
-    log_check(
-        criterion=f"{proxy_name} antiAffinityTopologyKey should be in {accepted_keys}",
-        expected=f"in {accepted_keys}",
-        actual=f"antiAffinityTopologyKey={topology_key}, found={topo_found}",
-        source=path,
-    )
-    assert topo_found, f"{proxy_name} antiAffinityTopologyKey must be one of {accepted_keys}"
+    # Check Fleet CR format or raw values format
+    if 'antiAffinityTopologyKey' in proxy_affinity:
+        topology_key = proxy_affinity['antiAffinityTopologyKey']
+        topo_found = topology_key in accepted_keys
+        log_check(
+            criterion=f"{proxy_name} antiAffinityTopologyKey should be in {accepted_keys}",
+            expected=f"in {accepted_keys}",
+            actual=f"antiAffinityTopologyKey={topology_key}, found={topo_found}",
+            source=path,
+        )
+        assert topo_found, f"{proxy_name} antiAffinityTopologyKey must be one of {accepted_keys}"
+    elif 'podAntiAffinity' in proxy_affinity:
+        pod_anti_affinity = proxy_affinity['podAntiAffinity']
+        required = pod_anti_affinity['requiredDuringSchedulingIgnoredDuringExecution'][0]
+        topology_key = required['topologyKey']
+        topo_found = topology_key in accepted_keys
+        log_check(
+            criterion=f"{proxy_name} podAntiAffinity topologyKey should be in {accepted_keys}",
+            expected=f"in {accepted_keys}",
+            actual=f"topologyKey={topology_key}, found={topo_found}",
+            source=path,
+        )
+        assert topo_found, f"{proxy_name} topologyKey must be one of {accepted_keys}"
+    else:
+        pytest.fail(f"{proxy_name} must have either antiAffinityTopologyKey or podAntiAffinity configured")
 
 
 @pytest.mark.unit
@@ -129,13 +181,25 @@ def test_anti_affinity_prevents_single_host_or_zone_packing():
     
     accepted_keys = ['topology.kubernetes.io/zone', 'failure-domain.beta.kubernetes.io/zone'] if TOPOLOGY_KEY != 'kubernetes.io/hostname' else ['kubernetes.io/hostname']
     
-    # Check PXC
-    assert 'antiAffinityTopologyKey' in pxc_affinity, "PXC must have affinity.antiAffinityTopologyKey configured"
-    pxc_has_required = pxc_affinity['antiAffinityTopologyKey'] in accepted_keys
+    # Check PXC - Fleet CR format or raw values format
+    if 'antiAffinityTopologyKey' in pxc_affinity:
+        pxc_has_required = pxc_affinity['antiAffinityTopologyKey'] in accepted_keys
+    elif 'podAntiAffinity' in pxc_affinity:
+        pod_anti_affinity = pxc_affinity['podAntiAffinity']
+        required = pod_anti_affinity['requiredDuringSchedulingIgnoredDuringExecution'][0]
+        pxc_has_required = required['topologyKey'] in accepted_keys
+    else:
+        pytest.fail("PXC must have either antiAffinityTopologyKey or podAntiAffinity configured")
     
-    # Check proxy
-    assert 'antiAffinityTopologyKey' in proxy_affinity, f"{proxy_name} must have affinity.antiAffinityTopologyKey configured"
-    proxy_has_required = proxy_affinity['antiAffinityTopologyKey'] in accepted_keys
+    # Check proxy - Fleet CR format or raw values format
+    if 'antiAffinityTopologyKey' in proxy_affinity:
+        proxy_has_required = proxy_affinity['antiAffinityTopologyKey'] in accepted_keys
+    elif 'podAntiAffinity' in proxy_affinity:
+        pod_anti_affinity = proxy_affinity['podAntiAffinity']
+        required = pod_anti_affinity['requiredDuringSchedulingIgnoredDuringExecution'][0]
+        proxy_has_required = required['topologyKey'] in accepted_keys
+    else:
+        pytest.fail(f"{proxy_name} must have either antiAffinityTopologyKey or podAntiAffinity configured")
     
     log_check(
         criterion=f"Both PXC and {proxy_name} must include required anti-affinity topology",

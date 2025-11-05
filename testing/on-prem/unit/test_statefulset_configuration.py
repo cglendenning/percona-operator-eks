@@ -6,7 +6,7 @@ import os
 import yaml
 import pytest
 import subprocess
-from tests.conftest import log_check
+from conftest import log_check
 
 
 @pytest.mark.unit
@@ -163,7 +163,7 @@ def test_statefulset_replicas_match_cluster_size(chartmuseum_port_forward):
     """Test that StatefulSet replicas match the configured cluster size."""
     # chartmuseum_port_forward fixture handles repo setup
     
-    path = os.path.join(os.path.dirname(__file__), '..', '..', 'templates', 'percona-values.yaml')
+    path = os.path.join(os.path.dirname(__file__), '..', '..', '..', 'percona', 'templates', 'percona-values.yaml')
     
     for node_count in [3, 6]:
         with open(path, 'r', encoding='utf-8') as f:

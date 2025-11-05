@@ -147,7 +147,7 @@ show_usage() {
 
 # Parse arguments for help and verbose flags (before any setup work)
 VERBOSE=false
-ON_PREM=false
+ON_PREM=true  # Default to on-prem mode in this directory
 for arg in "$@"; do
     case $arg in
         -h|--help)
@@ -162,6 +162,9 @@ for arg in "$@"; do
             ;;
     esac
 done
+
+# Export VERBOSE so pytest hooks can check it
+export VERBOSE
 
 # Verbose output function
 verbose_echo() {
@@ -543,7 +546,7 @@ if [ "$VERBOSE" = "true" ]; then
 else
     # Minimal output: show test names with PASS/FAIL status
     PYTEST_OPTS=(
-        "-v"  # Verbose: show test names (but we'll suppress other verbose output)
+        "-v"  # Show individual test names
         "--tb=line"  # Minimal traceback (one line) for failures only
         "--color=yes"
         "-rN"  # No extra summary details for passed tests
@@ -664,9 +667,9 @@ run_category() {
     local FINAL_TEST_PATH="$test_path"
     
     # Check if passthrough contains a test path/nodeid
-    for arg in "${PYTEST_PASSTHROUGH[@]+"${PYTEST_PASSTHROUGH[@]}"}"}; do
+    for arg in "${PYTEST_PASSTHROUGH[@]+"${PYTEST_PASSTHROUGH[@]}"}"; do
         # If it looks like a test path (starts with tests/ or contains ::), use it as the path
-        if [[ "$arg" =~ ^tests/ ]] || [[ "$arg" =~ :: ]]; then
+        if [[ "$arg" =~ ^(unit|integration|resiliency)/ ]] || [[ "$arg" =~ :: ]]; then
             FINAL_TEST_PATH="$arg"
         else
             # Otherwise, add as pytest option
@@ -676,44 +679,16 @@ run_category() {
 
     if [ "$VERBOSE" = "true" ]; then
         echo -e "${BLUE}=== ${category_name} ===${NC}"
-        pytest "${OPTS[@]}" "$FINAL_TEST_PATH"
-        return $?
-    else
-        TEMP_OUTPUT=$(mktemp)
-        pytest "${OPTS[@]}" "$FINAL_TEST_PATH" > "$TEMP_OUTPUT" 2>&1
-        local rc=$?
-        awk '
-        /^tests\/.*::/ {
-            test_name = $1
-            if (match($0, /PASSED|FAILED|ERROR/)) {
-                status_line = $0
-                if (match(status_line, /PASSED/)) status = "PASSED"
-                else if (match(status_line, /FAILED/)) status = "FAILED"
-                else if (match(status_line, /ERROR/)) status = "ERROR"
-                print test_name " " status
-            } else {
-                pending_test = test_name
-            }
-        }
-        /PASSED|FAILED|ERROR/ {
-            if (pending_test != "" && !/^tests\//) {
-                if (match($0, /PASSED/)) status = "PASSED"
-                else if (match($0, /FAILED/)) status = "FAILED"
-                else if (match($0, /ERROR/)) status = "ERROR"
-                print pending_test " " status
-                pending_test = ""
-            }
-        }
-        ' "$TEMP_OUTPUT"
-        rm -f "$TEMP_OUTPUT"
-        return $rc
     fi
+    # Always show pytest output (it's already concise in non-verbose mode)
+    pytest "${OPTS[@]}" "$FINAL_TEST_PATH"
+    return $?
 }
 
 # Check if a specific test path/nodeid was provided
 SPECIFIC_TEST_PATH=""
-for arg in "${PYTEST_PASSTHROUGH[@]+"${PYTEST_PASSTHROUGH[@]}"}"}; do
-    if [[ "$arg" =~ ^tests/ ]] || [[ "$arg" =~ :: ]]; then
+for arg in "${PYTEST_PASSTHROUGH[@]+"${PYTEST_PASSTHROUGH[@]}"}"; do
+    if [[ "$arg" =~ ^(unit|integration|resiliency)/ ]] || [[ "$arg" =~ :: ]]; then
         SPECIFIC_TEST_PATH="$arg"
         break
     fi
@@ -731,44 +706,15 @@ if [ -n "$SPECIFIC_TEST_PATH" ]; then
     
     SPECIFIC_OPTS=("${PYTEST_OPTS[@]}")
     # Add passthrough args (excluding the test path which we'll use separately)
-    for arg in "${PYTEST_PASSTHROUGH[@]+"${PYTEST_PASSTHROUGH[@]}"}"}; do
+    for arg in "${PYTEST_PASSTHROUGH[@]+"${PYTEST_PASSTHROUGH[@]}"}"; do
         if [[ "$arg" != "$SPECIFIC_TEST_PATH" ]]; then
             SPECIFIC_OPTS+=("$arg")
         fi
     done
     
-    if [ "$VERBOSE" = "true" ]; then
-        pytest "${SPECIFIC_OPTS[@]}" "$SPECIFIC_TEST_PATH"
-        TEST_RESULT=$?
-    else
-        TEMP_OUTPUT=$(mktemp)
-        pytest "${SPECIFIC_OPTS[@]}" "$SPECIFIC_TEST_PATH" > "$TEMP_OUTPUT" 2>&1
-        TEST_RESULT=$?
-        awk '
-        /^tests\/.*::/ {
-            test_name = $1
-            if (match($0, /PASSED|FAILED|ERROR/)) {
-                status_line = $0
-                if (match(status_line, /PASSED/)) status = "PASSED"
-                else if (match(status_line, /FAILED/)) status = "FAILED"
-                else if (match(status_line, /ERROR/)) status = "ERROR"
-                print test_name " " status
-            } else {
-                pending_test = test_name
-            }
-        }
-        /PASSED|FAILED|ERROR/ {
-            if (pending_test != "" && !/^tests\//) {
-                if (match($0, /PASSED/)) status = "PASSED"
-                else if (match($0, /FAILED/)) status = "FAILED"
-                else if (match($0, /ERROR/)) status = "ERROR"
-                print pending_test " " status
-                pending_test = ""
-            }
-        }
-        ' "$TEMP_OUTPUT"
-        rm -f "$TEMP_OUTPUT"
-    fi
+    # Always show pytest output (it's already concise in non-verbose mode)
+    pytest "${SPECIFIC_OPTS[@]}" "$SPECIFIC_TEST_PATH"
+    TEST_RESULT=$?
 else
     # Run by category as before
     if [ "$NO_UNIT" == "false" ]; then

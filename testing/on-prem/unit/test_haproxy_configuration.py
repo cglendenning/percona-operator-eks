@@ -4,7 +4,7 @@ Run by default (HAProxy-first environments). If --proxysql is set, these tests a
 """
 import os
 import pytest
-from tests.conftest import log_check, TOPOLOGY_KEY
+from conftest import log_check, TOPOLOGY_KEY
 
 
 @pytest.mark.unit
@@ -12,7 +12,7 @@ def test_haproxy_enabled(is_proxysql, values_norm):
     if is_proxysql:
         pytest.skip("Skipping HAProxy tests when --proxysql is set")
 
-    path = os.path.join(os.getcwd(), 'templates', 'percona-values.yaml')
+    path = os.path.join(os.getcwd(), '..', '..', 'percona', 'templates', 'percona-values.yaml')
     with open(path, 'r', encoding='utf-8') as f:
         import yaml
         values = yaml.safe_load(f.read().replace('{{NODES}}', '3'))
@@ -29,7 +29,7 @@ def test_haproxy_pdb_and_affinity_if_present(is_proxysql):
     if is_proxysql:
         pytest.skip("Skipping HAProxy tests when --proxysql is set")
 
-    path = os.path.join(os.getcwd(), 'templates', 'percona-values.yaml')
+    path = os.path.join(os.getcwd(), '..', '..', 'percona', 'templates', 'percona-values.yaml')
     with open(path, 'r', encoding='utf-8') as f:
         import yaml
         values = yaml.safe_load(f.read().replace('{{NODES}}', '3'))
@@ -63,7 +63,7 @@ def test_haproxy_resources_if_present(is_proxysql):
     if is_proxysql:
         pytest.skip("Skipping HAProxy tests when --proxysql is set")
 
-    path = os.path.join(os.getcwd(), 'templates', 'percona-values.yaml')
+    path = os.path.join(os.getcwd(), '..', '..', 'percona', 'templates', 'percona-values.yaml')
     with open(path, 'r', encoding='utf-8') as f:
         import yaml
         values = yaml.safe_load(f.read().replace('{{NODES}}', '3'))

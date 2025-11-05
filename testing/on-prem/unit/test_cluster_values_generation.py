@@ -6,13 +6,13 @@ import os
 import yaml
 import pytest
 import re
-from tests.conftest import log_check
+from conftest import log_check
 
 
 @pytest.mark.unit
 def test_cluster_values_template_substitution():
     """Test that NODES placeholder is correctly substituted in template."""
-    template_path = os.path.join(os.path.dirname(__file__), '..', '..', 'templates', 'percona-values.yaml')
+    template_path = os.path.join(os.path.dirname(__file__), '..', '..', '..', 'percona', 'templates', 'percona-values.yaml')
     
     with open(template_path, 'r', encoding='utf-8') as f:
         template = f.read()
@@ -48,7 +48,7 @@ def test_cluster_values_template_substitution():
 @pytest.mark.unit
 def test_cluster_values_yaml_validity():
     """Test that generated cluster values produce valid YAML."""
-    template_path = os.path.join(os.path.dirname(__file__), '..', '..', 'templates', 'percona-values.yaml')
+    template_path = os.path.join(os.path.dirname(__file__), '..', '..', '..', 'percona', 'templates', 'percona-values.yaml')
     
     with open(template_path, 'r', encoding='utf-8') as f:
         template = f.read()
@@ -69,7 +69,7 @@ def test_cluster_values_yaml_validity():
 @pytest.mark.unit
 def test_cluster_values_node_count_consistency():
     """Test that PXC and ProxySQL have matching node counts."""
-    template_path = os.path.join(os.path.dirname(__file__), '..', '..', 'templates', 'percona-values.yaml')
+    template_path = os.path.join(os.path.dirname(__file__), '..', '..', '..', 'percona', 'templates', 'percona-values.yaml')
     
     with open(template_path, 'r', encoding='utf-8') as f:
         template = f.read()
@@ -91,7 +91,7 @@ def test_cluster_values_node_count_consistency():
 @pytest.mark.unit
 def test_cluster_values_minimum_nodes():
     """Test that minimum 3 nodes are enforced (Percona best practice)."""
-    template_path = os.path.join(os.path.dirname(__file__), '..', '..', 'templates', 'percona-values.yaml')
+    template_path = os.path.join(os.path.dirname(__file__), '..', '..', '..', 'percona', 'templates', 'percona-values.yaml')
     
     with open(template_path, 'r', encoding='utf-8') as f:
         template = f.read()
@@ -109,7 +109,7 @@ def test_cluster_values_minimum_nodes():
 @pytest.mark.unit
 def test_cluster_values_odd_node_count_preference():
     """Test that odd node counts are preferred for quorum (best practice)."""
-    template_path = os.path.join(os.path.dirname(__file__), '..', '..', 'templates', 'percona-values.yaml')
+    template_path = os.path.join(os.path.dirname(__file__), '..', '..', '..', 'percona', 'templates', 'percona-values.yaml')
     
     with open(template_path, 'r', encoding='utf-8') as f:
         template = f.read()
