@@ -239,12 +239,6 @@ def test_backup_retention_policy():
 
 
 @pytest.mark.unit
-def test_backup_storage_secret_reference():
-    """Test that backup storage references the correct secret."""
-    pytest.skip("On-prem uses Fleet-based configuration, secret references validated in Fleet values")
-
-
-@pytest.mark.unit
 def test_backup_schedule_timezones():
     """Test that backup schedules use appropriate times (off-peak hours)."""
     values, path = get_values_for_test()
