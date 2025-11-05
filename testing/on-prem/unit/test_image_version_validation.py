@@ -10,8 +10,11 @@ from conftest import log_check, get_values_for_test
 
 
 @pytest.mark.unit
-def test_proxysql_image_version():
+def test_proxysql_image_version(request):
     """Test that ProxySQL image version is specified and valid."""
+    if not request.config.getoption('--proxysql'):
+        pytest.skip("ProxySQL tests only run with --proxysql flag (on-prem uses HAProxy by default)")
+    
     values, path = get_values_for_test()
     
     proxysql = values['proxysql']
@@ -44,8 +47,11 @@ def test_proxysql_image_version():
 
 
 @pytest.mark.unit
-def test_proxysql_image_version_pinned():
+def test_proxysql_image_version_pinned(request):
     """Test that ProxySQL image version is pinned (not 'latest')."""
+    if not request.config.getoption('--proxysql'):
+        pytest.skip("ProxySQL tests only run with --proxysql flag (on-prem uses HAProxy by default)")
+    
     values, path = get_values_for_test()
     
     image = values['proxysql']['image']
@@ -62,8 +68,11 @@ def test_proxysql_image_version_pinned():
 
 
 @pytest.mark.unit
-def test_proxysql_image_compatibility():
+def test_proxysql_image_compatibility(request):
     """Test that ProxySQL image version is compatible with Percona Operator v1.18."""
+    if not request.config.getoption('--proxysql'):
+        pytest.skip("ProxySQL tests only run with --proxysql flag (on-prem uses HAProxy by default)")
+    
     values, path = get_values_for_test()
     
     image = values['proxysql']['image']
@@ -104,8 +113,11 @@ def test_pxc_image_version_uses_operator_default():
 
 
 @pytest.mark.unit
-def test_image_registry_configured():
+def test_image_registry_configured(request):
     """Test that images use appropriate registry (percona registry preferred)."""
+    if not request.config.getoption('--proxysql'):
+        pytest.skip("ProxySQL tests only run with --proxysql flag (on-prem uses HAProxy by default)")
+    
     values, path = get_values_for_test()
     
     # ProxySQL should use percona registry or official registry
@@ -128,16 +140,23 @@ def test_image_pull_policy_not_always():
     # Check if imagePullPolicy is specified anywhere
     # If specified, it should not be 'Always' for production workloads
     
-    # ProxySQL
-    if 'imagePullPolicy' in values.get('proxysql', {}):
+    # PXC
+    if 'imagePullPolicy' in values.get('pxc', {}):
+        pull_policy = values['pxc']['imagePullPolicy']
+        log_check("PXC imagePullPolicy should not be 'Always'", "!= Always", f"{pull_policy}", source=path)
+        assert pull_policy != 'Always', \
+            "imagePullPolicy should not be 'Always' - use 'IfNotPresent' or operator default"
+    
+    # ProxySQL (only if enabled)
+    if values.get('proxysql', {}).get('enabled') and 'imagePullPolicy' in values.get('proxysql', {}):
         pull_policy = values['proxysql']['imagePullPolicy']
         log_check("ProxySQL imagePullPolicy should not be 'Always'", "!= Always", f"{pull_policy}", source=path)
         assert pull_policy != 'Always', \
             "imagePullPolicy should not be 'Always' - use 'IfNotPresent' or operator default"
     
-    # PXC
-    if 'imagePullPolicy' in values.get('pxc', {}):
-        pull_policy = values['pxc']['imagePullPolicy']
-        log_check("PXC imagePullPolicy should not be 'Always'", "!= Always", f"{pull_policy}", source=path)
+    # HAProxy (only if enabled)
+    if values.get('haproxy', {}).get('enabled') and 'imagePullPolicy' in values.get('haproxy', {}):
+        pull_policy = values['haproxy']['imagePullPolicy']
+        log_check("HAProxy imagePullPolicy should not be 'Always'", "!= Always", f"{pull_policy}", source=path)
         assert pull_policy != 'Always', \
             "imagePullPolicy should not be 'Always' - use 'IfNotPresent' or operator default"

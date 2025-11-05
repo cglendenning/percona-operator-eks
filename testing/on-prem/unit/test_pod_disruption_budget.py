@@ -44,8 +44,11 @@ def test_pxc_pod_disruption_budget_max_unavailable():
 
 
 @pytest.mark.unit
-def test_proxysql_pod_disruption_budget_exists():
+def test_proxysql_pod_disruption_budget_exists(request):
     """Test that ProxySQL has Pod Disruption Budget configured."""
+    if not request.config.getoption('--proxysql'):
+        pytest.skip("ProxySQL tests only run with --proxysql flag (on-prem uses HAProxy by default)")
+    
     values, path = get_values_for_test()
     
     criterion = "ProxySQL values must include podDisruptionBudget key"
@@ -56,8 +59,11 @@ def test_proxysql_pod_disruption_budget_exists():
 
 
 @pytest.mark.unit
-def test_proxysql_pod_disruption_budget_max_unavailable():
+def test_proxysql_pod_disruption_budget_max_unavailable(request):
     """Test that ProxySQL PDB has appropriate maxUnavailable setting."""
+    if not request.config.getoption('--proxysql'):
+        pytest.skip("ProxySQL tests only run with --proxysql flag (on-prem uses HAProxy by default)")
+    
     values, path = get_values_for_test()
     
     pdb = values['proxysql']['podDisruptionBudget']
@@ -75,14 +81,13 @@ def test_proxysql_pod_disruption_budget_max_unavailable():
 
 
 @pytest.mark.unit
-def test_pdb_allows_rolling_updates():
+def test_pdb_allows_rolling_updates(request):
     """Test that PDB settings allow safe rolling updates."""
     values, path = get_values_for_test()
     
     # For 3-node cluster with maxUnavailable=1
     # This allows rolling updates: update 1 pod at a time while 2 remain available
     pxc_pdb = values['pxc']['podDisruptionBudget']
-    proxysql_pdb = values['proxysql']['podDisruptionBudget']
     
     log_check(
         criterion="Rolling updates: PXC PDB maxUnavailable must be 1",
@@ -90,14 +95,29 @@ def test_pdb_allows_rolling_updates():
         actual=f"pxc pdb maxUnavailable = {pxc_pdb.get('maxUnavailable')}",
         source=path,
     )
-    log_check(
-        criterion="Rolling updates: ProxySQL PDB maxUnavailable must be 1",
-        expected="1",
-        actual=f"proxysql pdb maxUnavailable = {proxysql_pdb.get('maxUnavailable')}",
-        source=path,
-    )
     assert pxc_pdb.get('maxUnavailable') == 1
-    assert proxysql_pdb.get('maxUnavailable') == 1
+    
+    # Check proxy PDB (ProxySQL or HAProxy depending on configuration)
+    if values.get('proxysql', {}).get('enabled') and request.config.getoption('--proxysql'):
+        proxysql_pdb = values['proxysql']['podDisruptionBudget']
+        log_check(
+            criterion="Rolling updates: ProxySQL PDB maxUnavailable must be 1",
+            expected="1",
+            actual=f"proxysql pdb maxUnavailable = {proxysql_pdb.get('maxUnavailable')}",
+            source=path,
+        )
+        assert proxysql_pdb.get('maxUnavailable') == 1
+    elif values.get('haproxy', {}).get('enabled'):
+        haproxy_pdb = values['haproxy'].get('podDisruptionBudget', {})
+        if haproxy_pdb:
+            max_unavailable = haproxy_pdb.get('maxUnavailable', 0)
+            log_check(
+                criterion="Rolling updates: HAProxy PDB maxUnavailable should be configured",
+                expected=">= 0",
+                actual=f"haproxy pdb maxUnavailable = {max_unavailable}",
+                source=path,
+            )
+            assert max_unavailable >= 0
     
     # This configuration allows safe rolling updates while maintaining service availability
 

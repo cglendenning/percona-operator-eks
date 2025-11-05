@@ -95,8 +95,11 @@ def test_pxc_resource_limits():
 
 
 @pytest.mark.unit
-def test_proxysql_resource_requests():
+def test_proxysql_resource_requests(request):
     """Test ProxySQL resource requests meet minimum requirements."""
+    if not request.config.getoption('--proxysql'):
+        pytest.skip("ProxySQL tests only run with --proxysql flag (on-prem uses HAProxy by default)")
+    
     values, path = get_values_for_test()
     
     proxysql_resources = values['proxysql']['resources']
@@ -112,8 +115,11 @@ def test_proxysql_resource_requests():
 
 
 @pytest.mark.unit
-def test_proxysql_resource_limits():
+def test_proxysql_resource_limits(request):
     """Test ProxySQL resource limits are set appropriately."""
+    if not request.config.getoption('--proxysql'):
+        pytest.skip("ProxySQL tests only run with --proxysql flag (on-prem uses HAProxy by default)")
+    
     values, path = get_values_for_test()
     
     proxysql_resources = values['proxysql']['resources']
@@ -142,8 +148,11 @@ def test_pxc_storage_size():
 
 
 @pytest.mark.unit
-def test_proxysql_storage_size():
+def test_proxysql_storage_size(request):
     """Test ProxySQL storage size meets minimum requirements."""
+    if not request.config.getoption('--proxysql'):
+        pytest.skip("ProxySQL tests only run with --proxysql flag (on-prem uses HAProxy by default)")
+    
     values, path = get_values_for_test()
     
     storage_size = values['proxysql']['volumeSpec']['persistentVolumeClaim']['resources']['requests']['storage']
@@ -155,7 +164,7 @@ def test_proxysql_storage_size():
 
 
 @pytest.mark.unit
-def test_resources_use_read_write_once():
+def test_resources_use_read_write_once(request):
     """Test that all persistent volumes use ReadWriteOnce access mode."""
     values, path = get_values_for_test()
     
@@ -163,6 +172,7 @@ def test_resources_use_read_write_once():
     pxc_access_mode = values['pxc']['persistence']['accessMode']
     log_check("PXC accessMode should be ReadWriteOnce", "ReadWriteOnce", f"{pxc_access_mode}", source=path); assert pxc_access_mode == 'ReadWriteOnce', "PXC should use ReadWriteOnce"
     
-    # ProxySQL access modes
-    proxysql_access_modes = values['proxysql']['volumeSpec']['persistentVolumeClaim']['accessModes']
-    log_check("ProxySQL accessModes should include ReadWriteOnce", "contains", f"{proxysql_access_modes}", source=path); assert 'ReadWriteOnce' in proxysql_access_modes, "ProxySQL should use ReadWriteOnce"
+    # ProxySQL access modes (only if ProxySQL is enabled)
+    if values.get('proxysql', {}).get('enabled') and request.config.getoption('--proxysql'):
+        proxysql_access_modes = values['proxysql']['volumeSpec']['persistentVolumeClaim']['accessModes']
+        log_check("ProxySQL accessModes should include ReadWriteOnce", "contains", f"{proxysql_access_modes}", source=path); assert 'ReadWriteOnce' in proxysql_access_modes, "ProxySQL should use ReadWriteOnce"

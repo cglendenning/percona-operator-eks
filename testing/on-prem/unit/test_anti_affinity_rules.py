@@ -88,7 +88,9 @@ def test_pxc_anti_affinity_label_selector():
 
 
 @pytest.mark.unit
-def test_proxysql_anti_affinity_required():
+def test_proxysql_anti_affinity_required(request):
+    if not request.config.getoption('--proxysql'):
+        pytest.skip("ProxySQL tests only run with --proxysql flag (on-prem uses HAProxy by default)")
     """Test that ProxySQL/HAProxy has required anti-affinity rules."""
     values, path = get_values_for_test()
     
@@ -122,7 +124,9 @@ def test_proxysql_anti_affinity_required():
 
 
 @pytest.mark.unit
-def test_proxysql_anti_affinity_topology_distribution():
+def test_proxysql_anti_affinity_topology_distribution(request):
+    if not request.config.getoption('--proxysql'):
+        pytest.skip("ProxySQL tests only run with --proxysql flag (on-prem uses HAProxy by default)")
     """Test that ProxySQL/HAProxy anti-affinity uses the correct topology key (zone on EKS, hostname on on-prem)."""
     values, path = get_values_for_test()
     
@@ -163,7 +167,9 @@ def test_proxysql_anti_affinity_topology_distribution():
 
 
 @pytest.mark.unit
-def test_proxysql_anti_affinity_label_selector():
+def test_proxysql_anti_affinity_label_selector(request):
+    if not request.config.getoption('--proxysql'):
+        pytest.skip("ProxySQL tests only run with --proxysql flag (on-prem uses HAProxy by default)")
     """Test that ProxySQL/HAProxy anti-affinity uses correct label selector."""
     pytest.skip("Label selector validation not applicable for PerconaXtraDBCluster CR format (operator-managed)")
 
