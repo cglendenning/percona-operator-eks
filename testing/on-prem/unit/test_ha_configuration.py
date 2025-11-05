@@ -129,12 +129,16 @@ def test_multi_az_anti_affinity():
 
 
 @pytest.mark.unit
-def test_backup_enabled_for_ha():
-    """Test that backups are enabled for disaster recovery."""
+def test_backup_configured_for_ha():
+    """Test that backup storage is configured for disaster recovery."""
     values, path = get_values_for_test()
     
-    assert values['backup']['enabled'] is True, \
-        "Backups must be enabled for disaster recovery in HA deployments"
+    # Percona operator doesn't have backup.enabled - backups are configured via storages
+    backup = values.get('backup', {})
+    storages = backup.get('storages', {})
+    
+    assert len(storages) > 0, \
+        "Backup storage must be configured for disaster recovery in HA deployments"
 
 
 @pytest.mark.unit
@@ -144,6 +148,41 @@ def test_pitr_enabled_for_point_in_time_recovery():
     
     assert values['backup']['pitr']['enabled'] is True, \
         "PITR must be enabled for point-in-time recovery in HA deployments"
+
+
+@pytest.mark.unit
+def test_complete_backup_strategy_for_ha():
+    """Test that a complete backup strategy is configured for HA: PITR + scheduled backups."""
+    values, path = get_values_for_test()
+    
+    backup = values.get('backup', {})
+    
+    # Check PITR is enabled (for continuous binary log shipping)
+    pitr = backup.get('pitr', {})
+    pitr_enabled = pitr.get('enabled', False)
+    assert pitr_enabled is True, \
+        "PITR must be enabled in HA deployments for continuous backup and point-in-time recovery"
+    
+    # Check scheduled backups exist (for base backups)
+    schedules = backup.get('schedule', [])
+    assert len(schedules) > 0, \
+        "Scheduled backups are required in HA deployments - PITR needs base backups to restore from"
+    
+    # Verify storage is configured for both
+    storages = backup.get('storages', {})
+    assert len(storages) > 0, \
+        "Backup storage must be configured for disaster recovery in HA deployments"
+    
+    # Verify PITR and schedules use valid storage
+    pitr_storage = pitr.get('storageName')
+    if pitr_storage:
+        assert pitr_storage in storages, \
+            f"PITR storage '{pitr_storage}' must exist in backup.storages for HA deployments"
+    
+    for schedule in schedules:
+        storage_name = schedule.get('storageName')
+        assert storage_name in storages, \
+            f"Schedule storage '{storage_name}' must exist in backup.storages for HA deployments"
 
 
 @pytest.mark.unit

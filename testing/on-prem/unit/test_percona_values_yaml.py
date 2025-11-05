@@ -112,8 +112,19 @@ def test_percona_values_backup_configuration():
     values, path = get_values_for_test()
     
     backup = values['backup']
-    log_check("backup.enabled should be true", "True", f"{backup['enabled']}", source=path); assert backup['enabled'] is True
-    log_check("backup.pitr.enabled should be true", "True", f"{backup['pitr']['enabled']}", source=path); assert backup['pitr']['enabled'] is True
+    # Note: Percona operator doesn't have backup.enabled field - backups are configured via storages and schedules
+    
+    # Complete backup strategy requires BOTH PITR and scheduled backups
+    log_check("backup.pitr.enabled should be true", "True", f"{backup['pitr']['enabled']}", source=path)
+    assert backup['pitr']['enabled'] is True, \
+        "PITR must be enabled for continuous backup and point-in-time recovery"
+    
+    schedules = backup.get('schedule', [])
+    log_check("backup.schedule must have entries", "> 0", f"{len(schedules)}", source=path)
+    assert len(schedules) > 0, \
+        "Scheduled backups are required for proper DR - PITR needs base backups to restore from"
+    
+    # Check PITR details
     log_check("backup.pitr.storageName", "minio-backup", f"{backup['pitr']['storageName']}", source=path); assert backup['pitr']['storageName'] == 'minio-backup'
     log_check("backup.pitr.timeBetweenUploads", "60", f"{backup['pitr']['timeBetweenUploads']}", source=path); assert backup['pitr']['timeBetweenUploads'] == 60
     
@@ -126,8 +137,7 @@ def test_percona_values_backup_configuration():
     log_check("s3.forcePathStyle", "True", f"{storage['s3']['forcePathStyle']}", source=path); assert storage['s3']['forcePathStyle'] is True
     log_check("s3.credentialsSecret", "percona-backup-minio-credentials", f"{storage['s3']['credentialsSecret']}", source=path); assert storage['s3']['credentialsSecret'] == 'percona-backup-minio-credentials'
     
-    # Check backup schedules
-    schedules = backup['schedule']
+    # Check backup schedules (now verified as > 0 above)
     log_check("backup.schedule length", "3", f"{len(schedules)}", source=path); assert len(schedules) == 3
     
     # Daily backup
