@@ -361,7 +361,6 @@ export TEST_BACKUP_BUCKET=${TEST_BACKUP_BUCKET:-percona-backups}
 export TEST_OPERATOR_NAMESPACE=${TEST_OPERATOR_NAMESPACE:-$TEST_NAMESPACE}
 export MINIO_NAMESPACE=${MINIO_NAMESPACE:-minio}
 export CHAOS_NAMESPACE=${CHAOS_NAMESPACE:-litmus}
-export CHARTMUSEUM_NAMESPACE=${CHARTMUSEUM_NAMESPACE:-chartmuseum}
 export ON_PREM=${ON_PREM}
 # On-prem sensible defaults
 if [ "$ON_PREM" = "true" ]; then
@@ -566,7 +565,6 @@ verbose_echo "  Percona Namespace: $TEST_NAMESPACE"
 verbose_echo "  Operator Namespace: $TEST_OPERATOR_NAMESPACE"
 verbose_echo "  MinIO Namespace: $MINIO_NAMESPACE"
 verbose_echo "  Chaos Namespace: $CHAOS_NAMESPACE"
-verbose_echo "  ChartMuseum Namespace: $CHARTMUSEUM_NAMESPACE"
 verbose_echo "  Mode: $( [ \"$ON_PREM\" = \"true\" ] && echo on-prem || echo eks/aws )"
 verbose_echo "  StorageClass Name: $STORAGE_CLASS_NAME"
 verbose_echo "  Anti-affinity Topology Key: $TOPOLOGY_KEY"

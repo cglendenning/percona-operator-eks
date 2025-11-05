@@ -17,7 +17,7 @@ echo -e "${BLUE}Percona Test Suite - Namespace Configuration${NC}"
 echo -e "${BLUE}========================================${NC}"
 echo ""
 echo "This script will help you configure namespace values for environments"
-echo "where Percona, MinIO, Litmus, and ChartMuseum are in different namespaces."
+echo "where Percona, MinIO, and Litmus are in different namespaces."
 echo ""
 echo -e "${YELLOW}Press Enter to use the default value shown in [brackets]${NC}"
 echo ""
@@ -66,7 +66,6 @@ prompt_with_default "PERCONA_NS" "percona" "Percona XtraDB Cluster Namespace (wh
 prompt_with_default "OPERATOR_NS" "$PERCONA_NS" "Percona Operator Namespace (usually same as Percona namespace)"
 prompt_with_default "MINIO_NS" "minio" "MinIO Namespace (for S3-compatible backup storage)"
 prompt_with_default "CHAOS_NS" "litmus" "Litmus Chaos Namespace (for resiliency/DR testing)"
-prompt_with_default "CHARTMUSEUM_NS" "chartmuseum" "ChartMuseum Namespace (for internal Helm chart repository)"
 
 # Prompt for other common settings
 echo -e "${CYAN}Other Configuration${NC}"
@@ -80,7 +79,7 @@ if [ "$AUTO_DETECT" = true ]; then
     echo -e "${BLUE}Verifying namespaces...${NC}"
     ALL_OK=true
     
-    for ns_var in PERCONA_NS OPERATOR_NS MINIO_NS CHAOS_NS CHARTMUSEUM_NS; do
+    for ns_var in PERCONA_NS OPERATOR_NS MINIO_NS CHAOS_NS; do
         ns_value="${!ns_var}"
         ns_label=$(echo "$ns_var" | sed 's/_NS//; s/_/ /g')
         
@@ -113,7 +112,6 @@ echo "export TEST_NAMESPACE='${PERCONA_NS}'"
 echo "export TEST_OPERATOR_NAMESPACE='${OPERATOR_NS}'"
 echo "export MINIO_NAMESPACE='${MINIO_NS}'"
 echo "export CHAOS_NAMESPACE='${CHAOS_NS}'"
-echo "export CHARTMUSEUM_NAMESPACE='${CHARTMUSEUM_NS}'"
 echo "export TEST_CLUSTER_NAME='${CLUSTER_NAME}'"
 echo "export TEST_BACKUP_TYPE='${BACKUP_TYPE}'"
 echo "export TEST_BACKUP_BUCKET='${BACKUP_BUCKET}'"
@@ -135,7 +133,6 @@ export TEST_NAMESPACE='${PERCONA_NS}'
 export TEST_OPERATOR_NAMESPACE='${OPERATOR_NS}'
 export MINIO_NAMESPACE='${MINIO_NS}'
 export CHAOS_NAMESPACE='${CHAOS_NS}'
-export CHARTMUSEUM_NAMESPACE='${CHARTMUSEUM_NS}'
 
 # Cluster Configuration
 export TEST_CLUSTER_NAME='${CLUSTER_NAME}'
@@ -168,7 +165,6 @@ echo "TEST_NAMESPACE='${PERCONA_NS}' \\"
 echo "TEST_OPERATOR_NAMESPACE='${OPERATOR_NS}' \\"
 echo "MINIO_NAMESPACE='${MINIO_NS}' \\"
 echo "CHAOS_NAMESPACE='${CHAOS_NS}' \\"
-echo "CHARTMUSEUM_NAMESPACE='${CHARTMUSEUM_NS}' \\"
 echo "TEST_CLUSTER_NAME='${CLUSTER_NAME}' \\"
 echo "TEST_BACKUP_TYPE='${BACKUP_TYPE}' \\"
 echo "TEST_BACKUP_BUCKET='${BACKUP_BUCKET}' \\"

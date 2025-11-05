@@ -20,11 +20,6 @@ except (ImportError, AttributeError):
 
 console = Console()
 
-# ChartMuseum port-forward configuration
-CHARTMUSEUM_NAMESPACE = os.getenv('CHARTMUSEUM_NAMESPACE', 'chartmuseum')
-CHARTMUSEUM_SERVICE = 'chartmuseum'
-CHARTMUSEUM_LOCAL_PORT = 8765
-
 # Add custom pytest option for MTTR timeout and chaos triggering
 def pytest_addoption(parser):
     """Add custom command-line options"""
@@ -394,104 +389,6 @@ def check_cluster_connectivity():
         return result.returncode == 0
     except (subprocess.TimeoutExpired, subprocess.CalledProcessError):
         return False
-
-
-@pytest.fixture(scope="module")
-def chartmuseum_port_forward(request):
-    """
-    Set up port-forwarding to ChartMuseum for tests that need to access internal Helm charts.
-    This fixture is module-scoped, so the port-forward is shared across tests in the same module.
-    """
-    import time
-    import signal
-    
-    port_forward_process = None
-    
-    # Check if we're in verbose mode
-    verbose = request.config.getoption('verbose', 0) > 0
-    
-    try:
-        # Check if ChartMuseum is available
-        check_result = subprocess.run(
-            ['kubectl', 'get', 'svc', '-n', CHARTMUSEUM_NAMESPACE, CHARTMUSEUM_SERVICE],
-            capture_output=True,
-            timeout=10
-        )
-        
-        if check_result.returncode != 0:
-            pytest.skip("ChartMuseum is not available")
-        
-        # Start port-forward (silently unless verbose)
-        if verbose:
-            print(f"\n[ChartMuseum] Setting up port-forward on localhost:{CHARTMUSEUM_LOCAL_PORT}")
-        
-        port_forward_process = subprocess.Popen(
-            [
-                'kubectl', 'port-forward',
-                '-n', CHARTMUSEUM_NAMESPACE,
-                f'svc/{CHARTMUSEUM_SERVICE}',
-                f'{CHARTMUSEUM_LOCAL_PORT}:8080'
-            ],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE
-        )
-        
-        # Wait for port-forward to be ready
-        time.sleep(3)
-        
-        # Check if port-forward is still running
-        if port_forward_process.poll() is not None:
-            stderr = port_forward_process.stderr.read().decode() if port_forward_process.stderr else ""
-            pytest.skip(f"Port-forward to ChartMuseum failed to start: {stderr}")
-        
-        # Add internal Helm repo pointing to localhost
-        try:
-            subprocess.run(
-                ['helm', 'repo', 'remove', 'internal'],
-                capture_output=True,
-                timeout=10
-            )
-        except:
-            pass  # Repo might not exist
-        
-        add_result = subprocess.run(
-            ['helm', 'repo', 'add', 'internal', f'http://localhost:{CHARTMUSEUM_LOCAL_PORT}'],
-            capture_output=True,
-            text=True,
-            timeout=10
-        )
-        
-        if add_result.returncode != 0:
-            if port_forward_process:
-                port_forward_process.terminate()
-            pytest.skip(f"Failed to add internal Helm repo: {add_result.stderr}")
-        
-        # Update repos
-        subprocess.run(
-            ['helm', 'repo', 'update'],
-            capture_output=True,
-            timeout=30
-        )
-        
-        if verbose:
-            print("[ChartMuseum] Port-forward established")
-        
-        yield f'http://localhost:{CHARTMUSEUM_LOCAL_PORT}'
-        
-    finally:
-        # Cleanup (silently)
-        if port_forward_process:
-            try:
-                port_forward_process.terminate()
-                port_forward_process.wait(timeout=5)
-            except:
-                try:
-                    port_forward_process.kill()
-                except:
-                    pass  # Process already dead
-            
-            if verbose:
-                print("\n[ChartMuseum] Port-forward closed")
 
 
 @pytest.fixture(scope="session", autouse=True)
