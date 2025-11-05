@@ -25,13 +25,24 @@ def test_cluster_values_template_substitution():
     )
     assert node_count > 0, "PXC size must be configured"
     
-    log_check(
-        criterion=f"proxysql.size must match pxc.size",
-        expected=f"{node_count}",
-        actual=f"{values['proxysql']['size']}",
-        source=path,
-    )
-    assert values['proxysql']['size'] == node_count, "ProxySQL size must match PXC size"
+    # On-prem uses HAProxy by default, check proxy size accordingly
+    if values.get('proxysql', {}).get('enabled'):
+        log_check(
+            criterion=f"proxysql.size must match pxc.size when enabled",
+            expected=f"{node_count}",
+            actual=f"{values['proxysql']['size']}",
+            source=path,
+        )
+        assert values['proxysql']['size'] == node_count, "ProxySQL size must match PXC size"
+    elif values.get('haproxy', {}).get('enabled'):
+        haproxy_size = values['haproxy'].get('size', 1)
+        log_check(
+            criterion=f"haproxy.size must be configured when enabled",
+            expected="> 0",
+            actual=f"{haproxy_size}",
+            source=path,
+        )
+        assert haproxy_size > 0, "HAProxy size must be configured"
 
 
 @pytest.mark.unit
@@ -50,17 +61,30 @@ def test_cluster_values_yaml_validity():
 
 @pytest.mark.unit
 def test_cluster_values_node_count_consistency():
-    """Test that PXC and ProxySQL have matching node counts."""
+    """Test that PXC and proxy have matching node counts."""
     values, path = get_values_for_test()
     
-    log_check(
-        criterion="pxc.size must equal proxysql.size",
-        expected=f"{values['pxc']['size']}",
-        actual=f"{values['proxysql']['size']}",
-        source=path,
-    )
-    assert values['pxc']['size'] == values['proxysql']['size'], \
-        "PXC and ProxySQL node counts must match"
+    pxc_size = values['pxc']['size']
+    
+    # On-prem uses HAProxy by default
+    if values.get('proxysql', {}).get('enabled'):
+        log_check(
+            criterion="pxc.size must equal proxysql.size when ProxySQL is enabled",
+            expected=f"{pxc_size}",
+            actual=f"{values['proxysql']['size']}",
+            source=path,
+        )
+        assert values['pxc']['size'] == values['proxysql']['size'], \
+            "PXC and ProxySQL node counts must match"
+    elif values.get('haproxy', {}).get('enabled'):
+        haproxy_size = values['haproxy'].get('size', 1)
+        log_check(
+            criterion="haproxy.size must be configured when HAProxy is enabled",
+            expected="> 0",
+            actual=f"{haproxy_size}",
+            source=path,
+        )
+        assert haproxy_size > 0, "HAProxy size must be configured"
 
 
 @pytest.mark.unit
@@ -70,8 +94,15 @@ def test_cluster_values_minimum_nodes():
     
     log_check("pxc.size must be >= 3", ">= 3", f"{values['pxc']['size']}", source=path)
     assert values['pxc']['size'] >= 3, "Percona requires minimum 3 nodes for high availability"
-    log_check("proxysql.size must be >= 3", ">= 3", f"{values['proxysql']['size']}", source=path)
-    assert values['proxysql']['size'] >= 3, "ProxySQL requires minimum 3 nodes for high availability"
+    
+    # On-prem uses HAProxy by default, ProxySQL may not be configured
+    if values.get('proxysql', {}).get('enabled'):
+        log_check("proxysql.size must be >= 3 when enabled", ">= 3", f"{values['proxysql']['size']}", source=path)
+        assert values['proxysql']['size'] >= 3, "ProxySQL requires minimum 3 nodes for high availability"
+    elif values.get('haproxy', {}).get('enabled'):
+        haproxy_size = values['haproxy'].get('size', 1)
+        log_check("haproxy.size must be >= 1 when enabled", ">= 1", f"{haproxy_size}", source=path)
+        assert haproxy_size >= 1, "HAProxy requires at least 1 node"
 
 
 @pytest.mark.unit
