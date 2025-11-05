@@ -82,12 +82,6 @@ def test_pxc_anti_affinity_topology_distribution():
 
 
 @pytest.mark.unit
-def test_pxc_anti_affinity_label_selector():
-    """Test that PXC anti-affinity uses correct label selector."""
-    pytest.skip("Label selector validation not applicable for PerconaXtraDBCluster CR format (operator-managed)")
-
-
-@pytest.mark.unit
 def test_anti_affinity_prevents_single_host_or_zone_packing():
     """Test that anti-affinity rules prevent all pods from being on same host (on-prem uses HAProxy)."""
     values, path = get_values_for_test()
