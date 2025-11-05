@@ -312,7 +312,7 @@ async function validateEksCluster(ns: string, nodes: number) {
       logInfo('Checking DNS resolution...');
       const { readFile } = await import('fs/promises');
       const { resolve } = await import('path');
-      const templatePath = resolve(process.cwd(), 'templates', 'test', 'dns-test-pod.yaml');
+      const templatePath = resolve(process.cwd(), 'percona', 'templates', 'test', 'dns-test-pod.yaml');
       let dnsTestPod = await readFile(templatePath, 'utf8');
       dnsTestPod = dnsTestPod.replace(/\{\{NAMESPACE\}\}/g, ns);
       
@@ -349,7 +349,7 @@ async function validateEksCluster(ns: string, nodes: number) {
     try {
       const { readFile } = await import('fs/promises');
       const { resolve } = await import('path');
-      const templatePath = resolve(process.cwd(), 'templates', 'test', 'test-secret.yaml');
+      const templatePath = resolve(process.cwd(), 'percona', 'templates', 'test', 'test-secret.yaml');
       let testSecret = await readFile(templatePath, 'utf8');
       testSecret = testSecret.replace(/\{\{NAMESPACE\}\}/g, ns);
       
@@ -368,7 +368,7 @@ async function validateEksCluster(ns: string, nodes: number) {
     try {
       const { readFile } = await import('fs/promises');
       const { resolve } = await import('path');
-      const templatePath = resolve(process.cwd(), 'templates', 'test', 'test-sts.yaml');
+      const templatePath = resolve(process.cwd(), 'percona', 'templates', 'test', 'test-sts.yaml');
       let testSts = await readFile(templatePath, 'utf8');
       testSts = testSts.replace(/\{\{NAMESPACE\}\}/g, ns);
         

@@ -8,6 +8,7 @@ This directory contains everything needed to deploy and manage Percona XtraDB Cl
 - `templates/` - Kubernetes manifests and Helm values
   - `chartmuseum/` - Internal Helm repository manifests
   - `litmuschaos/` - Chaos engineering resources
+  - `test/` - Test manifests for validation checks (DNS, secrets, StatefulSets)
   - `percona-values.yaml` - Main Helm values for Percona cluster
   - `storageclass-gp3.yaml` - AWS EBS storage class definition
   - `minio-credentials-secret.yaml` - MinIO backup storage credentials
