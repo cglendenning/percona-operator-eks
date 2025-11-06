@@ -10,6 +10,34 @@ from conftest import log_check, get_values_for_test
 
 
 @pytest.mark.unit
+def test_pxc_image_version_pinned():
+    """Test that PXC image is pinned to approved version for on-prem."""
+    values, path = get_values_for_test()
+    
+    pxc = values['pxc']
+    expected_image = "percona/percona-xtradb-cluster:8.4.6-6.1"
+    
+    # On-prem should have PXC image explicitly specified and pinned
+    log_check(
+        criterion="PXC image must be specified in values",
+        expected="image key present",
+        actual=f"present={'image' in pxc}",
+        source=path
+    )
+    assert 'image' in pxc, "PXC image must be specified for on-prem deployments"
+    
+    actual_image = pxc['image']
+    log_check(
+        criterion="PXC image must match approved version",
+        expected=expected_image,
+        actual=actual_image,
+        source=path
+    )
+    assert actual_image == expected_image, \
+        f"PXC image must be {expected_image} for on-prem, got {actual_image}"
+
+
+@pytest.mark.unit
 def test_pxc_image_version_uses_operator_default():
     """Test that PXC image version uses operator defaults (best practice)."""
     values, path = get_values_for_test()
