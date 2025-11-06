@@ -15,15 +15,9 @@ if [[ -z "$JIRA_URL" ]]; then
     exit 1
 fi
 
-if [[ -z "$JIRA_EMAIL" ]]; then
-    echo -e "${RED}Error: JIRA_EMAIL environment variable is not set${NC}"
-    echo "Please set it using: export JIRA_EMAIL=your-email@example.com"
-    exit 1
-fi
-
-if [[ -z "$JIRA_API_TOKEN" ]]; then
-    echo -e "${RED}Error: JIRA_API_TOKEN environment variable is not set${NC}"
-    echo "Please set it using: export JIRA_API_TOKEN=your-api-token"
+if [[ -z "$JIRA_PAT" ]]; then
+    echo -e "${RED}Error: JIRA_PAT environment variable is not set${NC}"
+    echo "Please set it using: export JIRA_PAT=your-personal-access-token"
     exit 1
 fi
 
@@ -34,9 +28,6 @@ if ! command -v jq &> /dev/null; then
     exit 1
 fi
 
-# Base64 encode credentials for basic auth
-AUTH=$(echo -n "${JIRA_EMAIL}:${JIRA_API_TOKEN}" | base64)
-
 # Function to make API calls
 jira_api() {
     local method=$1
@@ -45,14 +36,14 @@ jira_api() {
     
     if [[ -n "$data" ]]; then
         curl -s -X "$method" \
-            -H "Authorization: Basic ${AUTH}" \
+            -H "Authorization: Bearer ${JIRA_PAT}" \
             -H "Content-Type: application/json" \
             -H "Accept: application/json" \
             -d "$data" \
             "${JIRA_URL}/rest/api/3/${endpoint}"
     else
         curl -s -X "$method" \
-            -H "Authorization: Basic ${AUTH}" \
+            -H "Authorization: Bearer ${JIRA_PAT}" \
             -H "Content-Type: application/json" \
             -H "Accept: application/json" \
             "${JIRA_URL}/rest/api/3/${endpoint}"

@@ -9,9 +9,10 @@ Command-line tools for creating Jira Epics and Tasks.
    brew install jq  # macOS
    ```
 
-2. **Jira API Token** - Generate from your Jira account:
+2. **Jira Personal Access Token (PAT)** - Generate from your Jira account:
    - Go to https://id.atlassian.com/manage-profile/security/api-tokens
-   - Click "Create API token"
+   - Click "Create API token" 
+   - Or for PAT: Go to your Jira instance → Profile → Personal Access Tokens
    - Save the token securely
 
 ## Setup
@@ -20,8 +21,7 @@ Set the following environment variables:
 
 ```bash
 export JIRA_URL=https://your-domain.atlassian.net
-export JIRA_EMAIL=your-email@example.com
-export JIRA_API_TOKEN=your-api-token-here
+export JIRA_PAT=your-personal-access-token-here
 ```
 
 > **Tip:** Add these to your `~/.bashrc`, `~/.zshrc`, or `~/.bash_profile` to make them persistent.
@@ -118,9 +118,9 @@ Creating Task...
 ### Authentication Errors
 
 If you get 401 Unauthorized errors:
-- Verify your `JIRA_EMAIL` is correct
-- Verify your `JIRA_API_TOKEN` is valid
-- Make sure you're using an API token, not your password
+- Verify your `JIRA_PAT` is valid and not expired
+- Make sure you're using a Personal Access Token
+- Regenerate your PAT if necessary
 
 ### Project Not Found
 
