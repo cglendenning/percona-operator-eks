@@ -27,12 +27,25 @@ def test_percona_values_pxc_configuration():
     log_check("pxc.requests.cpu should be 500m", "500m", f"{pxc['resources']['requests']['cpu']}", source=path); assert pxc['resources']['requests']['cpu'] == '500m'
     log_check("pxc.limits.memory should be 2Gi", "2Gi", f"{pxc['resources']['limits']['memory']}", source=path); assert pxc['resources']['limits']['memory'] == '2Gi'
     log_check("pxc.limits.cpu should be 1", "1", f"{pxc['resources']['limits']['cpu']}", source=path); assert pxc['resources']['limits']['cpu'] == 1
-    log_check("pxc.persistence.enabled should be true", "True", f"{pxc['persistence']['enabled']}", source=path); assert pxc['persistence']['enabled'] is True
-    log_check("pxc.persistence.size should be 20Gi", "20Gi", f"{pxc['persistence']['size']}", source=path); assert pxc['persistence']['size'] == '20Gi'
-    log_check("pxc.persistence.accessMode should be ReadWriteOnce", "ReadWriteOnce", f"{pxc['persistence']['accessMode']}", source=path); assert pxc['persistence']['accessMode'] == 'ReadWriteOnce'
-    # Storage class comes from Fleet configuration
+    
+    # Storage configuration - on-prem uses volumeSpec (raw Kubernetes format)
+    pvc_spec = pxc['volumeSpec']['persistentVolumeClaim']
+    
+    # Check access modes (critical for data integrity)
+    access_modes = pvc_spec.get('accessModes', [])
+    log_check("pxc.volumeSpec accessModes should include ReadWriteOnce", "ReadWriteOnce in list", f"{access_modes}", source=path)
+    assert 'ReadWriteOnce' in access_modes, "PXC must use ReadWriteOnce access mode to prevent data corruption"
+    
+    # Check storage size
+    storage_size = pvc_spec['resources']['requests']['storage']
+    log_check("pxc.volumeSpec storage size should be 20Gi", "20Gi", f"{storage_size}", source=path)
+    assert storage_size == '20Gi'
+    
+    # Check storage class
     expected_sc = STORAGE_CLASS_NAME
-    log_check("pxc.persistence.storageClass should match expected", f"{expected_sc}", f"{pxc['persistence']['storageClass']}", source=path); assert pxc['persistence']['storageClass'] == expected_sc
+    storage_class = pvc_spec.get('storageClassName', '')
+    log_check("pxc.volumeSpec storageClassName should match expected", f"{expected_sc}", f"{storage_class}", source=path)
+    assert storage_class == expected_sc
     log_check("pxc.pdb.maxUnavailable should be 1", "1", f"{pxc['podDisruptionBudget']['maxUnavailable']}", source=path); assert pxc['podDisruptionBudget']['maxUnavailable'] == 1
     
     # Check anti-affinity (on-prem uses antiAffinityTopologyKey)

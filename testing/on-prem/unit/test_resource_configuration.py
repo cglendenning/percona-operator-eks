@@ -99,12 +99,16 @@ def test_pxc_storage_size():
     """Test PXC storage size meets minimum requirements."""
     values, path = get_values_for_test()
     
-    storage_size = values['pxc']['persistence']['size']
+    pxc = values['pxc']
+    
+    # On-prem uses volumeSpec (raw Kubernetes format)
+    storage_size = pxc['volumeSpec']['persistentVolumeClaim']['resources']['requests']['storage']
     size_bytes = parse_resource_value(storage_size)
     
     # Minimum 20Gi for PXC
     min_storage = 20 * 1024 * 1024 * 1024  # 20Gi
-    log_check("PXC minimum storage size", ">= 20Gi", f"{int(size_bytes)} bytes", source=path); assert size_bytes >= min_storage, "PXC minimum storage is 20Gi"
+    log_check("PXC minimum storage size", ">= 20Gi", f"{int(size_bytes)} bytes", source=path)
+    assert size_bytes >= min_storage, "PXC minimum storage is 20Gi"
 
 
 @pytest.mark.unit
@@ -112,7 +116,9 @@ def test_resources_use_read_write_once():
     """Test that all persistent volumes use ReadWriteOnce access mode."""
     values, path = get_values_for_test()
     
-    # PXC access mode
-    pxc_access_mode = values['pxc']['persistence']['accessMode']
-    log_check("PXC accessMode should be ReadWriteOnce", "ReadWriteOnce", f"{pxc_access_mode}", source=path)
-    assert pxc_access_mode == 'ReadWriteOnce', "PXC should use ReadWriteOnce"
+    pxc = values['pxc']
+    
+    # On-prem uses volumeSpec (raw Kubernetes format)
+    access_modes = pxc['volumeSpec']['persistentVolumeClaim'].get('accessModes', [])
+    log_check("PXC accessModes should include ReadWriteOnce", "ReadWriteOnce in list", f"{access_modes}", source=path)
+    assert 'ReadWriteOnce' in access_modes, "PXC must use ReadWriteOnce access mode to prevent data corruption"
