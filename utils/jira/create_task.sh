@@ -30,9 +30,8 @@ fi
 
 # Function to make API calls with retry logic
 jira_api() {
-    local method=$1
-    local endpoint=$2
-    local data=$3
+    local endpoint=$1
+    local data=$2
     local max_retries=3
     local retry_count=0
     local wait_time=2
@@ -44,17 +43,14 @@ jira_api() {
         local temp_error_file=$(mktemp)
         
         if [[ -n "$data" ]]; then
-            response=$(curl -k -s -w "\n%{http_code}" -X "$method" \
+            response=$(curl -k -s -w "\n%{http_code}" \
                 -H "Authorization: Bearer ${JIRA_PAT}" \
                 -H "Content-Type: application/json" \
-                -H "Accept: application/json" \
                 -d "$data" \
                 "${JIRA_URL}/rest/api/2/${endpoint}" 2>"$temp_error_file")
         else
-            response=$(curl -k -s -w "\n%{http_code}" -X "$method" \
+            response=$(curl -k -s -w "\n%{http_code}" \
                 -H "Authorization: Bearer ${JIRA_PAT}" \
-                -H "Content-Type: application/json" \
-                -H "Accept: application/json" \
                 "${JIRA_URL}/rest/api/2/${endpoint}" 2>"$temp_error_file")
         fi
         
@@ -144,7 +140,7 @@ echo -e "\n${YELLOW}Searching for Epic...${NC}"
 
 # Search for the Epic using JQL
 search_jql="type = Epic AND summary ~ \"${epic_name}\" ORDER BY created DESC"
-search_response=$(jira_api "GET" "search?jql=$(echo "$search_jql" | jq -sRr @uri)&maxResults=10")
+search_response=$(jira_api "search?jql=$(echo "$search_jql" | jq -sRr @uri)&maxResults=10")
 
 if [[ $? -ne 0 ]]; then
     echo -e "${RED}Failed to search for Epics in Jira${NC}"
@@ -225,7 +221,7 @@ fi
 
 # Get the Task issue type ID
 echo -e "\n${YELLOW}Looking up Task issue type...${NC}"
-issue_types_response=$(jira_api "GET" "issuetype")
+issue_types_response=$(jira_api "issuetype")
 
 if [[ $? -ne 0 ]]; then
     echo -e "${RED}Failed to retrieve issue types from Jira${NC}"
@@ -268,7 +264,7 @@ create_data=$(cat <<EOF
 EOF
 )
 
-create_response=$(jira_api "POST" "issue" "$create_data")
+create_response=$(jira_api "issue" "$create_data")
 
 if [[ $? -ne 0 ]]; then
     echo -e "${RED}Failed to create Task${NC}"
