@@ -49,13 +49,13 @@ jira_api() {
                 -H "Content-Type: application/json" \
                 -H "Accept: application/json" \
                 -d "$data" \
-                "${JIRA_URL}/rest/api/3/${endpoint}" 2>"$temp_error_file")
+                "${JIRA_URL}/rest/api/2/${endpoint}" 2>"$temp_error_file")
         else
             response=$(curl -k -s -w "\n%{http_code}" -X "$method" \
                 -H "Authorization: Bearer ${JIRA_PAT}" \
                 -H "Content-Type: application/json" \
                 -H "Accept: application/json" \
-                "${JIRA_URL}/rest/api/3/${endpoint}" 2>"$temp_error_file")
+                "${JIRA_URL}/rest/api/2/${endpoint}" 2>"$temp_error_file")
         fi
         
         # Capture curl errors
@@ -112,7 +112,7 @@ jira_api() {
                 continue
             else
                 echo -e "${RED}Error: Could not connect to Jira after $max_retries retries${NC}" >&2
-                echo "URL: ${JIRA_URL}/rest/api/3/${endpoint}" >&2
+                echo "URL: ${JIRA_URL}/rest/api/2/${endpoint}" >&2
                 if [[ -n "$curl_error" ]]; then
                     echo -e "${RED}Curl error: $curl_error${NC}" >&2
                 fi
@@ -248,6 +248,7 @@ echo -e "${YELLOW}Creating Task...${NC}"
 task_title_escaped=$(echo "$task_title" | jq -Rs .)
 task_description_escaped=$(echo "$task_description" | jq -Rs .)
 
+# API v2 uses plain text for description, not document format
 create_data=$(cat <<EOF
 {
   "fields": {
@@ -255,21 +256,7 @@ create_data=$(cat <<EOF
       "key": "${epic_project_key}"
     },
     "summary": ${task_title_escaped},
-    "description": {
-      "type": "doc",
-      "version": 1,
-      "content": [
-        {
-          "type": "paragraph",
-          "content": [
-            {
-              "type": "text",
-              "text": ${task_description_escaped}
-            }
-          ]
-        }
-      ]
-    },
+    "description": ${task_description_escaped},
     "issuetype": {
       "id": "${task_type_id}"
     },

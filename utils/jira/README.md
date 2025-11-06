@@ -10,19 +10,20 @@ Command-line tools for creating Jira Epics and Tasks.
    ```
 
 2. **Jira Personal Access Token (PAT)** - Generate from your Jira account:
-   - Go to https://id.atlassian.com/manage-profile/security/api-tokens
-   - Click "Create API token" 
-   - Or for PAT: Go to your Jira instance → Profile → Personal Access Tokens
+   - For self-hosted Jira: Go to your Jira instance → Profile → Personal Access Tokens → Create token
    - Save the token securely
+   - **Note:** Self-hosted Jira requires version 8.14+ for PAT support
 
 ## Setup
 
 Set the following environment variables:
 
 ```bash
-export JIRA_URL=https://your-domain.atlassian.net
+export JIRA_URL=https://jira.company.com
 export JIRA_PAT=your-personal-access-token-here
 ```
+
+**Note:** For self-hosted Jira, your URL should be your internal Jira server (e.g., `https://jira.company.com`), not an Atlassian Cloud URL.
 
 > **Tip:** Add these to your `~/.bashrc`, `~/.zshrc`, or `~/.bash_profile` to make them persistent.
 
@@ -148,10 +149,11 @@ If the script can't find your epic:
 ### Connection Errors
 
 If you get connection errors:
-- Verify your `JIRA_URL` is correct (e.g., `https://your-domain.atlassian.net`)
+- Verify your `JIRA_URL` is correct (e.g., `https://jira.company.com`)
 - Check your network connection
 - Ensure you can access Jira from your browser
 - The script will automatically retry failed connections up to 3 times
+- **SSL Certificate Issues (WSL):** The scripts use the `-k` flag to bypass SSL certificate verification, which is common in WSL environments with self-signed certificates
 
 ### Missing jq
 
@@ -172,7 +174,9 @@ Both scripts provide detailed error messages including:
 
 ## API Reference
 
-These scripts use the Jira REST API v3:
-- [Jira Cloud REST API Documentation](https://developer.atlassian.com/cloud/jira/platform/rest/v3/)
-- [Authentication](https://developer.atlassian.com/cloud/jira/platform/basic-auth-for-rest-apis/)
+These scripts use the Jira REST API v2 (for self-hosted Jira):
+- [Jira Server REST API Documentation](https://docs.atlassian.com/software/jira/docs/api/REST/latest/)
+- [Jira API v2 Reference](https://developer.atlassian.com/server/jira/platform/rest-apis/)
+
+**Note:** These scripts are configured for self-hosted Jira Server/Data Center using API v2. For Jira Cloud, you would need to change the API endpoints from `/rest/api/2/` to `/rest/api/3/` and adjust the request formats accordingly.
 

@@ -49,13 +49,13 @@ jira_api() {
                 -H "Content-Type: application/json" \
                 -H "Accept: application/json" \
                 -d "$data" \
-                "${JIRA_URL}/rest/api/3/${endpoint}" 2>"$temp_error_file")
+                "${JIRA_URL}/rest/api/2/${endpoint}" 2>"$temp_error_file")
         else
             response=$(curl -k -s -w "\n%{http_code}" -X "$method" \
                 -H "Authorization: Bearer ${JIRA_PAT}" \
                 -H "Content-Type: application/json" \
                 -H "Accept: application/json" \
-                "${JIRA_URL}/rest/api/3/${endpoint}" 2>"$temp_error_file")
+                "${JIRA_URL}/rest/api/2/${endpoint}" 2>"$temp_error_file")
         fi
         
         # Capture curl errors
@@ -112,7 +112,7 @@ jira_api() {
                 continue
             else
                 echo -e "${RED}Error: Could not connect to Jira after $max_retries retries${NC}" >&2
-                echo "URL: ${JIRA_URL}/rest/api/3/${endpoint}" >&2
+                echo "URL: ${JIRA_URL}/rest/api/2/${endpoint}" >&2
                 if [[ -n "$curl_error" ]]; then
                     echo -e "${RED}Curl error: $curl_error${NC}" >&2
                 fi
@@ -143,7 +143,7 @@ fi
 echo -e "\n${YELLOW}Searching for project...${NC}"
 
 # Search for projects
-projects_response=$(jira_api "GET" "project/search")
+projects_response=$(jira_api "GET" "project")
 
 if [[ $? -ne 0 ]]; then
     echo -e "${RED}Failed to retrieve projects from Jira${NC}"
@@ -157,17 +157,17 @@ if ! echo "$projects_response" | jq empty 2>/dev/null; then
     exit 1
 fi
 
-# Parse and find matching projects
+# Parse and find matching projects (API v2 returns array directly, not .values)
 project_key=$(echo "$projects_response" | jq -r --arg name "$project_name" \
-    '.values[] | select(.name == $name) | .key' | head -n 1)
+    '.[] | select(.name == $name) | .key' | head -n 1)
 
 project_found_name=$(echo "$projects_response" | jq -r --arg name "$project_name" \
-    '.values[] | select(.name == $name) | .name' | head -n 1)
+    '.[] | select(.name == $name) | .name' | head -n 1)
 
 if [[ -z "$project_key" ]]; then
     echo -e "${RED}Error: No project found with name '${project_name}'${NC}"
     echo -e "\n${YELLOW}Available projects:${NC}"
-    echo "$projects_response" | jq -r '.values[] | "  - \(.name) (Key: \(.key))"' 2>/dev/null || echo "Could not parse projects"
+    echo "$projects_response" | jq -r '.[] | "  - \(.name) (Key: \(.key))"' 2>/dev/null || echo "Could not parse projects"
     exit 1
 fi
 
