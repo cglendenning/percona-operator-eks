@@ -38,87 +38,30 @@ jira_api() {
     
     while [[ $retry_count -lt $max_retries ]]; do
         local response
-        local http_code
-        local curl_error
-        local temp_error_file=$(mktemp)
         
         if [[ -n "$data" ]]; then
-            response=$(curl -k -s -w "\n%{http_code}" \
-                -H "Authorization: Bearer ${JIRA_PAT}" \
-                -H "Content-Type: application/json" \
-                -d "$data" \
-                "${JIRA_URL}/rest/api/2/${endpoint}" 2>"$temp_error_file")
+            response=$(curl -k -H "Authorization: Bearer ${JIRA_PAT}" -H "Content-Type: application/json" -d "$data" "${JIRA_URL}/rest/api/2/${endpoint}")
         else
-            response=$(curl -k -s -w "\n%{http_code}" \
-                -H "Authorization: Bearer ${JIRA_PAT}" \
-                "${JIRA_URL}/rest/api/2/${endpoint}" 2>"$temp_error_file")
+            response=$(curl -k -H "Authorization: Bearer ${JIRA_PAT}" "${JIRA_URL}/rest/api/2/${endpoint}")
         fi
         
-        # Capture curl errors
-        curl_error=$(cat "$temp_error_file")
-        rm -f "$temp_error_file"
-        
-        # Extract HTTP code and body
-        http_code=$(echo "$response" | tail -n1)
-        body=$(echo "$response" | sed '$d')
-        
-        # Check if request was successful
-        if [[ "$http_code" =~ ^2[0-9]{2}$ ]]; then
-            echo "$body"
+        # Check if request was successful (got valid JSON back)
+        if echo "$response" | jq empty 2>/dev/null; then
+            echo "$response"
             return 0
         fi
         
-        # Handle different error codes
+        # If we got here, request failed - retry
         retry_count=$((retry_count + 1))
-        
-        if [[ "$http_code" == "401" ]]; then
-            echo -e "${RED}Error: Authentication failed (HTTP 401)${NC}" >&2
-            echo "Your JIRA_PAT may be invalid or expired." >&2
-            echo "Response: $body" | jq '.' 2>/dev/null || echo "$body" >&2
-            return 1
-        elif [[ "$http_code" == "403" ]]; then
-            echo -e "${RED}Error: Access forbidden (HTTP 403)${NC}" >&2
-            echo "You may not have permission to perform this action." >&2
-            echo "Response: $body" | jq '.' 2>/dev/null || echo "$body" >&2
-            return 1
-        elif [[ "$http_code" == "404" ]]; then
-            echo -e "${RED}Error: Resource not found (HTTP 404)${NC}" >&2
-            echo "The requested resource does not exist." >&2
-            echo "Response: $body" | jq '.' 2>/dev/null || echo "$body" >&2
-            return 1
-        elif [[ "$http_code" =~ ^5[0-9]{2}$ ]]; then
-            if [[ $retry_count -lt $max_retries ]]; then
-                echo -e "${YELLOW}Warning: Server error (HTTP $http_code). Retrying in ${wait_time}s... (attempt $retry_count/$max_retries)${NC}" >&2
-                sleep $wait_time
-                wait_time=$((wait_time * 2))
-                continue
-            else
-                echo -e "${RED}Error: Server error (HTTP $http_code) after $max_retries retries${NC}" >&2
-                echo "Response: $body" | jq '.' 2>/dev/null || echo "$body" >&2
-                return 1
-            fi
-        elif [[ "$http_code" == "000" ]] || [[ -z "$http_code" ]]; then
-            if [[ $retry_count -lt $max_retries ]]; then
-                echo -e "${YELLOW}Warning: Connection failed. Retrying in ${wait_time}s... (attempt $retry_count/$max_retries)${NC}" >&2
-                if [[ -n "$curl_error" ]]; then
-                    echo -e "${YELLOW}Curl error: $curl_error${NC}" >&2
-                fi
-                sleep $wait_time
-                wait_time=$((wait_time * 2))
-                continue
-            else
-                echo -e "${RED}Error: Could not connect to Jira after $max_retries retries${NC}" >&2
-                echo "URL: ${JIRA_URL}/rest/api/2/${endpoint}" >&2
-                if [[ -n "$curl_error" ]]; then
-                    echo -e "${RED}Curl error: $curl_error${NC}" >&2
-                fi
-                echo "Check your JIRA_URL and network connection." >&2
-                echo "Note: SSL certificate verification is disabled (using -k flag)" >&2
-                return 1
-            fi
+        if [[ $retry_count -lt $max_retries ]]; then
+            echo -e "${YELLOW}Request failed. Retrying in ${wait_time}s... (attempt $retry_count/$max_retries)${NC}" >&2
+            echo "Response: $response" >&2
+            sleep $wait_time
+            wait_time=$((wait_time * 2))
         else
-            echo -e "${RED}Error: Request failed (HTTP $http_code)${NC}" >&2
-            echo "Response: $body" | jq '.' 2>/dev/null || echo "$body" >&2
+            echo -e "${RED}Error: Request failed after $max_retries retries${NC}" >&2
+            echo "URL: ${JIRA_URL}/rest/api/2/${endpoint}" >&2
+            echo "Response: $response" >&2
             return 1
         fi
     done
