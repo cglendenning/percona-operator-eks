@@ -40,21 +40,27 @@ jira_api() {
     while [[ $retry_count -lt $max_retries ]]; do
         local response
         local http_code
+        local curl_error
+        local temp_error_file=$(mktemp)
         
         if [[ -n "$data" ]]; then
-            response=$(curl -s -w "\n%{http_code}" -X "$method" \
+            response=$(curl -k -s -w "\n%{http_code}" -X "$method" \
                 -H "Authorization: Bearer ${JIRA_PAT}" \
                 -H "Content-Type: application/json" \
                 -H "Accept: application/json" \
                 -d "$data" \
-                "${JIRA_URL}/rest/api/3/${endpoint}")
+                "${JIRA_URL}/rest/api/3/${endpoint}" 2>"$temp_error_file")
         else
-            response=$(curl -s -w "\n%{http_code}" -X "$method" \
+            response=$(curl -k -s -w "\n%{http_code}" -X "$method" \
                 -H "Authorization: Bearer ${JIRA_PAT}" \
                 -H "Content-Type: application/json" \
                 -H "Accept: application/json" \
-                "${JIRA_URL}/rest/api/3/${endpoint}")
+                "${JIRA_URL}/rest/api/3/${endpoint}" 2>"$temp_error_file")
         fi
+        
+        # Capture curl errors
+        curl_error=$(cat "$temp_error_file")
+        rm -f "$temp_error_file"
         
         # Extract HTTP code and body
         http_code=$(echo "$response" | tail -n1)
@@ -98,12 +104,20 @@ jira_api() {
         elif [[ "$http_code" == "000" ]] || [[ -z "$http_code" ]]; then
             if [[ $retry_count -lt $max_retries ]]; then
                 echo -e "${YELLOW}Warning: Connection failed. Retrying in ${wait_time}s... (attempt $retry_count/$max_retries)${NC}" >&2
+                if [[ -n "$curl_error" ]]; then
+                    echo -e "${YELLOW}Curl error: $curl_error${NC}" >&2
+                fi
                 sleep $wait_time
                 wait_time=$((wait_time * 2))
                 continue
             else
                 echo -e "${RED}Error: Could not connect to Jira after $max_retries retries${NC}" >&2
+                echo "URL: ${JIRA_URL}/rest/api/3/${endpoint}" >&2
+                if [[ -n "$curl_error" ]]; then
+                    echo -e "${RED}Curl error: $curl_error${NC}" >&2
+                fi
                 echo "Check your JIRA_URL and network connection." >&2
+                echo "Note: SSL certificate verification is disabled (using -k flag)" >&2
                 return 1
             fi
         else
