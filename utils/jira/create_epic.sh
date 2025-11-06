@@ -28,26 +28,92 @@ if ! command -v jq &> /dev/null; then
     exit 1
 fi
 
-# Function to make API calls
+# Function to make API calls with retry logic
 jira_api() {
     local method=$1
     local endpoint=$2
     local data=$3
+    local max_retries=3
+    local retry_count=0
+    local wait_time=2
     
-    if [[ -n "$data" ]]; then
-        curl -s -X "$method" \
-            -H "Authorization: Bearer ${JIRA_PAT}" \
-            -H "Content-Type: application/json" \
-            -H "Accept: application/json" \
-            -d "$data" \
-            "${JIRA_URL}/rest/api/3/${endpoint}"
-    else
-        curl -s -X "$method" \
-            -H "Authorization: Bearer ${JIRA_PAT}" \
-            -H "Content-Type: application/json" \
-            -H "Accept: application/json" \
-            "${JIRA_URL}/rest/api/3/${endpoint}"
-    fi
+    while [[ $retry_count -lt $max_retries ]]; do
+        local response
+        local http_code
+        
+        if [[ -n "$data" ]]; then
+            response=$(curl -s -w "\n%{http_code}" -X "$method" \
+                -H "Authorization: Bearer ${JIRA_PAT}" \
+                -H "Content-Type: application/json" \
+                -H "Accept: application/json" \
+                -d "$data" \
+                "${JIRA_URL}/rest/api/3/${endpoint}")
+        else
+            response=$(curl -s -w "\n%{http_code}" -X "$method" \
+                -H "Authorization: Bearer ${JIRA_PAT}" \
+                -H "Content-Type: application/json" \
+                -H "Accept: application/json" \
+                "${JIRA_URL}/rest/api/3/${endpoint}")
+        fi
+        
+        # Extract HTTP code and body
+        http_code=$(echo "$response" | tail -n1)
+        body=$(echo "$response" | sed '$d')
+        
+        # Check if request was successful
+        if [[ "$http_code" =~ ^2[0-9]{2}$ ]]; then
+            echo "$body"
+            return 0
+        fi
+        
+        # Handle different error codes
+        retry_count=$((retry_count + 1))
+        
+        if [[ "$http_code" == "401" ]]; then
+            echo -e "${RED}Error: Authentication failed (HTTP 401)${NC}" >&2
+            echo "Your JIRA_PAT may be invalid or expired." >&2
+            echo "Response: $body" | jq '.' 2>/dev/null || echo "$body" >&2
+            return 1
+        elif [[ "$http_code" == "403" ]]; then
+            echo -e "${RED}Error: Access forbidden (HTTP 403)${NC}" >&2
+            echo "You may not have permission to perform this action." >&2
+            echo "Response: $body" | jq '.' 2>/dev/null || echo "$body" >&2
+            return 1
+        elif [[ "$http_code" == "404" ]]; then
+            echo -e "${RED}Error: Resource not found (HTTP 404)${NC}" >&2
+            echo "The requested resource does not exist." >&2
+            echo "Response: $body" | jq '.' 2>/dev/null || echo "$body" >&2
+            return 1
+        elif [[ "$http_code" =~ ^5[0-9]{2}$ ]]; then
+            if [[ $retry_count -lt $max_retries ]]; then
+                echo -e "${YELLOW}Warning: Server error (HTTP $http_code). Retrying in ${wait_time}s... (attempt $retry_count/$max_retries)${NC}" >&2
+                sleep $wait_time
+                wait_time=$((wait_time * 2))
+                continue
+            else
+                echo -e "${RED}Error: Server error (HTTP $http_code) after $max_retries retries${NC}" >&2
+                echo "Response: $body" | jq '.' 2>/dev/null || echo "$body" >&2
+                return 1
+            fi
+        elif [[ "$http_code" == "000" ]] || [[ -z "$http_code" ]]; then
+            if [[ $retry_count -lt $max_retries ]]; then
+                echo -e "${YELLOW}Warning: Connection failed. Retrying in ${wait_time}s... (attempt $retry_count/$max_retries)${NC}" >&2
+                sleep $wait_time
+                wait_time=$((wait_time * 2))
+                continue
+            else
+                echo -e "${RED}Error: Could not connect to Jira after $max_retries retries${NC}" >&2
+                echo "Check your JIRA_URL and network connection." >&2
+                return 1
+            fi
+        else
+            echo -e "${RED}Error: Request failed (HTTP $http_code)${NC}" >&2
+            echo "Response: $body" | jq '.' 2>/dev/null || echo "$body" >&2
+            return 1
+        fi
+    done
+    
+    return 1
 }
 
 echo -e "${GREEN}=== Jira Epic Creator ===${NC}\n"
@@ -65,6 +131,18 @@ echo -e "\n${YELLOW}Searching for project...${NC}"
 # Search for projects
 projects_response=$(jira_api "GET" "project/search")
 
+if [[ $? -ne 0 ]]; then
+    echo -e "${RED}Failed to retrieve projects from Jira${NC}"
+    exit 1
+fi
+
+# Check if response is valid JSON
+if ! echo "$projects_response" | jq empty 2>/dev/null; then
+    echo -e "${RED}Error: Invalid response from Jira API${NC}"
+    echo "Response: $projects_response"
+    exit 1
+fi
+
 # Parse and find matching projects
 project_key=$(echo "$projects_response" | jq -r --arg name "$project_name" \
     '.values[] | select(.name == $name) | .key' | head -n 1)
@@ -75,7 +153,7 @@ project_found_name=$(echo "$projects_response" | jq -r --arg name "$project_name
 if [[ -z "$project_key" ]]; then
     echo -e "${RED}Error: No project found with name '${project_name}'${NC}"
     echo -e "\n${YELLOW}Available projects:${NC}"
-    echo "$projects_response" | jq -r '.values[] | "  - \(.name) (Key: \(.key))"'
+    echo "$projects_response" | jq -r '.values[] | "  - \(.name) (Key: \(.key))"' 2>/dev/null || echo "Could not parse projects"
     exit 1
 fi
 
@@ -103,10 +181,18 @@ fi
 # Get the Epic issue type ID
 echo -e "\n${YELLOW}Looking up Epic issue type...${NC}"
 issue_types_response=$(jira_api "GET" "issuetype")
+
+if [[ $? -ne 0 ]]; then
+    echo -e "${RED}Failed to retrieve issue types from Jira${NC}"
+    exit 1
+fi
+
 epic_type_id=$(echo "$issue_types_response" | jq -r '.[] | select(.name == "Epic") | .id' | head -n 1)
 
 if [[ -z "$epic_type_id" ]]; then
     echo -e "${RED}Error: Epic issue type not found in Jira${NC}"
+    echo -e "${YELLOW}Available issue types:${NC}"
+    echo "$issue_types_response" | jq -r '.[] | "  - \(.name) (ID: \(.id))"' 2>/dev/null
     exit 1
 fi
 
@@ -130,12 +216,18 @@ EOF
 
 create_response=$(jira_api "POST" "issue" "$create_data")
 
+if [[ $? -ne 0 ]]; then
+    echo -e "${RED}Failed to create Epic${NC}"
+    exit 1
+fi
+
 # Check if creation was successful
 epic_key=$(echo "$create_response" | jq -r '.key // empty')
 
 if [[ -z "$epic_key" ]]; then
     echo -e "${RED}Error: Failed to create Epic${NC}"
-    echo "Response: $create_response" | jq '.'
+    echo "Response:"
+    echo "$create_response" | jq '.' 2>/dev/null || echo "$create_response"
     exit 1
 fi
 

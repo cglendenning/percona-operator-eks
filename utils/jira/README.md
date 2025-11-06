@@ -113,6 +113,14 @@ Creating Task...
   URL: https://your-domain.atlassian.net/browse/PO-124
 ```
 
+## Features
+
+- **Robust Error Handling**: Clear error messages with HTTP status codes
+- **Automatic Retries**: Up to 3 retries for server errors and connection failures with exponential backoff
+- **Detailed Feedback**: Shows exactly what went wrong if API calls fail
+- **Interactive Prompts**: User-friendly prompts with confirmation steps
+- **Colored Output**: Easy-to-read terminal output with status indicators
+
 ## Troubleshooting
 
 ### Authentication Errors
@@ -121,6 +129,7 @@ If you get 401 Unauthorized errors:
 - Verify your `JIRA_PAT` is valid and not expired
 - Make sure you're using a Personal Access Token
 - Regenerate your PAT if necessary
+- Check that your token has the required permissions
 
 ### Project Not Found
 
@@ -136,6 +145,14 @@ If the script can't find your epic:
 - Verify the Epic exists in Jira
 - Try searching with partial name (e.g., "Resiliency" instead of full name)
 
+### Connection Errors
+
+If you get connection errors:
+- Verify your `JIRA_URL` is correct (e.g., `https://your-domain.atlassian.net`)
+- Check your network connection
+- Ensure you can access Jira from your browser
+- The script will automatically retry failed connections up to 3 times
+
 ### Missing jq
 
 If you see "jq: command not found":
@@ -144,6 +161,14 @@ brew install jq  # macOS
 apt-get install jq  # Ubuntu/Debian
 yum install jq  # CentOS/RHEL
 ```
+
+### Debugging
+
+Both scripts provide detailed error messages including:
+- HTTP status codes (401, 403, 404, 500, etc.)
+- Full error responses from Jira API
+- Retry attempts for transient failures
+- Available options when resources aren't found
 
 ## API Reference
 
