@@ -68,7 +68,7 @@ Or with verbose output:
 
 The deployment script:
 - Creates VPC with 3 public + 3 private subnets across us-east-1a, us-east-1c, us-east-1d
-- Deploys 3 EKS managed node groups (1 per AZ) with m5.large On-Demand instances
+- Deploys 3 EKS managed node groups (1 per AZ) with t3a.large On-Demand instances (cost-optimized for dev/test)
 - Installs EBS CSI driver, VPC CNI, CoreDNS, kube-proxy, and metrics-server add-ons
 - Updates kubeconfig automatically
 - Verifies multi-AZ node distribution
@@ -127,11 +127,45 @@ When CloudFormation deletion fails or Kubernetes resources aren't cleaned up pro
 4. Repeat as needed
 
 **Costs when running:**
-- ~$0.73/hour for 3 m5.large On-Demand instances
-- ~$0.10/hour for EKS control plane
-- ~$0.10/hour for EBS gp3 volumes (PXC + ProxySQL)
-- **Total: ~$0.93/hour or ~$22/day**
+- ~$0.23/hour for 3 t3a.large On-Demand instances (~$162/month) - **22% cheaper than m5.large**
+- ~$0.10/hour for EKS control plane (~$73/month)
+- ~$0.10/hour for EBS gp3 volumes (PXC + ProxySQL) (~$73/month)
+- **Total: ~$0.43/hour or ~$10/day or ~$308/month** (if running 24/7)
 
 **Costs when stopped:**
 - $0 (all resources deleted)
+
+### Instance Type Options
+
+The default instance type is **t3a.large** (optimized for cost in dev/test):
+
+| Instance Type | vCPUs | RAM | Price/Hour | Monthly (3 nodes) | Use Case |
+|---------------|-------|-----|------------|-------------------|----------|
+| **t3a.large** (default) | 2 | 8 GB | $0.0752 | ~$162 | ✅ Dev/test PXC clusters |
+| t3a.medium | 2 | 4 GB | $0.0376 | ~$81 | Minimal (tight for PXC) |
+| t3a.xlarge | 4 | 16 GB | $0.1504 | ~$324 | Larger dev workloads |
+| m5.large | 2 | 8 GB | $0.096 | ~$207 | Production-like (+22% cost) |
+| m5.xlarge | 4 | 16 GB | $0.192 | ~$414 | Production workloads |
+
+**Why t3a.large for dev/test?**
+- ✅ Same 8GB RAM as m5.large (important for MySQL workloads)
+- ✅ Burstable CPU with unlimited mode (fine for dev/test)
+- ✅ AMD EPYC processors (cheaper than Intel)
+- ✅ Handles PXC + ProxySQL + monitoring comfortably
+- ✅ **Saves ~$45/month vs m5.large**
+
+**To change instance type:**
+```bash
+# Edit eks/scripts/deploy.sh
+NODE_INSTANCE_TYPE="t3a.large"  # Change to your preferred type
+```
+
+Or pass as CloudFormation parameter:
+```bash
+aws cloudformation update-stack \
+  --stack-name percona-eks-cluster \
+  --use-previous-template \
+  --parameters ParameterKey=NodeInstanceType,ParameterValue=m5.large \
+  --capabilities CAPABILITY_IAM
+```
 
