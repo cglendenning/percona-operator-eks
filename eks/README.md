@@ -80,7 +80,43 @@ When not in use, tear down the cluster to avoid charges:
 ./eks/scripts/cleanup.sh
 ```
 
-This deletes the CloudFormation stack and all associated resources.
+This script is **idempotent** and can be run multiple times. It will:
+1. Delete the CloudFormation stack (if it exists)
+2. Scan for and optionally delete orphaned resources:
+   - **NAT Gateways** (~$32/month each, 3 created = **$97/month**!)
+   - **Elastic IPs** (~$3.60/month each when unattached)
+   - **EBS volumes** ($0.08/GB/month)
+   - **Load Balancers** (~$16-23/month each)
+   - **Network Interfaces**
+   - **Security Groups**
+
+The script asks for confirmation before deleting each resource type and shows cost estimates.
+
+### Volumes-Only Cleanup
+
+If you just want to clean up orphaned EBS volumes:
+
+```bash
+./eks/scripts/cleanup-volumes.sh
+```
+
+**Why this matters**: EBS volumes persist after cluster deletion and can cost $40-400/month if left behind!
+
+### Why Orphaned Resources Happen & Their Costs
+
+**Your $13.30 NAT Gateway charge came from 3 NAT Gateways left running at $0.045/hour each.**
+
+When CloudFormation deletion fails or Kubernetes resources aren't cleaned up properly, these expensive resources can persist:
+
+| Resource | Quantity | Cost Each | Monthly Total |
+|----------|----------|-----------|---------------|
+| **NAT Gateways** | 3 | $0.045/hr (~$32/mo) | **$97/month** |
+| **Elastic IPs** (unattached) | 3 | $3.60/month | **$11/month** |
+| **EBS Volumes** (50GB each) | 10-50 | $4/month | **$40-200/month** |
+| **Load Balancers** | 1-3 | $16-23/month | **$16-69/month** |
+| **Total Orphaned Cost** | | | **$164-377/month** |
+
+**That's $1,968-$4,524 per year for resources doing nothing!**
 
 ## Cost Savings
 
