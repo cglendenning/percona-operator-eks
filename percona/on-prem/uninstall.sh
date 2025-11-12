@@ -232,30 +232,84 @@ uninstall_helm_releases() {
 delete_pxc_resources() {
     log_header "Deleting PXC Custom Resources"
     
-    # Delete PXC clusters
-    if kubectl get pxc -n "$NAMESPACE" --no-headers 2>/dev/null | grep -q .; then
-        log_info "Deleting PXC cluster custom resources..."
-        kubectl delete pxc --all -n "$NAMESPACE" --wait --timeout=300s 2>/dev/null || \
-            log_warn "Some PXC resources may not have been deleted cleanly"
-        log_success "PXC clusters deleted"
-    else
-        log_info "No PXC cluster resources found"
+    # Remove finalizers from ALL PXC resources first
+    log_info "Removing finalizers from PXC resources..."
+    kubectl get pxc -n "$NAMESPACE" -o name 2>/dev/null | xargs -r -I {} kubectl patch {} -n "$NAMESPACE" -p '{"metadata":{"finalizers":[]}}' --type=merge 2>/dev/null || true
+    
+    # Force delete PXC clusters
+    log_info "Force deleting PXC clusters..."
+    kubectl delete pxc --all -n "$NAMESPACE" --force --grace-period=0 2>/dev/null || true
+    
+    # Force delete backups
+    log_info "Force deleting PXC backups..."
+    kubectl delete pxc-backup --all -n "$NAMESPACE" --force --grace-period=0 2>/dev/null || true
+    
+    # Force delete restores
+    log_info "Force deleting PXC restores..."
+    kubectl delete pxc-restore --all -n "$NAMESPACE" --force --grace-period=0 2>/dev/null || true
+    
+    log_success "PXC resources deleted"
+}
+
+# Diagnose what's blocking deletion
+diagnose_stuck_resources() {
+    echo ""
+    log_warn "Diagnosing what's blocking deletion..."
+    echo ""
+    
+    # Check volumeattachments
+    local va_count=$(kubectl get volumeattachments --no-headers 2>/dev/null | grep -c "$NAMESPACE" || echo "0")
+    if [ "$va_count" -gt 0 ]; then
+        echo -e "${YELLOW}[BLOCKING]${NC} $va_count VolumeAttachment(s) still present:"
+        kubectl get volumeattachments --no-headers 2>/dev/null | grep "$NAMESPACE" | awk '{print "  - " $1}' || true
     fi
     
-    # Delete PXC backups
-    if kubectl get pxc-backup -n "$NAMESPACE" --no-headers 2>/dev/null | grep -q .; then
-        log_info "Deleting PXC backup custom resources..."
-        kubectl delete pxc-backup --all -n "$NAMESPACE" --wait --timeout=60s 2>/dev/null || \
-            log_warn "Some backup resources may not have been deleted cleanly"
-        log_success "PXC backups deleted"
+    # Check PVCs
+    local pvc_count=$(kubectl get pvc -n "$NAMESPACE" --no-headers 2>/dev/null | wc -l | tr -d ' ')
+    if [ "$pvc_count" -gt 0 ]; then
+        echo -e "${YELLOW}[BLOCKING]${NC} $pvc_count PVC(s) in namespace:"
+        kubectl get pvc -n "$NAMESPACE" --no-headers 2>/dev/null | awk '{print "  - " $1 " [" $2 "]"}' || true
     fi
     
-    # Delete PXC restores
-    if kubectl get pxc-restore -n "$NAMESPACE" --no-headers 2>/dev/null | grep -q .; then
-        log_info "Deleting PXC restore custom resources..."
-        kubectl delete pxc-restore --all -n "$NAMESPACE" --wait --timeout=60s 2>/dev/null || \
-            log_warn "Some restore resources may not have been deleted cleanly"
-        log_success "PXC restores deleted"
+    # Check PVs
+    local pv_count=$(kubectl get pv --no-headers 2>/dev/null | grep -c "$NAMESPACE" || echo "0")
+    if [ "$pv_count" -gt 0 ]; then
+        echo -e "${YELLOW}[BLOCKING]${NC} $pv_count PV(s) bound to namespace:"
+        kubectl get pv --no-headers 2>/dev/null | grep "$NAMESPACE" | awk '{print "  - " $1 " [" $5 "]"}' || true
+    fi
+    
+    # Check pods in Terminating state
+    local term_pods=$(kubectl get pods -n "$NAMESPACE" --no-headers 2>/dev/null | grep "Terminating" | awk '{print $1}' || echo "")
+    if [ -n "$term_pods" ]; then
+        echo -e "${YELLOW}[BLOCKING]${NC} Pod(s) stuck in Terminating:"
+        echo "$term_pods" | while read -r pod; do
+            [ -n "$pod" ] && echo "  - $pod"
+        done
+    fi
+    
+    # Check for finalizers on namespace
+    local ns_finalizers=$(kubectl get namespace "$NAMESPACE" -o jsonpath='{.spec.finalizers}' 2>/dev/null || echo "")
+    if [ -n "$ns_finalizers" ] && [ "$ns_finalizers" != "[]" ] && [ "$ns_finalizers" != "null" ]; then
+        echo -e "${YELLOW}[BLOCKING]${NC} Namespace has finalizers: $ns_finalizers"
+    fi
+    
+    echo ""
+}
+
+# Force cleanup volumeattachments
+cleanup_volumeattachments() {
+    log_info "Checking for stuck VolumeAttachments..."
+    local vas=$(kubectl get volumeattachments --no-headers 2>/dev/null | grep "$NAMESPACE" | awk '{print $1}' || echo "")
+    
+    if [ -n "$vas" ]; then
+        log_warn "Found stuck VolumeAttachments. Force deleting..."
+        echo "$vas" | while read -r va; do
+            if [ -n "$va" ]; then
+                log_info "Deleting VolumeAttachment: $va"
+                kubectl delete volumeattachment "$va" --force --grace-period=0 2>/dev/null || true
+            fi
+        done
+        sleep 2
     fi
 }
 
@@ -263,28 +317,31 @@ delete_pxc_resources() {
 delete_remaining_resources() {
     log_header "Deleting Remaining Resources"
     
-    # Delete deployments
-    if kubectl get deployments -n "$NAMESPACE" --no-headers 2>/dev/null | grep -q .; then
-        log_info "Deleting deployments..."
-        kubectl delete deployments --all -n "$NAMESPACE" --wait --timeout=120s 2>/dev/null || \
-            log_warn "Some deployments may not have been deleted cleanly"
-    fi
+    # Force delete ALL pods immediately
+    log_info "Force deleting all pods..."
+    kubectl delete pods --all -n "$NAMESPACE" --force --grace-period=0 2>/dev/null || true
     
     # Delete statefulsets
-    if kubectl get statefulsets -n "$NAMESPACE" --no-headers 2>/dev/null | grep -q .; then
-        log_info "Deleting statefulsets..."
-        kubectl delete statefulsets --all -n "$NAMESPACE" --wait --timeout=120s 2>/dev/null || \
-            log_warn "Some statefulsets may not have been deleted cleanly"
-    fi
+    log_info "Force deleting statefulsets..."
+    kubectl delete statefulsets --all -n "$NAMESPACE" --force --grace-period=0 2>/dev/null || true
+    
+    # Delete deployments
+    log_info "Force deleting deployments..."
+    kubectl delete deployments --all -n "$NAMESPACE" --force --grace-period=0 2>/dev/null || true
     
     # Delete services
-    if kubectl get services -n "$NAMESPACE" --no-headers 2>/dev/null | grep -q .; then
-        log_info "Deleting services..."
-        kubectl delete services --all -n "$NAMESPACE" 2>/dev/null || \
-            log_warn "Some services may not have been deleted cleanly"
-    fi
+    log_info "Deleting services..."
+    kubectl delete services --all -n "$NAMESPACE" --force --grace-period=0 2>/dev/null || true
     
-    log_success "Remaining resources deleted"
+    # Delete configmaps
+    log_info "Deleting configmaps..."
+    kubectl delete configmaps --all -n "$NAMESPACE" --force --grace-period=0 2>/dev/null || true
+    
+    # Delete secrets
+    log_info "Deleting secrets..."
+    kubectl delete secrets --all -n "$NAMESPACE" --force --grace-period=0 2>/dev/null || true
+    
+    log_success "Resources deleted"
 }
 
 # Delete PVCs and PVs
@@ -303,33 +360,21 @@ delete_storage() {
     local pvs=$(kubectl get pvc -n "$NAMESPACE" --no-headers 2>/dev/null | awk '{print $3}' | grep -v "<none>" || echo "")
     
     # Delete PVCs
-    if kubectl get pvc -n "$NAMESPACE" --no-headers 2>/dev/null | grep -q .; then
-        log_warn "Deleting all PVCs in namespace $NAMESPACE..."
-        kubectl delete pvc --all -n "$NAMESPACE" --wait --timeout=300s 2>/dev/null || \
-            log_warn "Some PVCs may not have been deleted cleanly"
-        log_success "PVCs deleted"
-        
-        # Wait a moment for PVs to be released
-        sleep 5
-        
-        # Check if PVs still exist and warn
-        if [ -n "$pvs" ]; then
-            echo ""
-            log_info "Checking status of Persistent Volumes..."
-            echo "$pvs" | while read -r pv; do
-                if [ -n "$pv" ]; then
-                    local pv_status=$(kubectl get pv "$pv" --no-headers 2>/dev/null | awk '{print $5}' || echo "Deleted")
-                    if [ "$pv_status" = "Released" ]; then
-                        log_warn "PV $pv is in 'Released' state (may need manual cleanup)"
-                    elif [ "$pv_status" != "Deleted" ]; then
-                        log_info "PV $pv: $pv_status"
-                    fi
-                fi
-            done
-        fi
-    else
-        log_info "No PVCs found to delete"
-    fi
+    log_warn "Deleting all PVCs in namespace $NAMESPACE..."
+    
+    # Force cleanup volumeattachments first
+    log_info "Force deleting VolumeAttachments..."
+    kubectl get volumeattachments --no-headers 2>/dev/null | grep "$NAMESPACE" | awk '{print $1}' | xargs -r kubectl delete volumeattachment --force --grace-period=0 2>/dev/null || true
+    
+    # Remove PVC finalizers
+    log_info "Removing PVC finalizers..."
+    kubectl get pvc -n "$NAMESPACE" -o name 2>/dev/null | xargs -r -I {} kubectl patch {} -n "$NAMESPACE" -p '{"metadata":{"finalizers":[]}}' --type=merge 2>/dev/null || true
+    
+    # Force delete PVCs
+    log_info "Force deleting PVCs..."
+    kubectl delete pvc --all -n "$NAMESPACE" --force --grace-period=0 2>/dev/null || true
+    
+    log_success "PVCs deleted"
 }
 
 # Delete namespace
@@ -343,15 +388,30 @@ delete_namespace() {
     log_header "Deleting Namespace"
     
     log_warn "Deleting namespace: $NAMESPACE"
-    kubectl delete namespace "$NAMESPACE" --wait --timeout=300s 2>/dev/null || \
-        log_warn "Namespace deletion may be taking longer than expected"
     
-    # Check if namespace is gone
+    # Remove namespace finalizers
+    log_info "Removing namespace finalizers..."
+    kubectl patch namespace "$NAMESPACE" -p '{"spec":{"finalizers":[]}}' --type=merge 2>/dev/null || true
+    
+    # Force delete namespace via API
+    log_info "Force deleting namespace via API..."
+    kubectl get namespace "$NAMESPACE" -o json 2>/dev/null | \
+        jq '.spec.finalizers = []' | \
+        kubectl replace --raw "/api/v1/namespaces/$NAMESPACE/finalize" -f - 2>/dev/null || true
+    
+    sleep 2
+    
+    # Check and force delete if still exists
     if kubectl get namespace "$NAMESPACE" &> /dev/null; then
-        log_warn "Namespace '$NAMESPACE' still exists (may be stuck in 'Terminating' state)"
-        log_info "You may need to manually clean up finalizers"
+        kubectl delete namespace "$NAMESPACE" --force --grace-period=0 2>/dev/null || true &
+        sleep 2
+    fi
+    
+    # Final check
+    if kubectl get namespace "$NAMESPACE" &> /dev/null; then
+        log_warn "Namespace may still be deleting in background"
     else
-        log_success "Namespace '$NAMESPACE' deleted"
+        log_success "Namespace deleted"
     fi
 }
 
@@ -359,23 +419,23 @@ delete_namespace() {
 show_summary() {
     log_header "Uninstallation Complete"
     
-    echo -e "${GREEN}✓${NC} Percona XtraDB Cluster uninstalled from namespace: ${NAMESPACE}"
-    echo -e "${GREEN}✓${NC} Environment: On-Premise vSphere/vCenter"
+    echo -e "${GREEN}[OK]${NC} Percona XtraDB Cluster uninstalled from namespace: ${NAMESPACE}"
+    echo -e "${GREEN}[OK]${NC} Environment: On-Premise vSphere/vCenter"
     echo ""
     
     if [ "$DELETE_PVCS" = "yes" ]; then
-        echo -e "${GREEN}✓${NC} All data deleted (PVCs and PVs removed)"
+        echo -e "${GREEN}[OK]${NC} All data deleted (PVCs and PVs removed)"
     else
-        echo -e "${YELLOW}ℹ${NC} Data preserved (PVCs remain)"
+        echo -e "${YELLOW}[INFO]${NC} Data preserved (PVCs remain)"
         echo "  View: ${CYAN}kubectl get pvc -n $NAMESPACE${NC}"
         echo "  Delete later: ${CYAN}kubectl delete pvc --all -n $NAMESPACE${NC}"
     fi
     echo ""
     
     if [ "$DELETE_NAMESPACE" = "yes" ]; then
-        echo -e "${GREEN}✓${NC} Namespace deleted"
+        echo -e "${GREEN}[OK]${NC} Namespace deleted"
     else
-        echo -e "${YELLOW}ℹ${NC} Namespace preserved: ${NAMESPACE}"
+        echo -e "${YELLOW}[INFO]${NC} Namespace preserved: ${NAMESPACE}"
         echo "  Delete later: ${CYAN}kubectl delete namespace $NAMESPACE${NC}"
     fi
     echo ""
