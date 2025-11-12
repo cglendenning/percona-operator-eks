@@ -20,6 +20,7 @@ TEMPLATE_DIR="$SCRIPT_DIR/templates"
 NAMESPACE="${NAMESPACE:-percona}"
 CLUSTER_NAME="${CLUSTER_NAME:-pxc-cluster}"
 PXC_NODES="${PXC_NODES:-3}"
+PXC_HAPROXY_SIZE="${PXC_HAPROXY_SIZE:-3}"  # Will be auto-adjusted based on resources
 OPERATOR_VERSION="${OPERATOR_VERSION:-1.15.0}"
 PXC_VERSION="${PXC_VERSION:-8.4.6}"  # XtraDB 8.4.6
 HAPROXY_VERSION="${HAPROXY_VERSION:-2.8.15}"  # HAProxy 2.8.15
@@ -73,6 +74,13 @@ check_prerequisites() {
         missing+=("bc")
     else
         log_success "bc found (for calculations)"
+    fi
+    
+    # Check jq for JSON processing
+    if ! command -v jq &> /dev/null; then
+        missing+=("jq")
+    else
+        log_success "jq found (for JSON processing)"
     fi
     
     if [ ${#missing[@]} -gt 0 ]; then
@@ -280,17 +288,29 @@ prompt_configuration() {
             log_warn "  Available CPU per node: ${usable_cpu_m}m (after system overhead)"
             log_warn "This may cause pods to be stuck in 'Pending' state"
             echo ""
-            log_info "Options to fix:"
-            log_info "  1. Reduce PXC nodes from 3 to 2"
-            log_info "  2. Reduce HAProxy instances from 3 to 2"
-            log_info "  3. Use larger instance type (e.g., t3a.xlarge)"
-            echo ""
-            read -p "Continue anyway? (yes/no) [no]: " continue_cpu
-            if [ "${continue_cpu:-no}" != "yes" ]; then
-                log_error "Exiting. Please adjust cluster configuration or instance type."
+            log_info "Automatically reducing HAProxy instances from 3 to 2..."
+            PXC_HAPROXY_SIZE=2
+            
+            # Recalculate with 2 HAProxy instances
+            local new_total_cpu=$(echo "scale=0; $pxc_cpu_m + ($haproxy_cpu_m * 2)" | bc)
+            log_info "New estimated CPU per node: ${new_total_cpu}m"
+            
+            if [ $(echo "$new_total_cpu > $usable_cpu_m" | bc) -eq 1 ]; then
+                log_error "Even with 2 HAProxy instances, resources are insufficient!"
+                log_info "Options:"
+                log_info "  1. Use larger instance type (e.g., t3a.xlarge with 4 vCPUs)"
+                log_info "  2. Reduce memory allocation"
                 exit 1
+            else
+                log_success "Configuration will fit with 2 HAProxy instances"
             fi
+        else
+            # Resources are sufficient for full 3 HAProxy instances
+            PXC_HAPROXY_SIZE=${PXC_NODES}
         fi
+    else
+        # No resource detection available, use default
+        PXC_HAPROXY_SIZE=${PXC_NODES}
     fi
     
     # Calculate innodb_buffer_pool_size (70% of max memory)
@@ -313,7 +333,8 @@ prompt_configuration() {
     log_info "Configuration Summary:"
     echo "  - Namespace: ${NAMESPACE}"
     echo "  - Cluster Name: ${CLUSTER_NAME}"
-    echo "  - Nodes: ${PXC_NODES}"
+    echo "  - PXC Nodes: ${PXC_NODES}"
+    echo "  - HAProxy Instances: ${PXC_HAPROXY_SIZE}"
     echo "  - Data Directory Size: ${DATA_DIR_SIZE}"
     echo "  - Max Memory per Node: ${MAX_MEMORY}"
     echo "  - InnoDB Buffer Pool Size (70%): ${BUFFER_POOL_SIZE}"
@@ -621,7 +642,7 @@ pxc:
 # HAProxy Configuration
 haproxy:
   enabled: true
-  size: ${PXC_NODES}
+  size: ${PXC_HAPROXY_SIZE}
   
   resources:
     requests:
@@ -819,20 +840,68 @@ install_cluster() {
 configure_pitr() {
     log_header "Configuring PITR"
     
+    local pitr_deployment="${CLUSTER_NAME}-pxc-db-pitr"
+    local operator_deployment="percona-operator-pxc-operator"
+    
     # Wait for PITR deployment to be created
     log_info "Waiting for PITR deployment..."
-    kubectl wait --for=condition=available deployment/pxc-cluster-pxc-db-pitr -n "$NAMESPACE" --timeout=300s 2>/dev/null || true
+    local retries=0
+    while [ $retries -lt 60 ]; do
+        if kubectl get deployment "$pitr_deployment" -n "$NAMESPACE" &>/dev/null; then
+            break
+        fi
+        sleep 5
+        retries=$((retries + 1))
+    done
     
-    # Add GTID_CACHE_KEY environment variable to PITR deployment
-    if kubectl get deployment pxc-cluster-pxc-db-pitr -n "$NAMESPACE" &>/dev/null; then
-        log_info "Configuring PITR environment variables..."
-        kubectl patch deployment pxc-cluster-pxc-db-pitr -n "$NAMESPACE" --type='json' \
-          -p '[{"op": "add", "path": "/spec/template/spec/containers/0/env/-", "value": {"name": "GTID_CACHE_KEY", "value": "pxc-pitr-cache"}}]' 2>/dev/null || true
-        
-        log_success "PITR configured with GTID cache key"
-    else
-        log_warn "PITR deployment not found - it may be configured later"
+    if ! kubectl get deployment "$pitr_deployment" -n "$NAMESPACE" &>/dev/null; then
+        log_warn "PITR deployment not found after 5 minutes"
+        return
     fi
+    
+    log_info "PITR deployment found, configuring GTID_CACHE_KEY..."
+    
+    # Setup trap to ensure operator is scaled back up on exit/error
+    trap 'kubectl scale deployment "$operator_deployment" -n "$NAMESPACE" --replicas=1 &>/dev/null || true' EXIT ERR
+    
+    # Scale down operator to prevent reconciliation
+    log_info "Temporarily scaling down operator..."
+    if ! kubectl scale deployment "$operator_deployment" -n "$NAMESPACE" --replicas=0; then
+        log_error "Failed to scale down operator"
+        trap - EXIT ERR
+        return 1
+    fi
+    sleep 5
+    
+    # Add GTID_CACHE_KEY environment variable using jq
+    log_info "Adding GTID_CACHE_KEY to PITR deployment..."
+    if kubectl get deployment "$pitr_deployment" -n "$NAMESPACE" -o json | \
+       jq '.spec.template.spec.containers[0].env += [{"name":"GTID_CACHE_KEY","value":"pxc-pitr-cache"}]' | \
+       kubectl replace -f - &>/dev/null; then
+        log_success "GTID_CACHE_KEY added successfully"
+    else
+        log_error "Failed to add GTID_CACHE_KEY"
+        log_error "PITR will not function correctly - manual configuration required"
+        trap - EXIT ERR
+        return 1
+    fi
+    
+    # Scale operator back up
+    log_info "Scaling operator back up..."
+    if ! kubectl scale deployment "$operator_deployment" -n "$NAMESPACE" --replicas=1; then
+        log_error "Failed to scale operator back up - please run manually:"
+        log_error "  kubectl scale deployment $operator_deployment -n $NAMESPACE --replicas=1"
+        trap - EXIT ERR
+        return 1
+    fi
+    
+    # Clear trap
+    trap - EXIT ERR
+    
+    # Wait for operator to be ready
+    kubectl wait --for=condition=available deployment/"$operator_deployment" -n "$NAMESPACE" --timeout=60s &>/dev/null || true
+    
+    log_success "PITR configured with GTID cache key"
 }
 
 # Display cluster information

@@ -16,16 +16,24 @@ During installation, the scripts:
 2. **Calculate Optimal Resource Requests**
    - **PXC CPU**: 70% of usable CPU per node (minimum 500m)
    - **HAProxy CPU**: 15% of usable CPU per node (minimum 50m)
-   - Adjust based on cluster topology (3 PXC + 3 HAProxy pods distributed across 3 nodes)
+   - Adjust based on cluster topology (3 PXC + HAProxy pods distributed across 3 nodes)
 
-3. **Validate Configuration**
+3. **Validate Configuration & Auto-Adjust**
    - Before installation, estimate total CPU/memory requirements
    - Compare against available node capacity
-   - Warn user if configuration won't fit
-   - Offer solutions:
-     - Reduce PXC nodes from 3 to 2
-     - Reduce HAProxy instances from 3 to 2
-     - Use larger instance types/nodes
+   - **Automatically reduce HAProxy instances from 3 to 2** if resources are tight
+   - Recalculate and verify the new configuration fits
+   - Exit with error if even 2 HAProxy instances won't fit
+   
+   **Example:**
+   ```
+   [WARN] Configuration may not fit on nodes!
+   [WARN]   Estimated CPU per node: 1800m
+   [WARN]   Available CPU per node: 1600m (after system overhead)
+   [INFO] Automatically reducing HAProxy instances from 3 to 2...
+   [INFO] New estimated CPU per node: 1500m
+   [SUCCESS] Configuration will fit with 2 HAProxy instances
+   ```
 
 ## Example: t3a.large (EKS)
 
@@ -203,13 +211,32 @@ With 3 Kubernetes nodes and 6 total pods, the scheduler aims for:
 - Anti-affinity rules spread PXC pods across different nodes/zones
 - HAProxy pods distributed similarly
 
+## HAProxy Auto-Sizing
+
+The install scripts automatically adjust HAProxy instance count based on available resources:
+
+- **3 HAProxy instances**: Deployed when nodes have sufficient CPU (recommended for production)
+- **2 HAProxy instances**: Automatically selected when CPU is constrained (e.g., t3a.large nodes)
+- **Exit with error**: If even 2 HAProxy instances won't fit
+
+This ensures the cluster deploys successfully without manual intervention, while maintaining high availability where possible.
+
+**Manual Override:**
+If you need to manually adjust HAProxy size after installation:
+```bash
+kubectl patch pxc pxc-cluster-pxc-db -n percona --type='merge' \
+  -p '{"spec":{"haproxy":{"size":2}}}'
+```
+
 ## Files Modified
 
 - `percona/eks/install.sh`
   - Added `detect_node_resources()` function
-  - Added CPU validation in `prompt_configuration()`
+  - Added CPU validation with auto-adjustment in `prompt_configuration()`
   - Updated Helm values to use `${RECOMMENDED_PXC_CPU:-600m}`
   - Updated Helm values to use `${RECOMMENDED_HAPROXY_CPU:-100m}`
+  - Updated Helm values to use `${PXC_HAPROXY_SIZE}` (dynamic HAProxy sizing)
+  - Enhanced `configure_pitr()` to scale operator and use `jq` for persistent changes
 
 - `percona/on-prem/install.sh`
   - Same enhancements as EKS script
@@ -237,17 +264,29 @@ PITR is automatically configured in both EKS and on-premise installations with t
 PITR requires the `GTID_CACHE_KEY` environment variable to be set. The install scripts automatically:
 
 1. Wait for the PITR deployment to be created
-2. Add the required environment variable
-3. Verify the configuration
+2. **Scale down the Percona Operator** to prevent reconciliation
+3. Add the required environment variable using `jq` and `kubectl replace`
+4. Scale the operator back up
+5. Verify the configuration
+
+**Why this approach?** The Percona Operator continuously reconciles deployments. Simple `kubectl patch` commands are immediately overwritten. By scaling down the operator, modifying the deployment, and then scaling it back up, the change persists.
 
 ### Manual PITR Configuration
 
 If you need to manually configure PITR on an existing cluster:
 
 ```bash
+# Scale down operator
+kubectl scale deployment percona-operator-pxc-operator -n percona --replicas=0
+sleep 5
+
 # Add GTID_CACHE_KEY to PITR deployment
-kubectl patch deployment pxc-cluster-pxc-db-pitr -n percona --type='json' \
-  -p '[{"op": "add", "path": "/spec/template/spec/containers/0/env/-", "value": {"name": "GTID_CACHE_KEY", "value": "pxc-pitr-cache"}}]'
+kubectl get deployment pxc-cluster-pxc-db-pitr -n percona -o json | \
+  jq '.spec.template.spec.containers[0].env += [{"name":"GTID_CACHE_KEY","value":"pxc-pitr-cache"}]' | \
+  kubectl replace -f -
+
+# Scale operator back up
+kubectl scale deployment percona-operator-pxc-operator -n percona --replicas=1
 ```
 
 ### PITR Troubleshooting
