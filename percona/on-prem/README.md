@@ -44,11 +44,13 @@ $ ./percona/on-prem/install.sh
   Percona XtraDB Cluster Configuration
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
+Enter namespace name [default: percona]: mysql-prod
+
 This script will install:
   - Percona XtraDB Cluster 8.4.6-2
   - HAProxy 2.8.15
   - Percona Operator 1.15.0
-  - All components in namespace: percona
+  - All components in namespace: mysql-prod
   - Environment: On-Premise vSphere/vCenter
 
 [INFO] Available StorageClasses in cluster:
@@ -62,7 +64,7 @@ Enter max memory per node (e.g., 4Gi, 8Gi, 16Gi) [default: 8Gi]: 16Gi
 
 [INFO] Configuration Summary:
   - Environment: On-Premise vSphere/vCenter
-  - Namespace: percona
+  - Namespace: mysql-prod
   - Cluster Name: pxc-cluster
   - Nodes: 3
   - Data Directory Size: 100Gi
@@ -79,10 +81,10 @@ Proceed with installation? (yes/no): yes
 
 ### Environment Variables
 
-You can customize the installation by setting environment variables:
+You can customize the installation by setting environment variables (or use interactive prompts):
 
 ```bash
-# Custom namespace
+# Custom namespace (or will be prompted)
 NAMESPACE=my-percona ./percona/on-prem/install.sh
 
 # Custom cluster name
@@ -91,6 +93,8 @@ CLUSTER_NAME=my-cluster ./percona/on-prem/install.sh
 # Different number of nodes
 PXC_NODES=5 ./percona/on-prem/install.sh
 ```
+
+**Note**: If `NAMESPACE` is not set as an environment variable, the script will prompt you for it interactively.
 
 ### vSphere Storage Classes
 

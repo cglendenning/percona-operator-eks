@@ -99,6 +99,11 @@ check_prerequisites() {
 prompt_configuration() {
     log_header "Percona XtraDB Cluster Configuration"
     
+    # Prompt for namespace
+    read -p "Enter namespace name [default: percona]: " namespace_input
+    NAMESPACE="${namespace_input:-percona}"
+    
+    echo ""
     echo -e "${CYAN}This script will install:${NC}"
     echo "  - Percona XtraDB Cluster ${PXC_VERSION}"
     echo "  - HAProxy ${HAPROXY_VERSION}"
@@ -227,12 +232,33 @@ install_operator() {
     
     # Wait for operator to be ready
     log_info "Waiting for operator to be ready..."
-    kubectl wait --for=condition=available --timeout=300s \
-        deployment/percona-xtradb-cluster-operator \
-        -n "$NAMESPACE" 2>/dev/null || \
-    kubectl wait --for=condition=ready --timeout=300s \
-        pod -l app.kubernetes.io/name=percona-xtradb-cluster-operator \
-        -n "$NAMESPACE"
+    
+    # Try to find the operator deployment with various possible names
+    local deployment_found=false
+    for deploy_name in "pxc-operator" "percona-xtradb-cluster-operator" "percona-operator-pxc-operator"; do
+        if kubectl get deployment "$deploy_name" -n "$NAMESPACE" &> /dev/null; then
+            log_info "Found operator deployment: $deploy_name"
+            kubectl wait --for=condition=available --timeout=300s \
+                "deployment/$deploy_name" \
+                -n "$NAMESPACE"
+            deployment_found=true
+            break
+        fi
+    done
+    
+    # If deployment not found by name, try by label
+    if [ "$deployment_found" = false ]; then
+        log_info "Trying to find operator by label..."
+        for label in "app.kubernetes.io/name=pxc-operator" "app.kubernetes.io/name=percona-xtradb-cluster-operator"; do
+            if kubectl get pods -l "$label" -n "$NAMESPACE" --no-headers 2>/dev/null | grep -q .; then
+                log_info "Found operator pods with label: $label"
+                kubectl wait --for=condition=ready --timeout=300s \
+                    pod -l "$label" \
+                    -n "$NAMESPACE"
+                break
+            fi
+        done
+    fi
     
     log_success "Operator is ready"
 }

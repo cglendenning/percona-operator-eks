@@ -42,16 +42,21 @@ cd percona/on-prem
 
 Both installers will prompt you for:
 
-1. **Storage Size** (EKS only uses gp3, on-prem prompts for StorageClass first)
+1. **Namespace Name**
+   - Default: `percona`
+   - Example: `prod-db`, `mysql-cluster`, `pxc-dev`
+   - All components will be installed in this namespace
+
+2. **Storage Size** (EKS only uses gp3, on-prem prompts for StorageClass first)
    - Example: `50Gi`, `100Gi`, `250Gi`
    - This is the persistent volume size for each PXC node's data directory
 
-2. **Maximum Memory per Node**
+3. **Maximum Memory per Node**
    - Example: `4Gi`, `8Gi`, `16Gi`, `32Gi`
    - This sets the memory limit for each PXC pod
    - InnoDB buffer pool will be automatically set to 70% of this value
 
-3. **Confirmation**
+4. **Confirmation**
    - Review the configuration summary
    - Type `yes` to proceed with installation
 
@@ -279,8 +284,17 @@ kubectl describe nodes | grep -A 5 "Allocated resources"
 
 ### Custom Namespace
 
+You can either set it as an environment variable or let the script prompt you:
+
+**Via environment variable:**
 ```bash
 NAMESPACE=production-db ./percona/eks/install.sh
+```
+
+**Via interactive prompt (default):**
+```bash
+./percona/eks/install.sh
+# You'll be prompted: Enter namespace name [default: percona]:
 ```
 
 ### Custom Cluster Name

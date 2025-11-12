@@ -41,17 +41,19 @@ $ ./percona/eks/install.sh
   Percona XtraDB Cluster Configuration
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
+Enter namespace name [default: percona]: prod-mysql
+
 This script will install:
   - Percona XtraDB Cluster 8.4.6-2
   - HAProxy 2.8.15
   - Percona Operator 1.15.0
-  - All components in namespace: percona
+  - All components in namespace: prod-mysql
 
 Enter data directory size per node (e.g., 50Gi, 100Gi) [default: 50Gi]: 100Gi
 Enter max memory per node (e.g., 4Gi, 8Gi, 16Gi) [default: 8Gi]: 16Gi
 
 [INFO] Configuration Summary:
-  - Namespace: percona
+  - Namespace: prod-mysql
   - Cluster Name: pxc-cluster
   - Nodes: 3
   - Data Directory Size: 100Gi
@@ -68,10 +70,10 @@ Proceed with installation? (yes/no): yes
 
 ### Environment Variables
 
-You can customize the installation by setting environment variables:
+You can customize the installation by setting environment variables (or use interactive prompts):
 
 ```bash
-# Custom namespace
+# Custom namespace (or will be prompted)
 NAMESPACE=my-percona ./percona/eks/install.sh
 
 # Custom cluster name
@@ -80,6 +82,8 @@ CLUSTER_NAME=my-cluster ./percona/eks/install.sh
 # Different number of nodes
 PXC_NODES=5 ./percona/eks/install.sh
 ```
+
+**Note**: If `NAMESPACE` is not set as an environment variable, the script will prompt you for it interactively.
 
 ### Resource Calculations
 
