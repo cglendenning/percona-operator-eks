@@ -294,7 +294,43 @@ kubectl exec -it pxc-cluster-haproxy-0 -n percona -- curl localhost:8404
 
 ## Uninstallation
 
-To remove the entire cluster:
+### Safe Uninstall Script (Recommended)
+
+Use the interactive uninstall script that prompts for confirmation and shows exactly what will be deleted:
+
+```bash
+./percona/on-prem/uninstall.sh
+```
+
+The script will:
+1. ✅ Prompt for the namespace to uninstall
+2. ✅ Show all resources that will be deleted (Helm releases, pods, PVCs, PVs)
+3. ✅ Ask for confirmation before proceeding
+4. ✅ Optionally preserve PVCs and data
+5. ✅ Optionally preserve the namespace
+
+**Example uninstall session:**
+```bash
+$ ./percona/on-prem/uninstall.sh
+
+Enter namespace to uninstall from: percona
+
+[Shows all resources: Helm releases, PXC clusters, pods, PVCs, PVs, secrets...]
+
+Are you sure you want to proceed? (type 'yes' to confirm): yes
+Do you want to delete PVCs and PVs? (yes/no) [no]: yes
+
+⚠️  WARNING: Deleting PVCs will permanently delete all database data!
+⚠️  This action CANNOT be undone!
+
+Type 'DELETE ALL DATA' to confirm PVC deletion: DELETE ALL DATA
+
+Do you want to delete the namespace 'percona'? (yes/no) [no]: yes
+```
+
+### Manual Uninstallation
+
+If you prefer manual uninstallation:
 
 ```bash
 # Delete cluster
@@ -303,10 +339,10 @@ helm uninstall pxc-cluster -n percona
 # Delete operator
 helm uninstall percona-operator -n percona
 
-# Delete PVCs (optional - will delete all data!)
+# Delete PVCs (⚠️ will delete all data!)
 kubectl delete pvc -n percona --all
 
-# Delete namespace (optional)
+# Delete namespace
 kubectl delete namespace percona
 ```
 

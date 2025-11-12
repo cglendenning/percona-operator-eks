@@ -297,7 +297,9 @@ crVersion: ${PXC_VERSION}
 
 pxc:
   size: ${PXC_NODES}
-  image: percona/percona-xtradb-cluster:${PXC_VERSION}
+  image:
+    repository: percona/percona-xtradb-cluster
+    tag: ${PXC_VERSION}
   
   # Configuration for InnoDB
   configuration: |
@@ -340,7 +342,9 @@ pxc:
 haproxy:
   enabled: true
   size: ${PXC_NODES}
-  image: percona/percona-xtradb-cluster-haproxy:${HAPROXY_VERSION}
+  image:
+    repository: percona/percona-xtradb-cluster-haproxy
+    tag: ${HAPROXY_VERSION}
   
   resources:
     requests:
@@ -372,7 +376,9 @@ proxysql:
 # Backup configuration with AWS S3
 backup:
   enabled: true
-  image: percona/percona-xtradb-cluster-operator:${OPERATOR_VERSION}-pxc8.0-backup
+  image:
+    repository: percona/percona-xtradb-cluster-operator
+    tag: ${OPERATOR_VERSION}-pxc8.0-backup
   
   pitr:
     enabled: true

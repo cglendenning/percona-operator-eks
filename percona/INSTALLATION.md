@@ -382,8 +382,38 @@ helm install minio minio/minio \
 
 ## Uninstallation
 
-### Keep Data (Safe)
+### Safe Uninstall Script (Recommended)
 
+Use the interactive uninstall script that safely removes the cluster with confirmation prompts:
+
+**For EKS:**
+```bash
+./percona/eks/uninstall.sh
+```
+
+**For On-Prem:**
+```bash
+./percona/on-prem/uninstall.sh
+```
+
+**The script will:**
+1. Prompt for the namespace to uninstall
+2. Show all resources (Helm releases, pods, PVCs, PVs, storage totals)
+3. Ask for explicit confirmation
+4. Optionally preserve PVCs and data
+5. Optionally preserve the namespace
+
+**Safety features:**
+- Won't delete anything without explicit "yes" confirmation
+- To delete PVCs, requires typing "DELETE ALL DATA"
+- Shows total storage and all PVs before deletion
+- Option to preserve data while removing cluster
+
+### Manual Uninstallation
+
+If you prefer manual commands:
+
+**Keep Data (Safe):**
 ```bash
 # Delete cluster
 helm uninstall pxc-cluster -n percona
@@ -394,8 +424,7 @@ helm uninstall percona-operator -n percona
 # PVCs remain - data is safe
 ```
 
-### Complete Removal (⚠️ Deletes All Data)
-
+**Complete Removal (⚠️ Deletes All Data):**
 ```bash
 # Delete cluster
 helm uninstall pxc-cluster -n percona

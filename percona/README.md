@@ -29,7 +29,8 @@ percona/
 
 ```bash
 cd percona/eks
-./install.sh
+./install.sh     # Install
+./uninstall.sh   # Uninstall
 ```
 
 **Features:**
@@ -38,6 +39,7 @@ cd percona/eks
 - Multi-AZ deployment (3 availability zones)
 - EBS gp3 storage
 - Automatic resource calculation
+- Safe uninstall with data preservation options
 
 [Full EKS Documentation →](eks/README.md)
 
@@ -45,7 +47,8 @@ cd percona/eks
 
 ```bash
 cd percona/on-prem
-./install.sh
+./install.sh     # Install
+./uninstall.sh   # Uninstall
 ```
 
 **Features:**
@@ -54,6 +57,7 @@ cd percona/on-prem
 - Host-based anti-affinity
 - vSphere storage integration
 - Automatic resource calculation
+- Safe uninstall with data preservation options
 
 [Full On-Prem Documentation →](on-prem/README.md)
 
@@ -241,18 +245,42 @@ EOF
 
 ## Uninstallation
 
-### Remove Cluster (Keep Data)
+### Safe Uninstall Scripts (Recommended)
+
+Both EKS and on-prem environments have interactive uninstall scripts:
 
 ```bash
-# Delete cluster, keep PVCs
+# For EKS
+./percona/eks/uninstall.sh
+
+# For On-Prem
+./percona/on-prem/uninstall.sh
+```
+
+**Features:**
+- ✅ Prompts for namespace
+- ✅ Shows all resources before deletion
+- ✅ Option to preserve PVCs and data
+- ✅ Option to preserve namespace
+- ✅ Requires explicit confirmation for data deletion
+- ✅ Safe: Won't delete anything without confirmation
+
+### Manual Uninstallation
+
+If you prefer manual uninstallation:
+
+**Keep Data:**
+```bash
+# Delete cluster
 helm uninstall pxc-cluster -n percona
 
 # Delete operator
 helm uninstall percona-operator -n percona
+
+# PVCs remain - data preserved
 ```
 
-### Complete Removal (Delete All Data)
-
+**Delete Everything:**
 ```bash
 # Delete cluster
 helm uninstall pxc-cluster -n percona
