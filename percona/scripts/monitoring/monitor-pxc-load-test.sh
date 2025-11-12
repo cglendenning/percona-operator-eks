@@ -394,26 +394,50 @@ EOF
 while [[ $# -gt 0 ]]; do
     case $1 in
         -h|--host)
+            if [ $# -lt 2 ]; then
+                error "Option $1 requires an argument"
+                exit 1
+            fi
             MYSQL_HOST="$2"
             shift 2
             ;;
         -P|--port)
+            if [ $# -lt 2 ]; then
+                error "Option $1 requires an argument"
+                exit 1
+            fi
             MYSQL_PORT="$2"
             shift 2
             ;;
         -u|--user)
+            if [ $# -lt 2 ]; then
+                error "Option $1 requires an argument"
+                exit 1
+            fi
             MYSQL_USER="$2"
             shift 2
             ;;
         -p|--password)
+            if [ $# -lt 2 ]; then
+                error "Option $1 requires an argument"
+                exit 1
+            fi
             MYSQL_PASSWORD="$2"
             shift 2
             ;;
         -i|--interval)
+            if [ $# -lt 2 ]; then
+                error "Option $1 requires an argument"
+                exit 1
+            fi
             INTERVAL="$2"
             shift 2
             ;;
         -o|--output)
+            if [ $# -lt 2 ]; then
+                error "Option $1 requires an argument"
+                exit 1
+            fi
             OUTPUT_DIR="$2"
             shift 2
             ;;

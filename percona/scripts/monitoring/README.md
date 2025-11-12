@@ -13,14 +13,14 @@ This directory contains tools to monitor your Percona XtraDB Cluster (PXC) durin
 ### Option 1: Automated Monitoring Script (Recommended)
 
 ```bash
-# Monitor every 5 seconds with real-time output
-./monitor-pxc-load-test.sh -u root -p
+# Real-time monitoring every 5 seconds
+./monitoring/monitor-pxc-load-test.sh -u root -p
 
 # Single report only (no continuous monitoring)
-./monitor-pxc-load-test.sh -i 0 -u root -p
+./monitoring/monitor-pxc-load-test.sh -i 0 -u root -p
 
 # Custom connection settings
-./monitor-pxc-load-test.sh -h mysql-cluster.example.com -P 3307 -u admin -p
+./monitoring/monitor-pxc-load-test.sh -h mysql-cluster.example.com -P 3307 -u admin -p
 ```
 
 ### Option 2: Manual SQL Queries
