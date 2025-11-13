@@ -78,6 +78,29 @@ check_prerequisites() {
         log_success "helm found: $(helm version --short 2>/dev/null || echo 'installed')"
     fi
     
+    # Verify Helm can access the cluster
+    if command -v helm &> /dev/null; then
+        if ! helm list -A &> /dev/null; then
+            log_error "Helm cannot connect to Kubernetes cluster"
+            log_error "Helm is trying to connect to: http://localhost:8080"
+            echo ""
+            log_info "Your kubectl is working, but Helm can't find the cluster."
+            log_info "This usually means KUBECONFIG is not exported or Helm is not using it."
+            echo ""
+            log_info "To fix this, ensure KUBECONFIG is exported:"
+            log_info "  export KUBECONFIG=\$KUBECONFIG"
+            echo ""
+            log_info "Or if using default location (~/.kube/config):"
+            log_info "  export KUBECONFIG=~/.kube/config"
+            echo ""
+            log_info "Current KUBECONFIG: ${KUBECONFIG:-<not set>}"
+            log_info "kubectl config: $(kubectl config view --minify -o jsonpath='{.current-context}' 2>/dev/null || echo '<unknown>')"
+            echo ""
+            exit 1
+        fi
+        log_success "Helm can access Kubernetes cluster"
+    fi
+    
     # Check bc for calculations
     if ! command -v bc &> /dev/null; then
         missing+=("bc")
