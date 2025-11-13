@@ -544,6 +544,67 @@ create_minio_secret() {
     fi
 }
 
+# Create MinIO bucket
+create_minio_bucket() {
+    log_header "Creating MinIO Bucket"
+    
+    # Check if MinIO pod exists
+    local minio_pod="myminio-pool-0-0"
+    if ! kubectl get pod "$minio_pod" -n minio-operator &> /dev/null; then
+        log_error "MinIO pod '$minio_pod' not found in namespace 'minio-operator'"
+        log_error "Please ensure MinIO is installed before running this script"
+        exit 1
+    fi
+    
+    log_info "Extracting MinIO credentials from secret..."
+    
+    # Get credentials from the secret
+    local access_key=$(kubectl get secret myminio-creds -n "$MINIO_SECRET_NAMESPACE" -o jsonpath='{.data.accesskey}' 2>/dev/null | base64 -d 2>/dev/null || echo "")
+    local secret_key=$(kubectl get secret myminio-creds -n "$MINIO_SECRET_NAMESPACE" -o jsonpath='{.data.secretkey}' 2>/dev/null | base64 -d 2>/dev/null || echo "")
+    
+    if [ -z "$access_key" ] || [ -z "$secret_key" ]; then
+        log_error "Failed to extract credentials from 'myminio-creds' secret"
+        exit 1
+    fi
+    
+    log_info "Setting up MinIO client alias in pod '$minio_pod'..."
+    
+    # Set up mc alias
+    if ! kubectl -n minio-operator exec -it "$minio_pod" -- bash -c \
+        "mc --insecure alias set local https://localhost:9000 $access_key $secret_key" 2>/dev/null; then
+        log_error "Failed to set up MinIO client alias"
+        exit 1
+    fi
+    
+    log_success "MinIO client alias configured"
+    
+    # Check if bucket already exists
+    log_info "Checking if bucket '$MINIO_BUCKET' already exists..."
+    local bucket_exists=$(kubectl -n minio-operator exec -it "$minio_pod" -- bash -c \
+        "mc --insecure ls local | grep -w '$MINIO_BUCKET'" 2>/dev/null || echo "")
+    
+    if [ -n "$bucket_exists" ]; then
+        log_success "Bucket '$MINIO_BUCKET' already exists"
+    else
+        # Create bucket
+        log_info "Creating bucket '$MINIO_BUCKET'..."
+        if kubectl -n minio-operator exec -it "$minio_pod" -- bash -c \
+            "mc --insecure mb -p local/$MINIO_BUCKET" 2>/dev/null; then
+            log_success "Bucket '$MINIO_BUCKET' created successfully"
+        else
+            log_error "Failed to create bucket '$MINIO_BUCKET'"
+            exit 1
+        fi
+    fi
+    
+    # List buckets to verify
+    log_info "Current MinIO buckets:"
+    kubectl -n minio-operator exec -it "$minio_pod" -- bash -c \
+        "mc --insecure ls local" 2>/dev/null | sed 's/^/  /' || log_warn "Could not list buckets"
+    
+    echo ""
+}
+
 # Generate Helm values
 generate_helm_values() {
     log_header "Generating Helm Values"
@@ -1072,6 +1133,7 @@ main() {
     create_namespace
     install_operator
     create_minio_secret
+    create_minio_bucket
     generate_helm_values
     install_cluster
     configure_pitr
