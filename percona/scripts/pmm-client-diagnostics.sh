@@ -183,7 +183,12 @@ run_diagnostics() {
     
     # Check version
     CURRENT_VERSION="$pmm_image_tag"
-    if [ "$pmm_image_tag" != "$EXPECTED_VERSION" ]; then
+    if [ -z "$pmm_image_tag" ] || [ "$pmm_image_tag" = "null" ]; then
+        log_warn "PMM client version is not set (empty or null)"
+        WARNINGS+=("PMM client version not set")
+        VERSION_MISMATCH=true
+        REPAIRS_AVAILABLE+=("fix_version")
+    elif [ "$pmm_image_tag" != "$EXPECTED_VERSION" ]; then
         log_warn "PMM client version is '$pmm_image_tag', expected '$EXPECTED_VERSION'"
         WARNINGS+=("PMM client version mismatch: $pmm_image_tag vs $EXPECTED_VERSION")
         VERSION_MISMATCH=true
@@ -194,7 +199,12 @@ run_diagnostics() {
     
     # Check server host
     CURRENT_SERVERHOST="$pmm_server_host"
-    if [ "$pmm_server_host" != "$PMM_SERVICE" ]; then
+    if [ -z "$pmm_server_host" ] || [ "$pmm_server_host" = "null" ]; then
+        log_warn "PMM server host is not set (empty or null)"
+        WARNINGS+=("PMM server host not set")
+        SERVERHOST_WRONG=true
+        REPAIRS_AVAILABLE+=("fix_serverhost")
+    elif [ "$pmm_server_host" != "$PMM_SERVICE" ]; then
         log_warn "PMM server host is '$pmm_server_host', expected '$PMM_SERVICE'"
         WARNINGS+=("PMM server host mismatch: $pmm_server_host vs $PMM_SERVICE")
         SERVERHOST_WRONG=true
@@ -420,6 +430,27 @@ run_diagnostics() {
 enable_pmm() {
     log_info "Enabling PMM in PXC cluster configuration..."
     
+    # Verify PXC resource exists
+    if ! kubectl get perconaxtradbcluster "$PXC_RESOURCE" -n "$NAMESPACE" &>/dev/null; then
+        log_error "✗ PXC resource '$PXC_RESOURCE' not found in namespace '$NAMESPACE'"
+        log_error "Cannot enable PMM without a valid PXC cluster"
+        return 1
+    fi
+    
+    log_info "Current PMM configuration:"
+    kubectl get perconaxtradbcluster "$PXC_RESOURCE" -n "$NAMESPACE" -o jsonpath='{.spec.pmm}' 2>/dev/null | jq '.' || echo "  (none)"
+    echo ""
+    
+    log_info "Applying new PMM configuration:"
+    echo "  enabled: true"
+    echo "  image.repository: percona/pmm-client"
+    echo "  image.tag: $EXPECTED_VERSION"
+    echo "  serverHost: $PMM_SERVICE"
+    echo "  resources:"
+    echo "    requests: cpu=50m, memory=64Mi"
+    echo "    limits: cpu=200m, memory=256Mi"
+    echo ""
+    
     local patch='{
       "spec": {
         "pmm": {
@@ -428,23 +459,74 @@ enable_pmm() {
             "repository": "percona/pmm-client",
             "tag": "'$EXPECTED_VERSION'"
           },
-          "serverHost": "'$PMM_SERVICE'"
+          "serverHost": "'$PMM_SERVICE'",
+          "resources": {
+            "requests": {
+              "cpu": "50m",
+              "memory": "64Mi"
+            },
+            "limits": {
+              "cpu": "200m",
+              "memory": "256Mi"
+            }
+          }
         }
       }
     }'
     
-    if kubectl patch perconaxtradbcluster "$PXC_RESOURCE" -n "$NAMESPACE" --type=merge -p "$patch" 2>/dev/null; then
+    local error_output
+    if error_output=$(kubectl patch perconaxtradbcluster "$PXC_RESOURCE" -n "$NAMESPACE" --type=merge -p "$patch" 2>&1); then
         log_success "✓ Successfully enabled PMM"
+        echo "$error_output"
         PMM_DISABLED=false
+        
+        # Verify the patch was applied
+        log_info "Verifying PMM configuration..."
+        local new_enabled=$(kubectl get perconaxtradbcluster "$PXC_RESOURCE" -n "$NAMESPACE" -o jsonpath='{.spec.pmm.enabled}' 2>/dev/null || echo "false")
+        local new_version=$(kubectl get perconaxtradbcluster "$PXC_RESOURCE" -n "$NAMESPACE" -o jsonpath='{.spec.pmm.image.tag}' 2>/dev/null || echo "")
+        
+        if [ "$new_enabled" = "true" ] && [ "$new_version" = "$EXPECTED_VERSION" ]; then
+            log_success "✓ PMM configuration verified in cluster spec"
+        else
+            log_warn "⚠ PMM configuration may not have been fully applied"
+            log_warn "  enabled: $new_enabled (expected: true)"
+            log_warn "  version: $new_version (expected: $EXPECTED_VERSION)"
+        fi
+        
         return 0
     else
         log_error "✗ Failed to enable PMM"
+        log_error "kubectl patch error output:"
+        echo "$error_output" | sed 's/^/  /'
+        echo ""
+        
+        # Provide troubleshooting info
+        log_info "Troubleshooting steps:"
+        echo "  1. Verify the operator is running:"
+        echo "     kubectl get pods -n $NAMESPACE -l app.kubernetes.io/name=percona-xtradb-cluster-operator"
+        echo ""
+        echo "  2. Check operator logs for errors:"
+        echo "     kubectl logs -n $NAMESPACE -l app.kubernetes.io/name=percona-xtradb-cluster-operator --tail=50"
+        echo ""
+        echo "  3. Verify you have permissions to patch the resource:"
+        echo "     kubectl auth can-i patch perconaxtradbcluster -n $NAMESPACE"
+        echo ""
+        echo "  4. Check the PXC resource status:"
+        echo "     kubectl get perconaxtradbcluster $PXC_RESOURCE -n $NAMESPACE -o yaml"
+        echo ""
+        
         return 1
     fi
 }
 
 fix_version() {
     log_info "Updating PMM client version to $EXPECTED_VERSION..."
+    
+    # Show current version
+    local current_version=$(kubectl get perconaxtradbcluster "$PXC_RESOURCE" -n "$NAMESPACE" -o jsonpath='{.spec.pmm.image.tag}' 2>/dev/null || echo "unknown")
+    log_info "Current version: $current_version"
+    log_info "Target version: $EXPECTED_VERSION"
+    echo ""
     
     local patch='{
       "spec": {
@@ -457,18 +539,43 @@ fix_version() {
       }
     }'
     
-    if kubectl patch perconaxtradbcluster "$PXC_RESOURCE" -n "$NAMESPACE" --type=merge -p "$patch" 2>/dev/null; then
+    local error_output
+    if error_output=$(kubectl patch perconaxtradbcluster "$PXC_RESOURCE" -n "$NAMESPACE" --type=merge -p "$patch" 2>&1); then
         log_success "✓ Successfully updated PMM client version"
+        echo "$error_output"
         VERSION_MISMATCH=false
+        
+        # Verify the patch was applied
+        local new_version=$(kubectl get perconaxtradbcluster "$PXC_RESOURCE" -n "$NAMESPACE" -o jsonpath='{.spec.pmm.image.tag}' 2>/dev/null || echo "")
+        if [ "$new_version" = "$EXPECTED_VERSION" ]; then
+            log_success "✓ Version update verified: $new_version"
+        else
+            log_warn "⚠ Version may not have been updated (current: $new_version)"
+        fi
+        
         return 0
     else
         log_error "✗ Failed to update PMM client version"
+        log_error "kubectl patch error output:"
+        echo "$error_output" | sed 's/^/  /'
+        echo ""
+        
+        log_info "Try manually with:"
+        echo "  kubectl patch perconaxtradbcluster $PXC_RESOURCE -n $NAMESPACE --type=merge -p '$patch'"
+        echo ""
+        
         return 1
     fi
 }
 
 fix_serverhost() {
     log_info "Updating PMM server host to '$PMM_SERVICE'..."
+    
+    # Show current serverHost
+    local current_host=$(kubectl get perconaxtradbcluster "$PXC_RESOURCE" -n "$NAMESPACE" -o jsonpath='{.spec.pmm.serverHost}' 2>/dev/null || echo "not set")
+    log_info "Current serverHost: $current_host"
+    log_info "Target serverHost: $PMM_SERVICE"
+    echo ""
     
     local patch='{
       "spec": {
@@ -478,12 +585,31 @@ fix_serverhost() {
       }
     }'
     
-    if kubectl patch perconaxtradbcluster "$PXC_RESOURCE" -n "$NAMESPACE" --type=merge -p "$patch" 2>/dev/null; then
+    local error_output
+    if error_output=$(kubectl patch perconaxtradbcluster "$PXC_RESOURCE" -n "$NAMESPACE" --type=merge -p "$patch" 2>&1); then
         log_success "✓ Successfully updated PMM server host"
+        echo "$error_output"
         SERVERHOST_WRONG=false
+        
+        # Verify the patch was applied
+        local new_host=$(kubectl get perconaxtradbcluster "$PXC_RESOURCE" -n "$NAMESPACE" -o jsonpath='{.spec.pmm.serverHost}' 2>/dev/null || echo "")
+        if [ "$new_host" = "$PMM_SERVICE" ]; then
+            log_success "✓ ServerHost update verified: $new_host"
+        else
+            log_warn "⚠ ServerHost may not have been updated (current: $new_host)"
+        fi
+        
         return 0
     else
         log_error "✗ Failed to update PMM server host"
+        log_error "kubectl patch error output:"
+        echo "$error_output" | sed 's/^/  /'
+        echo ""
+        
+        log_info "Try manually with:"
+        echo "  kubectl patch perconaxtradbcluster $PXC_RESOURCE -n $NAMESPACE --type=merge -p '$patch'"
+        echo ""
+        
         return 1
     fi
 }
