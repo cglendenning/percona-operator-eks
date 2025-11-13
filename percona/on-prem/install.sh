@@ -99,7 +99,10 @@ check_prerequisites() {
     log_success "Connected to Kubernetes cluster"
     
     # Display cluster info
-    local cluster_version=$(kubectl version --short 2>/dev/null | grep "Server Version" | awk '{print $3}' || echo "unknown")
+    local cluster_version=$(kubectl version -o json 2>/dev/null | jq -r '.serverVersion.gitVersion // empty' 2>/dev/null || echo "")
+    if [ -z "$cluster_version" ]; then
+        cluster_version=$(kubectl get nodes -o json 2>/dev/null | jq -r '.items[0].status.nodeInfo.kubeletVersion // empty' 2>/dev/null || echo "unknown")
+    fi
     log_info "Cluster version: $cluster_version"
 }
 
@@ -323,6 +326,21 @@ create_namespace() {
 install_operator() {
     log_header "Installing Percona Operator ${OPERATOR_VERSION}"
     
+    # Check for existing operator installations in other namespaces
+    local existing_operator=$(helm list -A --filter "percona-operator" -o json 2>/dev/null | jq -r '.[0].namespace // empty' 2>/dev/null || echo "")
+    
+    if [ -n "$existing_operator" ] && [ "$existing_operator" != "$NAMESPACE" ]; then
+        log_error "Found existing Percona Operator in namespace: $existing_operator"
+        log_error "The Percona Operator uses cluster-wide resources that conflict across namespaces."
+        echo ""
+        log_info "Please run the uninstall script first:"
+        log_info "  cd $(dirname "$SCRIPT_DIR")"
+        log_info "  ./percona/on-prem/uninstall.sh"
+        echo ""
+        log_info "Then re-run this installation script."
+        exit 1
+    fi
+    
     # Add Percona Helm repo
     log_info "Adding Percona Helm repository..."
     helm repo add percona https://percona.github.io/percona-helm-charts/ --force-update
@@ -543,6 +561,120 @@ EOF
     log_success "Helm values generated at /tmp/pxc-values.yaml"
 }
 
+# Diagnose pod failures
+diagnose_pod_failures() {
+    local namespace="$1"
+    local label_selector="$2"
+    
+    echo ""
+    log_warn "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+    log_warn "  POD DIAGNOSTICS"
+    log_warn "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+    echo ""
+    
+    # Get all pods with the label
+    local pods=$(kubectl get pods -n "$namespace" -l "$label_selector" --no-headers 2>/dev/null || echo "")
+    
+    if [ -z "$pods" ]; then
+        log_error "No pods found with label $label_selector in namespace $namespace"
+        return
+    fi
+    
+    # Show pod status summary
+    log_info "Pod Status Summary:"
+    kubectl get pods -n "$namespace" -l "$label_selector" 2>/dev/null || true
+    echo ""
+    
+    # Check each pod individually
+    while read -r line; do
+        if [ -z "$line" ]; then
+            continue
+        fi
+        
+        local pod_name=$(echo "$line" | awk '{print $1}')
+        local ready=$(echo "$line" | awk '{print $2}')
+        local status=$(echo "$line" | awk '{print $3}')
+        local restarts=$(echo "$line" | awk '{print $4}')
+        
+        # Check if pod has issues
+        if [[ "$status" =~ CrashLoopBackOff|Error|ImagePullBackOff|ErrImagePull|Pending|Init:Error|Init:CrashLoopBackOff ]]; then
+            log_error "Pod $pod_name is in bad state: $status (Restarts: $restarts)"
+            
+            # Show pod events
+            echo ""
+            log_info "Recent events for $pod_name:"
+            kubectl get events -n "$namespace" --field-selector involvedObject.name="$pod_name" --sort-by='.lastTimestamp' 2>/dev/null | tail -10 || true
+            echo ""
+            
+            # Show container statuses
+            log_info "Container statuses for $pod_name:"
+            kubectl get pod "$pod_name" -n "$namespace" -o json 2>/dev/null | jq -r '.status.containerStatuses[]? | "  - \(.name): ready=\(.ready), restarts=\(.restartCount), state=\(.state | keys[0])"' 2>/dev/null || true
+            echo ""
+            
+            # Get logs from failing containers
+            local containers=$(kubectl get pod "$pod_name" -n "$namespace" -o jsonpath='{.spec.containers[*].name}' 2>/dev/null || echo "")
+            for container in $containers; do
+                # Check if container has terminated or is in waiting state
+                local container_state=$(kubectl get pod "$pod_name" -n "$namespace" -o json 2>/dev/null | jq -r ".status.containerStatuses[]? | select(.name==\"$container\") | .state | keys[0]" 2>/dev/null || echo "")
+                
+                if [ "$container_state" = "waiting" ] || [ "$container_state" = "terminated" ]; then
+                    log_warn "Logs from container '$container' in pod '$pod_name':"
+                    kubectl logs "$pod_name" -n "$namespace" -c "$container" --tail=30 2>/dev/null || \
+                        kubectl logs "$pod_name" -n "$namespace" -c "$container" --previous --tail=30 2>/dev/null || \
+                        log_error "  Cannot retrieve logs for container $container"
+                    echo ""
+                fi
+            done
+            
+        elif [[ ! "$ready" =~ ^([0-9]+)/\1$ ]]; then
+            # Pod is running but not all containers are ready
+            log_warn "Pod $pod_name is running but not fully ready: $ready (Status: $status)"
+            
+            # Show which containers aren't ready
+            log_info "Container statuses for $pod_name:"
+            kubectl get pod "$pod_name" -n "$namespace" -o json 2>/dev/null | jq -r '.status.containerStatuses[]? | "  - \(.name): ready=\(.ready), restarts=\(.restartCount), state=\(.state | keys[0])"' 2>/dev/null || true
+            echo ""
+            
+            # Show recent events
+            log_info "Recent events for $pod_name:"
+            kubectl get events -n "$namespace" --field-selector involvedObject.name="$pod_name" --sort-by='.lastTimestamp' 2>/dev/null | tail -5 || true
+            echo ""
+            
+            # Get logs from non-ready containers
+            local containers=$(kubectl get pod "$pod_name" -n "$namespace" -o jsonpath='{.spec.containers[*].name}' 2>/dev/null || echo "")
+            for container in $containers; do
+                local container_ready=$(kubectl get pod "$pod_name" -n "$namespace" -o json 2>/dev/null | jq -r ".status.containerStatuses[]? | select(.name==\"$container\") | .ready" 2>/dev/null || echo "false")
+                
+                if [ "$container_ready" = "false" ]; then
+                    log_warn "Logs from non-ready container '$container' in pod '$pod_name' (last 30 lines):"
+                    kubectl logs "$pod_name" -n "$namespace" -c "$container" --tail=30 2>/dev/null || log_error "  Cannot retrieve logs"
+                    echo ""
+                fi
+            done
+        fi
+    done <<< "$pods"
+    
+    # Check node resources
+    echo ""
+    log_info "Node Resource Status:"
+    kubectl top nodes 2>/dev/null || log_warn "Cannot get node metrics (metrics-server may not be installed)"
+    echo ""
+    
+    # Check for resource constraints
+    log_info "Checking for resource constraints..."
+    local resource_events=$(kubectl get events -n "$namespace" --sort-by='.lastTimestamp' 2>/dev/null | grep -i "insufficient\|failedscheduling\|outof" | tail -5 || echo "")
+    if [ -n "$resource_events" ]; then
+        log_error "Found resource constraint events:"
+        echo "$resource_events"
+    else
+        log_success "No resource constraint events found"
+    fi
+    echo ""
+    
+    log_warn "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+    echo ""
+}
+
 # Install PXC Cluster
 install_cluster() {
     log_header "Installing Percona XtraDB Cluster: ${CLUSTER_NAME}"
@@ -598,30 +730,56 @@ install_cluster() {
     local timeout=900  # 15 minutes
     local elapsed=0
     local interval=10
+    local last_diagnostic=0
+    local diagnostic_interval=60  # Run diagnostics every 60s
     
     while [ $elapsed -lt $timeout ]; do
-        local ready_pods=$(kubectl get pods -n "$NAMESPACE" -l app.kubernetes.io/component=pxc --no-headers 2>/dev/null | grep -c "Running" 2>/dev/null || echo "0")
-        # Ensure we have a single integer
-        ready_pods=$(echo "$ready_pods" | tr -d '\n' | head -n1)
+        # Check READY column properly - a pod is ready when READY shows N/N (e.g., "3/3")
+        local ready_count=0
         local total_pods=$PXC_NODES
         
-        # Validate ready_pods is a number
-        if ! [[ "$ready_pods" =~ ^[0-9]+$ ]]; then
-            ready_pods=0
+        # Get pod status with READY column
+        local pod_status=$(kubectl get pods -n "$NAMESPACE" -l app.kubernetes.io/component=pxc --no-headers 2>/dev/null || echo "")
+        
+        if [ -n "$pod_status" ]; then
+            # Count pods where READY column shows all containers ready (e.g., "3/3", "2/2")
+            while read -r line; do
+                if [ -n "$line" ]; then
+                    local ready_col=$(echo "$line" | awk '{print $2}')
+                    # Check if READY column is X/X where both numbers are equal and non-zero
+                    if [[ "$ready_col" =~ ^([0-9]+)/([0-9]+)$ ]]; then
+                        local ready="${BASH_REMATCH[1]}"
+                        local total="${BASH_REMATCH[2]}"
+                        if [ "$ready" -eq "$total" ] && [ "$ready" -gt 0 ]; then
+                            ready_count=$((ready_count + 1))
+                        fi
+                    fi
+                fi
+            done <<< "$pod_status"
         fi
         
-        if [ "$ready_pods" -eq "$total_pods" ]; then
-            log_success "All PXC pods are running!"
+        if [ "$ready_count" -eq "$total_pods" ]; then
+            log_success "All PXC pods are ready!"
             break
         fi
         
-        log_info "PXC pods ready: $ready_pods/$total_pods (${elapsed}s elapsed)"
+        log_info "PXC pods ready: $ready_count/$total_pods (${elapsed}s elapsed)"
+        
+        # Run diagnostics periodically if pods aren't ready
+        if [ $((elapsed - last_diagnostic)) -ge $diagnostic_interval ] && [ $elapsed -gt 0 ]; then
+            log_warn "Pods not ready after ${elapsed}s - running diagnostics..."
+            diagnose_pod_failures "$NAMESPACE" "app.kubernetes.io/component=pxc"
+            last_diagnostic=$elapsed
+        fi
+        
         sleep $interval
         elapsed=$((elapsed + interval))
     done
     
     if [ $elapsed -ge $timeout ]; then
-        log_error "Timeout waiting for PXC pods to be ready"
+        log_error "Timeout waiting for PXC pods to be ready after ${timeout}s"
+        log_error "Running final diagnostics..."
+        diagnose_pod_failures "$NAMESPACE" "app.kubernetes.io/component=pxc"
         exit 1
     fi
     

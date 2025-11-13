@@ -68,7 +68,7 @@ Or with verbose output:
 
 The deployment script:
 - Creates VPC with 3 public + 3 private subnets across us-east-1a, us-east-1c, us-east-1d
-- Deploys 3 EKS managed node groups (1 per AZ) with t3a.large On-Demand instances (cost-optimized for dev/test)
+- Deploys 3 EKS managed node groups (1 per AZ) with m6i.xlarge On-Demand instances (optimized for multi-cluster environments)
 - Installs EBS CSI driver, VPC CNI, CoreDNS, kube-proxy, and metrics-server add-ons
 - Updates kubeconfig automatically
 - Verifies multi-AZ node distribution
@@ -127,7 +127,7 @@ When CloudFormation deletion fails or Kubernetes resources aren't cleaned up pro
 4. Repeat as needed
 
 **Costs when running:**
-- ~$0.23/hour for 3 t3a.large On-Demand instances (~$162/month) - **22% cheaper than m5.large**
+- ~$0.58/hour for 3 m6i.xlarge On-Demand instances (~$420/month) - **15% faster than m5.xlarge at similar cost**
 - ~$0.10/hour for EKS control plane (~$73/month)
 - ~$0.10/hour for EBS gp3 volumes (PXC + ProxySQL) (~$73/month)
 - **Total: ~$0.43/hour or ~$10/day or ~$308/month** (if running 24/7)
@@ -137,27 +137,31 @@ When CloudFormation deletion fails or Kubernetes resources aren't cleaned up pro
 
 ### Instance Type Options
 
-The default instance type is **t3a.large** (optimized for cost in dev/test):
+The default instance type is **m6i.xlarge** (optimized for multi-cluster environments):
 
-| Instance Type | vCPUs | RAM | Price/Hour | Monthly (3 nodes) | Use Case |
-|---------------|-------|-----|------------|-------------------|----------|
-| **t3a.large** (default) | 2 | 8 GB | $0.0752 | ~$162 | ✅ Dev/test PXC clusters |
-| t3a.medium | 2 | 4 GB | $0.0376 | ~$81 | Minimal (tight for PXC) |
-| t3a.xlarge | 4 | 16 GB | $0.1504 | ~$324 | Larger dev workloads |
-| m5.large | 2 | 8 GB | $0.096 | ~$207 | Production-like (+22% cost) |
-| m5.xlarge | 4 | 16 GB | $0.192 | ~$414 | Production workloads |
+| Instance Type | vCPUs | RAM | Price/Hour | Monthly (3 nodes) | Max Clusters | Use Case |
+|---------------|-------|-----|------------|-------------------|--------------|----------|
+| t3a.large | 2 | 8 GB | $0.0752 | ~$162 | 1 | Budget single-cluster |
+| t3a.xlarge | 4 | 16 GB | $0.1504 | ~$324 | 2 | Budget multi-cluster |
+| m5.large | 2 | 8 GB | $0.096 | ~$207 | 1 | Single-cluster stable |
+| m5.xlarge | 4 | 16 GB | $0.192 | ~$414 | 2 | Multi-cluster (older gen) |
+| **m6i.xlarge** (default) | 4 | 16 GB | $0.192 | ~$420 | 2 | ✅ Multi-cluster (15% faster) |
+| m6i.2xlarge | 8 | 32 GB | $0.384 | ~$840 | 5 | Heavy multi-cluster |
+| t3a.2xlarge | 8 | 32 GB | $0.3008 | ~$648 | 5 | Budget heavy multi-cluster |
 
-**Why t3a.large for dev/test?**
-- ✅ Same 8GB RAM as m5.large (important for MySQL workloads)
-- ✅ Burstable CPU with unlimited mode (fine for dev/test)
-- ✅ AMD EPYC processors (cheaper than Intel)
-- ✅ Handles PXC + ProxySQL + monitoring comfortably
-- ✅ **Saves ~$45/month vs m5.large**
+**Why m6i.xlarge?**
+- ✅ **48 GB total RAM** - run 2 full PXC clusters simultaneously
+- ✅ **12 vCPU total** - sufficient for multiple workloads
+- ✅ **15% faster** than m5.xlarge (3rd gen Intel Xeon Ice Lake)
+- ✅ **12.5 Gbps network** - better for replication and backups
+- ✅ Non-burstable - consistent, predictable performance
+- ✅ Great for CI/CD with ephemeral test clusters
+- ✅ Supports rapid cluster teardown/standup workflows
 
 **To change instance type:**
 ```bash
 # Edit eks/scripts/deploy.sh
-NODE_INSTANCE_TYPE="t3a.large"  # Change to your preferred type
+NODE_INSTANCE_TYPE="m6i.xlarge"  # Change to your preferred type
 ```
 
 Or pass as CloudFormation parameter:
@@ -165,7 +169,7 @@ Or pass as CloudFormation parameter:
 aws cloudformation update-stack \
   --stack-name percona-eks-cluster \
   --use-previous-template \
-  --parameters ParameterKey=NodeInstanceType,ParameterValue=m5.large \
+  --parameters ParameterKey=NodeInstanceType,ParameterValue=m6i.2xlarge \
   --capabilities CAPABILITY_IAM
 ```
 

@@ -26,7 +26,7 @@ STACK_NAME="percona-eks-cluster"
 TEMPLATE_FILE="eks/cloudformation/eks-cluster.yaml"
 REGION="us-east-1"
 CLUSTER_NAME="percona-eks"
-NODE_INSTANCE_TYPE="t3a.large"  # Cost-optimized for dev/test: $0.0752/hr vs m5.large $0.096/hr
+NODE_INSTANCE_TYPE="m6i.xlarge"  # Balanced for multi-cluster: 4 vCPU, 16GB RAM, $0.192/hr - 15% faster than m5.xlarge
 USE_SPOT="false"
 
 # Colors for output

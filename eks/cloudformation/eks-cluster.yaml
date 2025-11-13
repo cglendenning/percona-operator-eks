@@ -9,9 +9,9 @@ Parameters:
   
   NodeInstanceType:
     Type: String
-    Default: t3a.large
-    AllowedValues: [t3a.medium, t3a.large, t3a.xlarge, m5.large, m5.xlarge, m6i.large, m6i.xlarge]
-    Description: EC2 instance type for the worker nodes (t3a.large recommended for dev/test)
+    Default: m6i.xlarge
+    AllowedValues: [t3a.medium, t3a.large, t3a.xlarge, m5.large, m5.xlarge, m6i.large, m6i.xlarge, m6i.2xlarge, t3a.2xlarge]
+    Description: EC2 instance type for the worker nodes (m6i.xlarge recommended for multi-cluster environments)
   
   UseSpotInstances:
     Type: String
