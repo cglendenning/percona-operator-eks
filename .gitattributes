@@ -1,0 +1,18 @@
+# Ensure shell scripts always use LF line endings (critical for WSL/Linux)
+*.sh text eol=lf
+
+# Ensure SQL scripts use LF line endings
+*.sql text eol=lf
+
+# Ensure YAML files use LF line endings
+*.yaml text eol=lf
+*.yml text eol=lf
+
+# Ensure other text files use LF line endings
+*.md text eol=lf
+*.txt text eol=lf
+*.json text eol=lf
+
+# Let Git handle line endings for other text files
+* text=auto
+

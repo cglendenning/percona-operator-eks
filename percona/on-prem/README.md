@@ -20,8 +20,16 @@ This directory contains the installation script and configuration for deploying 
 - `kubectl` CLI tool configured and connected
 - `helm` 3.x installed
 - `bc` installed (for calculations)
+- `jq` installed (for JSON processing)
+- `openssl` installed (for generating secrets)
 - StorageClass configured in your cluster
 - At least 3 worker nodes for HA deployment
+
+### Windows Subsystem for Linux (WSL)
+
+✅ **These scripts are fully compatible with WSL!**
+
+If you're running on Windows with WSL, see the **[WSL Setup Guide](./WSL_SETUP.md)** for detailed installation instructions and WSL-specific considerations.
 
 ## Quick Start
 
