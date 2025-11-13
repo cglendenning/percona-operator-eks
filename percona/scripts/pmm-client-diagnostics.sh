@@ -294,21 +294,26 @@ run_diagnostics() {
     if ! kubectl get namespace "$PMM_NAMESPACE" &>/dev/null; then
         log_error "PMM namespace '$PMM_NAMESPACE' does not exist"
         ISSUES+=("PMM namespace not found")
+        log_info "Available namespaces:"
+        kubectl get namespaces --no-headers 2>/dev/null | awk '{print "  - " $1}' | head -20 || echo "  (none)"
     else
         log_success "PMM namespace '$PMM_NAMESPACE' exists"
     fi
     
-    if ! kubectl get service "$PMM_SERVICE" -n "$PMM_NAMESPACE" &>/dev/null; then
-        log_error "PMM service '$PMM_SERVICE' not found in namespace '$PMM_NAMESPACE'"
+    # Extract short service name from FQDN
+    local service_name=$(echo "$PMM_SERVICE" | cut -d'.' -f1)
+    
+    if ! kubectl get service "$service_name" -n "$PMM_NAMESPACE" &>/dev/null; then
+        log_error "PMM service '$service_name' not found in namespace '$PMM_NAMESPACE'"
         ISSUES+=("PMM service not found")
         log_info "Available services in $PMM_NAMESPACE namespace:"
         kubectl get services -n "$PMM_NAMESPACE" --no-headers 2>/dev/null | awk '{print "  - " $1}' || echo "  (none)"
     else
-        log_success "PMM service '$PMM_SERVICE' found in namespace '$PMM_NAMESPACE'"
+        log_success "PMM service '$service_name' found in namespace '$PMM_NAMESPACE'"
         
-        local service_type=$(kubectl get service "$PMM_SERVICE" -n "$PMM_NAMESPACE" -o jsonpath='{.spec.type}' 2>/dev/null || echo "")
-        local cluster_ip=$(kubectl get service "$PMM_SERVICE" -n "$PMM_NAMESPACE" -o jsonpath='{.spec.clusterIP}' 2>/dev/null || echo "")
-        local ports=$(kubectl get service "$PMM_SERVICE" -n "$PMM_NAMESPACE" -o jsonpath='{.spec.ports[*].port}' 2>/dev/null || echo "")
+        local service_type=$(kubectl get service "$service_name" -n "$PMM_NAMESPACE" -o jsonpath='{.spec.type}' 2>/dev/null || echo "")
+        local cluster_ip=$(kubectl get service "$service_name" -n "$PMM_NAMESPACE" -o jsonpath='{.spec.clusterIP}' 2>/dev/null || echo "")
+        local ports=$(kubectl get service "$service_name" -n "$PMM_NAMESPACE" -o jsonpath='{.spec.ports[*].port}' 2>/dev/null || echo "")
         
         echo "  Service Type: $service_type"
         echo "  Cluster IP: $cluster_ip"
@@ -316,12 +321,25 @@ run_diagnostics() {
         echo ""
         
         # Check service endpoints
-        local endpoints=$(kubectl get endpoints "$PMM_SERVICE" -n "$PMM_NAMESPACE" -o jsonpath='{.subsets[*].addresses[*].ip}' 2>/dev/null || echo "")
+        local endpoints=$(kubectl get endpoints "$service_name" -n "$PMM_NAMESPACE" -o jsonpath='{.subsets[*].addresses[*].ip}' 2>/dev/null || echo "")
         if [ -n "$endpoints" ]; then
             log_success "PMM service has endpoints: $endpoints"
         else
             log_error "PMM service has NO endpoints (no pods backing the service)"
             ISSUES+=("PMM service has no endpoints")
+            
+            # Check for PMM server pods
+            log_info "Checking for PMM server pods..."
+            local pmm_pods=$(kubectl get pods -n "$PMM_NAMESPACE" --no-headers 2>/dev/null | grep -v "^$" || echo "")
+            if [ -z "$pmm_pods" ]; then
+                log_error "No pods found in PMM namespace"
+                ISSUES+=("No PMM server pods running")
+            else
+                log_info "Found pods in PMM namespace:"
+                echo "$pmm_pods" | while read -r line; do
+                    echo "  - $line"
+                done
+            fi
         fi
     fi
     echo ""
@@ -331,34 +349,56 @@ run_diagnostics() {
     
     local test_pod=$(echo "$pxc_pods" | head -1)
     log_info "Testing connectivity from pod: $test_pod"
+    echo ""
     
-    # Test DNS resolution
-    log_info "Testing DNS resolution for '$PMM_SERVICE.$PMM_NAMESPACE.svc.cluster.local'..."
-    if kubectl exec "$test_pod" -n "$NAMESPACE" -c pxc -- nslookup "$PMM_SERVICE.$PMM_NAMESPACE.svc.cluster.local" &>/dev/null; then
-        log_success "DNS resolution successful"
+    # Test DNS resolution for FQDN
+    log_info "Testing DNS resolution for '$PMM_SERVICE'..."
+    local dns_output=$(kubectl exec "$test_pod" -n "$NAMESPACE" -c pxc -- nslookup "$PMM_SERVICE" 2>&1 || echo "")
+    if echo "$dns_output" | grep -q "Name:"; then
+        local resolved_ip=$(echo "$dns_output" | grep "Address:" | tail -1 | awk '{print $2}')
+        log_success "DNS resolution successful → $resolved_ip"
     else
-        log_error "DNS resolution failed"
-        ISSUES+=("DNS resolution failed for PMM service")
+        log_error "DNS resolution failed for '$PMM_SERVICE'"
+        ISSUES+=("DNS resolution failed for PMM service FQDN")
+        echo "  DNS output:"
+        echo "$dns_output" | sed 's/^/    /'
     fi
+    echo ""
     
-    # Test short name resolution (should work due to search domains)
-    log_info "Testing DNS resolution for '$PMM_SERVICE' (short name)..."
-    if kubectl exec "$test_pod" -n "$NAMESPACE" -c pxc -- nslookup "$PMM_SERVICE" &>/dev/null; then
-        log_success "Short name DNS resolution successful"
+    # Test TCP connectivity (port 443)
+    log_info "Testing TCP connectivity to PMM service on port 443..."
+    local nc_output=$(kubectl exec "$test_pod" -n "$NAMESPACE" -c pxc -- timeout 5 nc -zv "$PMM_SERVICE" 443 2>&1 || echo "failed")
+    if echo "$nc_output" | grep -iq "succeeded\|open"; then
+        log_success "TCP port 443 is reachable"
     else
-        log_warn "Short name DNS resolution failed (FQDN should still work)"
-        WARNINGS+=("Short name DNS resolution failed")
+        log_error "TCP port 443 is NOT reachable"
+        ISSUES+=("Cannot connect to PMM service on port 443")
+        echo "  nc output:"
+        echo "$nc_output" | sed 's/^/    /'
     fi
+    echo ""
     
-    # Test HTTP/HTTPS connectivity
+    # Test HTTP connectivity
     log_info "Testing HTTP connectivity to PMM service..."
-    local http_test=$(kubectl exec "$test_pod" -n "$NAMESPACE" -c pxc -- timeout 5 curl -s -o /dev/null -w "%{http_code}" "http://$PMM_SERVICE.$PMM_NAMESPACE.svc.cluster.local" 2>/dev/null || echo "000")
+    local http_test=$(kubectl exec "$test_pod" -n "$NAMESPACE" -c pxc -- timeout 5 curl -s -o /dev/null -w "%{http_code}" "http://$PMM_SERVICE" 2>/dev/null || echo "000")
     
     if [ "$http_test" != "000" ]; then
         log_success "HTTP connectivity successful (HTTP code: $http_test)"
     else
-        log_warn "HTTP connectivity test returned no response"
+        log_warn "HTTP connectivity test returned no response (HTTP code: $http_test)"
         WARNINGS+=("HTTP connectivity test inconclusive")
+    fi
+    echo ""
+    
+    # Test HTTPS connectivity
+    log_info "Testing HTTPS connectivity to PMM service..."
+    local https_test=$(kubectl exec "$test_pod" -n "$NAMESPACE" -c pxc -- timeout 5 curl -ks -o /dev/null -w "%{http_code}" "https://$PMM_SERVICE" 2>/dev/null || echo "000")
+    
+    if [ "$https_test" != "000" ]; then
+        log_success "HTTPS connectivity successful (HTTP code: $https_test)"
+    else
+        log_error "HTTPS connectivity test failed (HTTP code: $https_test)"
+        ISSUES+=("Cannot reach PMM service via HTTPS")
     fi
     echo ""
     
@@ -368,27 +408,87 @@ run_diagnostics() {
     log_info "Checking PMM client logs from pod: $test_pod"
     echo ""
     
-    log_info "Last 30 lines of PMM client logs:"
-    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-    kubectl logs "$test_pod" -n "$NAMESPACE" -c pmm-client --tail=30 2>&1 || log_warn "Could not retrieve PMM client logs"
-    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-    echo ""
-    
-    # Check for common error patterns in logs
+    # Get last 100 lines for analysis
     local logs=$(kubectl logs "$test_pod" -n "$NAMESPACE" -c pmm-client --tail=100 2>/dev/null || echo "")
     
-    if echo "$logs" | grep -iq "error"; then
-        log_warn "Found 'error' messages in PMM client logs"
-        WARNINGS+=("Errors found in PMM client logs")
-    fi
-    
-    if echo "$logs" | grep -iq "failed\|timeout\|connection refused"; then
-        log_error "Found connectivity issues in PMM client logs"
-        ISSUES+=("Connectivity issues in PMM client logs")
-    fi
-    
-    if echo "$logs" | grep -iq "registered\|connected\|sending"; then
-        log_success "PMM client shows signs of activity (registered/connected/sending)"
+    if [ -z "$logs" ]; then
+        log_warn "Could not retrieve PMM client logs (container may not be running)"
+        WARNINGS+=("PMM client logs unavailable")
+    else
+        # Analyze logs for specific issues
+        local has_connection_success=false
+        local has_errors=false
+        local has_dns_error=false
+        local has_auth_error=false
+        local has_timeout_error=false
+        
+        if echo "$logs" | grep -iq "connected to pmm\|registered with pmm\|successfully registered"; then
+            log_success "PMM client successfully connected to PMM server"
+            has_connection_success=true
+        fi
+        
+        if echo "$logs" | grep -iq "cannot resolve\|no such host\|dns"; then
+            log_error "DNS resolution errors found in logs"
+            ISSUES+=("DNS resolution errors in PMM client logs")
+            has_dns_error=true
+            has_errors=true
+        fi
+        
+        if echo "$logs" | grep -iq "unauthorized\|authentication\|forbidden\|401\|403"; then
+            log_error "Authentication/authorization errors found in logs"
+            ISSUES+=("Auth errors in PMM client logs")
+            has_auth_error=true
+            has_errors=true
+        fi
+        
+        if echo "$logs" | grep -iq "timeout\|timed out\|deadline exceeded"; then
+            log_error "Timeout errors found in logs"
+            ISSUES+=("Timeout errors in PMM client logs")
+            has_timeout_error=true
+            has_errors=true
+        fi
+        
+        if echo "$logs" | grep -iq "connection refused\|connect: connection refused"; then
+            log_error "Connection refused errors found in logs"
+            ISSUES+=("Connection refused in PMM client logs")
+            has_errors=true
+        fi
+        
+        if echo "$logs" | grep -iq "failed\|error" && [ "$has_errors" = false ]; then
+            log_warn "Generic error messages found in PMM client logs"
+            WARNINGS+=("Errors found in PMM client logs")
+        fi
+        
+        if [ "$has_connection_success" = false ]; then
+            log_warn "No successful connection messages found in recent logs"
+            WARNINGS+=("PMM client has not logged successful connection recently")
+        fi
+        
+        # Display recent log excerpt
+        log_info "Last 30 lines of PMM client logs:"
+        echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+        echo "$logs" | tail -30
+        echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+        echo ""
+        
+        # Show specific error context if found
+        if [ "$has_dns_error" = true ]; then
+            log_info "DNS-related errors:"
+            echo "$logs" | grep -i "cannot resolve\|no such host\|dns" | sed 's/^/  /'
+            echo ""
+        fi
+        
+        if [ "$has_auth_error" = true ]; then
+            log_info "Authentication-related errors:"
+            echo "$logs" | grep -i "unauthorized\|authentication\|forbidden\|401\|403" | sed 's/^/  /'
+            echo ""
+        fi
+        
+        if [ "$has_timeout_error" = true ]; then
+            log_info "Timeout-related errors:"
+            echo "$logs" | grep -i "timeout\|timed out\|deadline exceeded" | sed 's/^/  /'
+            echo ""
+        fi
     fi
     
     # 7. Check PMM Client Environment Variables
@@ -423,6 +523,111 @@ run_diagnostics() {
     else
         log_warn "Resource metrics not available (metrics-server may not be installed)"
         WARNINGS+=("Resource metrics not available")
+    fi
+    echo ""
+    
+    # 9. Check Percona Operator Status
+    log_header "9. Percona Operator Status"
+    
+    log_info "Checking for Percona Operator in namespace: $NAMESPACE"
+    
+    local operator_pods=$(kubectl get pods -n "$NAMESPACE" -l app.kubernetes.io/name=percona-xtradb-cluster-operator --no-headers 2>/dev/null || echo "")
+    
+    if [ -z "$operator_pods" ]; then
+        log_error "No Percona Operator pods found in namespace '$NAMESPACE'"
+        ISSUES+=("Percona Operator not running")
+    else
+        log_success "Found Percona Operator pods:"
+        echo "$operator_pods" | while read -r pod_line; do
+            local pod_name=$(echo "$pod_line" | awk '{print $1}')
+            local pod_ready=$(echo "$pod_line" | awk '{print $2}')
+            local pod_status=$(echo "$pod_line" | awk '{print $3}')
+            echo "  - $pod_name: $pod_status ($pod_ready ready)"
+            
+            # Check if operator is healthy
+            if [ "$pod_status" != "Running" ]; then
+                log_error "Operator pod $pod_name is not Running"
+                ISSUES+=("Operator pod not running: $pod_name")
+            fi
+        done
+        echo ""
+        
+        # Check operator logs for PMM-related errors
+        local operator_pod=$(echo "$operator_pods" | head -1 | awk '{print $1}')
+        log_info "Checking operator logs for PMM-related messages..."
+        local operator_logs=$(kubectl logs "$operator_pod" -n "$NAMESPACE" --tail=50 2>/dev/null || echo "")
+        
+        if echo "$operator_logs" | grep -iq "pmm.*error\|pmm.*failed"; then
+            log_warn "Found PMM-related errors in operator logs"
+            WARNINGS+=("PMM errors in operator logs")
+            echo "  Recent PMM-related errors:"
+            echo "$operator_logs" | grep -i "pmm.*error\|pmm.*failed" | tail -5 | sed 's/^/    /'
+            echo ""
+        else
+            log_success "No PMM-related errors in recent operator logs"
+        fi
+    fi
+    echo ""
+    
+    # 10. Check PMM Server Deployment Status
+    log_header "10. PMM Server Deployment Status"
+    
+    log_info "Checking PMM server deployment in namespace: $PMM_NAMESPACE"
+    
+    local pmm_pods=$(kubectl get pods -n "$PMM_NAMESPACE" --no-headers 2>/dev/null || echo "")
+    
+    if [ -z "$pmm_pods" ]; then
+        log_error "No PMM server pods found in namespace '$PMM_NAMESPACE'"
+        ISSUES+=("No PMM server pods running")
+    else
+        log_success "Found PMM server pods:"
+        echo "$pmm_pods" | while read -r pod_line; do
+            local pod_name=$(echo "$pod_line" | awk '{print $1}')
+            local pod_ready=$(echo "$pod_line" | awk '{print $2}')
+            local pod_status=$(echo "$pod_line" | awk '{print $3}')
+            echo "  - $pod_name: $pod_status ($pod_ready ready)"
+            
+            # Check if PMM server is healthy
+            if [ "$pod_status" != "Running" ]; then
+                log_error "PMM server pod $pod_name is not Running"
+                ISSUES+=("PMM server pod not running: $pod_name")
+            fi
+        done
+        echo ""
+        
+        # Check PMM server logs for client registration
+        local pmm_server_pod=$(echo "$pmm_pods" | grep -i "pmm\|monitoring" | head -1 | awk '{print $1}')
+        if [ -n "$pmm_server_pod" ]; then
+            log_info "Checking PMM server logs for client registrations..."
+            local pmm_server_logs=$(kubectl logs "$pmm_server_pod" -n "$PMM_NAMESPACE" --tail=100 2>/dev/null || echo "")
+            
+            if echo "$pmm_server_logs" | grep -iq "mysql.*registered\|client.*registered\|agent.*registered"; then
+                log_success "PMM server shows client registration activity"
+            else
+                log_warn "No recent client registration messages in PMM server logs"
+                WARNINGS+=("No recent client registrations in PMM server logs")
+            fi
+        fi
+    fi
+    echo ""
+    
+    # 11. Check Network Policies
+    log_header "11. Network Policy Check"
+    
+    log_info "Checking for network policies that might block traffic..."
+    
+    local netpol_count=$(kubectl get networkpolicies -n "$NAMESPACE" --no-headers 2>/dev/null | wc -l | tr -d ' ')
+    
+    if [ "$netpol_count" -gt 0 ]; then
+        log_warn "Found $netpol_count network policy/policies in namespace '$NAMESPACE'"
+        WARNINGS+=("Network policies present - may restrict traffic")
+        kubectl get networkpolicies -n "$NAMESPACE" --no-headers 2>/dev/null | while read -r line; do
+            echo "  - $line"
+        done
+        echo ""
+        log_info "Review network policies to ensure PMM client can reach PMM server"
+    else
+        log_success "No network policies found (traffic not restricted by NetworkPolicy)"
     fi
     echo ""
     
@@ -772,26 +977,140 @@ run_summary_and_repair() {
     
     echo ""
     
-    log_info "Recommendations:"
-    echo "  1. Check PMM client logs for detailed error messages"
-    echo "     kubectl logs <pxc-pod> -n $NAMESPACE -c pmm-client"
-    echo ""
-    echo "  2. Verify PMM server is running in namespace '$PMM_NAMESPACE'"
-    echo "     kubectl get pods -n $PMM_NAMESPACE"
-    echo ""
-    echo "  3. Check PMM server logs for client registration"
-    echo "     kubectl logs <pmm-server-pod> -n $PMM_NAMESPACE"
-    echo ""
-    echo "  4. Verify network policies allow traffic between namespaces"
-    echo "     kubectl get networkpolicies -n $NAMESPACE"
-    echo ""
-    echo "  5. Access PMM dashboard to verify metrics are being received"
-    echo "     (PMM server typically exposes a web UI on port 80/443)"
+    # Automated analysis and specific recommendations
+    log_header "AUTOMATED ANALYSIS"
+    
+    log_info "Analyzing findings to determine root cause..."
     echo ""
     
-    log_info "For more help, check:"
-    log_info "  - PMM documentation: https://docs.percona.com/percona-monitoring-and-management/"
-    log_info "  - Percona Operator docs: https://docs.percona.com/percona-operator-for-mysql/pxc/"
+    # Determine most likely root cause
+    if [ ${#ISSUES[@]} -gt 0 ] || [ ${#WARNINGS[@]} -gt 0 ]; then
+        log_info "ROOT CAUSE ANALYSIS:"
+        echo ""
+        
+        # Check for configuration issues
+        if [ "$PMM_DISABLED" = true ]; then
+            echo "  → PMM is DISABLED in PXC cluster configuration"
+            echo "    Solution: Enable PMM using the repair function above"
+            echo ""
+        fi
+        
+        if [ "$VERSION_MISMATCH" = true ]; then
+            echo "  → PMM client version mismatch detected"
+            echo "    Current: $CURRENT_VERSION"
+            echo "    Expected: $EXPECTED_VERSION"
+            echo "    Solution: Update version using the repair function above"
+            echo ""
+        fi
+        
+        if [ "$SERVERHOST_WRONG" = true ]; then
+            echo "  → PMM serverHost configuration is incorrect"
+            echo "    Current: ${CURRENT_SERVERHOST:-<not set>}"
+            echo "    Expected: $PMM_SERVICE"
+            echo "    Solution: Update serverHost using the repair function above"
+            echo ""
+        fi
+        
+        # Check for DNS/connectivity issues
+        local has_dns_issue=false
+        local has_connectivity_issue=false
+        for issue in "${ISSUES[@]}"; do
+            if [[ "$issue" =~ "DNS" ]]; then
+                has_dns_issue=true
+            fi
+            if [[ "$issue" =~ "connect\|TCP\|HTTPS\|443" ]]; then
+                has_connectivity_issue=true
+            fi
+        done
+        
+        if [ "$has_dns_issue" = true ]; then
+            echo "  → DNS resolution is FAILING"
+            echo "    The PMM client cannot resolve '$PMM_SERVICE'"
+            echo "    Possible causes:"
+            echo "      - CoreDNS not functioning properly"
+            echo "      - PMM service does not exist"
+            echo "      - Incorrect service FQDN"
+            echo "    Check: kubectl get svc -n $PMM_NAMESPACE"
+            echo ""
+        fi
+        
+        if [ "$has_connectivity_issue" = true ]; then
+            echo "  → Network connectivity is FAILING"
+            echo "    The PMM client cannot reach PMM server on port 443"
+            echo "    Possible causes:"
+            echo "      - PMM server not running"
+            echo "      - Network policy blocking traffic"
+            echo "      - Service has no endpoints (no backend pods)"
+            echo "    Check: kubectl get pods -n $PMM_NAMESPACE"
+            echo ""
+        fi
+        
+        # Check for PMM server issues
+        for issue in "${ISSUES[@]}"; do
+            if [[ "$issue" =~ "PMM server" ]]; then
+                echo "  → PMM SERVER is NOT RUNNING"
+                echo "    No PMM server pods found in namespace '$PMM_NAMESPACE'"
+                echo "    Solution: Deploy PMM server before configuring PMM client"
+                echo "    Verify: kubectl get pods -n $PMM_NAMESPACE"
+                echo ""
+            fi
+        done
+        
+        # Check for operator issues
+        for issue in "${ISSUES[@]}"; do
+            if [[ "$issue" =~ "Operator" ]]; then
+                echo "  → PERCONA OPERATOR is NOT RUNNING"
+                echo "    The operator is required to manage PMM client configuration"
+                echo "    Solution: Verify operator deployment"
+                echo "    Check: kubectl get pods -n $NAMESPACE -l app.kubernetes.io/name=percona-xtradb-cluster-operator"
+                echo ""
+            fi
+        done
+        
+        # Summarize next steps
+        log_info "NEXT STEPS:"
+        echo ""
+        
+        if [ "$PMM_DISABLED" = true ] || [ "$VERSION_MISMATCH" = true ] || [ "$SERVERHOST_WRONG" = true ]; then
+            echo "  1. Apply the configuration fixes offered above"
+            echo "  2. Wait for PXC pods to restart (operator will handle this)"
+            echo "  3. Re-run diagnostics to verify"
+            echo ""
+        fi
+        
+        if [ "$has_dns_issue" = true ] || [ "$has_connectivity_issue" = true ]; then
+            echo "  1. Verify PMM server is running:"
+            echo "     kubectl get pods -n $PMM_NAMESPACE"
+            echo ""
+            echo "  2. Verify PMM service exists and has endpoints:"
+            echo "     kubectl get svc,endpoints -n $PMM_NAMESPACE"
+            echo ""
+            echo "  3. If PMM server is not deployed, deploy it first"
+            echo ""
+        fi
+        
+        for issue in "${ISSUES[@]}"; do
+            if [[ "$issue" =~ "Network policy" ]]; then
+                echo "  Network policies detected - review them:"
+                echo "     kubectl get networkpolicies -n $NAMESPACE -o yaml"
+                echo "     Ensure traffic to $PMM_NAMESPACE namespace is allowed"
+                echo ""
+            fi
+        done
+    else
+        log_success "No critical issues detected!"
+        echo ""
+        log_info "PMM client appears to be properly configured."
+        log_info "If metrics are not appearing in PMM dashboard:"
+        echo "  1. Wait a few minutes for metrics to start flowing"
+        echo "  2. Verify PMM dashboard is accessible"
+        echo "  3. Check PMM server logs for any issues"
+        echo ""
+    fi
+    
+    log_info "For more information:"
+    log_info "  - PMM docs: https://docs.percona.com/percona-monitoring-and-management/"
+    log_info "  - Operator docs: https://docs.percona.com/percona-operator-for-mysql/pxc/"
     echo ""
 }
 
