@@ -191,22 +191,54 @@ prompt_configuration() {
     echo "  - Environment: On-Premise vSphere/vCenter"
     echo ""
     
-    # List available storage classes
+    # List available storage classes with details
     log_info "Available StorageClasses in cluster:"
-    kubectl get storageclass --no-headers 2>/dev/null | awk '{print "  - " $1}' || echo "  (none found)"
     echo ""
     
+    # Get storage class information with provisioner and default status
+    local sc_info=$(kubectl get storageclass -o json 2>/dev/null | jq -r '.items[] | 
+        "\(.metadata.name)|\(.provisioner)|\(.metadata.annotations["storageclass.kubernetes.io/is-default-class"] // "false")"' 2>/dev/null || echo "")
+    
+    if [ -n "$sc_info" ]; then
+        printf "  %-30s %-50s %-10s\n" "NAME" "PROVISIONER" "DEFAULT"
+        printf "  %-30s %-50s %-10s\n" "----" "-----------" "-------"
+        while IFS='|' read -r name provisioner is_default; do
+            printf "  %-30s %-50s %-10s\n" "$name" "$provisioner" "$is_default"
+        done <<< "$sc_info"
+    else
+        echo "  (none found)"
+    fi
+    echo ""
+    
+    # Detect default storage class
+    local default_sc=$(kubectl get storageclass -o json 2>/dev/null | jq -r '.items[] | 
+        select(.metadata.annotations["storageclass.kubernetes.io/is-default-class"] == "true") | 
+        .metadata.name' 2>/dev/null | head -1 || echo "")
+    
     # Prompt for storage class
-    read -p "Enter StorageClass name [default: default]: " storage_class
-    STORAGE_CLASS="${storage_class:-default}"
+    if [ -n "$default_sc" ]; then
+        read -p "Enter StorageClass name [default: $default_sc]: " storage_class
+        STORAGE_CLASS="${storage_class:-$default_sc}"
+    else
+        read -p "Enter StorageClass name: " storage_class
+        STORAGE_CLASS="${storage_class}"
+    fi
+    
+    # Verify storage class was provided
+    if [ -z "$STORAGE_CLASS" ]; then
+        log_error "StorageClass name is required"
+        exit 1
+    fi
     
     # Verify storage class exists
     if ! kubectl get storageclass "$STORAGE_CLASS" &> /dev/null; then
-        log_warn "StorageClass '$STORAGE_CLASS' not found, but continuing..."
+        log_warn "StorageClass '$STORAGE_CLASS' not found in cluster"
         read -p "Continue anyway? (yes/no): " confirm_sc
         if [[ "$confirm_sc" != "yes" ]]; then
             exit 0
         fi
+    else
+        log_success "StorageClass '$STORAGE_CLASS' verified"
     fi
     
     # Prompt for data directory size
