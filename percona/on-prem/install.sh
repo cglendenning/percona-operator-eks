@@ -151,7 +151,7 @@ detect_node_resources() {
     
     log_info "Recommended resource requests:"
     log_info "  PXC CPU: ${RECOMMENDED_PXC_CPU}"
-    log_info "  HAProxy CPU: ${RECOMMENDED_HAPROXY_CPU}m"
+    log_info "  HAProxy CPU: ${RECOMMENDED_HAPROXY_CPU}"
     
     # Warn if nodes are very small
     if [ $(echo "$node_cpus < 2" | bc) -eq 1 ]; then
@@ -446,6 +446,15 @@ create_minio_secret() {
 generate_helm_values() {
     log_header "Generating Helm Values"
     
+    # Calculate HAProxy CPU limit (must be >= request)
+    local haproxy_cpu_request_value=$(echo "${RECOMMENDED_HAPROXY_CPU:-100m}" | sed 's/m//')
+    local haproxy_cpu_limit_value=$(echo "scale=0; $haproxy_cpu_request_value * 2" | bc)
+    # Ensure minimum limit of 300m
+    if [ $(echo "$haproxy_cpu_limit_value < 300" | bc) -eq 1 ]; then
+        haproxy_cpu_limit_value=300
+    fi
+    local HAPROXY_CPU_LIMIT="${haproxy_cpu_limit_value}m"
+    
     cat > /tmp/pxc-values.yaml <<EOF
 # Percona XtraDB Cluster Configuration for On-Premise vSphere/vCenter
 crVersion: ${PXC_VERSION}
@@ -504,7 +513,7 @@ haproxy:
       cpu: ${RECOMMENDED_HAPROXY_CPU:-100m}
     limits:
       memory: 512Mi
-      cpu: 300m
+      cpu: ${HAPROXY_CPU_LIMIT}
       
   # On-Premise host-based anti-affinity
   affinity:
