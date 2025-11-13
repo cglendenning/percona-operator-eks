@@ -22,27 +22,45 @@ Automated deployment and testing of Percona XtraDB Cluster on Kubernetes (EKS an
 
 ### Quick Start
 
-1. **Install dependencies:**
-```bash
-npm install
-```
+#### For AWS EKS:
 
-2. **Deploy EKS cluster (AWS only):**
+1. **Deploy EKS cluster:**
 ```bash
 ./eks/scripts/deploy.sh
 ```
-See `eks/README.md` for detailed EKS deployment instructions.
 
-3. **Install Percona operator and cluster:**
+2. **Install Percona XtraDB Cluster:**
 ```bash
-npm run percona -- install --namespace percona --name pxc-cluster --nodes 3
+./percona/eks/install.sh
 ```
 
-See `percona/README.md` for detailed Percona deployment instructions, configuration options, and troubleshooting.
-
-**Quick uninstall:**
+3. **Uninstall (when done):**
 ```bash
-npm run percona -- uninstall --namespace percona --name pxc-cluster
+./percona/eks/uninstall.sh
+```
+
+See `eks/README.md` and `percona/eks/README.md` for detailed instructions.
+
+#### For On-Premise Kubernetes:
+
+1. **Install Percona XtraDB Cluster:**
+```bash
+./percona/on-prem/install.sh
+```
+
+2. **Uninstall (when done):**
+```bash
+./percona/on-prem/uninstall.sh
+```
+
+See `percona/on-prem/README.md` for detailed instructions.
+
+---
+
+**Note:** The scripts are interactive and will prompt for configuration. You can also set environment variables for non-interactive installation:
+```bash
+# Example: Non-interactive EKS installation
+NAMESPACE=percona CLUSTER_NAME=pxc-cluster PXC_NODES=3 ./percona/eks/install.sh
 ```
 
 ### Run Tests
@@ -86,7 +104,7 @@ See `eks/README.md` for detailed cost information and recommended workflows.
 To recreate the cluster when needed:
 ```bash
 ./eks/scripts/deploy.sh         # Creates EKS cluster (~15-20 min)
-npm run percona -- install      # Installs Percona (~10-15 min)
+./percona/eks/install.sh        # Installs Percona (~10-15 min)
 ```
 
 Total recreation time: ~25-35 minutes
@@ -95,7 +113,7 @@ Total recreation time: ~25-35 minutes
 
 ### Backup Configuration
 
-By default, the Percona installation uses **MinIO** for backups to replicate on-premises environments where external access (like AWS S3) is restricted. The `npm run percona -- install ...` installation script automatically:
+By default, the Percona installation uses **MinIO** for backups to replicate on-premises environments where external access (like AWS S3) is restricted. The installation scripts automatically:
 - Installs MinIO using Helm in the `minio` namespace
 - Creates a `percona-backups` bucket in MinIO
 - Sets up credentials and Kubernetes secrets for backup access
@@ -484,7 +502,7 @@ helm uninstall chartmuseum -n chartmuseum
 kubectl delete namespace chartmuseum
 
 # ChartMuseum is automatically uninstalled with:
-# npm run percona -- uninstall --namespace percona --name pxc-cluster
+# ./percona/eks/uninstall.sh  # or ./percona/on-prem/uninstall.sh
 # This removes the namespace, persistent volume, and all stored charts
 
 # Delete IAM resources (optional)
@@ -1033,7 +1051,7 @@ pytest -m resiliency # Only resiliency tests
 
 ### Chaos Engineering with LitmusChaos
 
-The project includes **LitmusChaos** for chaos engineering to test cluster resilience. LitmusChaos is automatically installed when you run `npm run percona -- install`.
+The project includes **LitmusChaos** for chaos engineering to test cluster resilience. LitmusChaos is automatically installed when you run the Percona installation scripts (`./percona/eks/install.sh` or `./percona/on-prem/install.sh`).
 
 #### What is LitmusChaos?
 
@@ -1061,7 +1079,7 @@ LitmusChaos can break approximately **65% of the test suite** by simulating vari
 
 #### Running Chaos Experiments
 
-**Note:** ChartMuseum and chart mirroring are automatically installed and configured when you run `npm run percona -- install`.
+**Note:** ChartMuseum and chart mirroring are automatically installed and configured when you run the Percona installation scripts.
 
 **1. View available chaos experiments:**
 ```bash
@@ -1126,7 +1144,7 @@ To run chaos experiments continuously and randomly:
 # Check if LitmusChaos is installed
 kubectl get pods -n litmus
 
-# If not installed, install it (or it's installed automatically with npm run percona -- install):
+# If not installed, install it (or it's installed automatically with ./percona/eks/install.sh):
 ./percona/scripts/install-litmus.sh
 ```
 
@@ -1196,7 +1214,7 @@ kubectl delete chaosengines --all -n percona
 
 #### Installing and Uninstalling LitmusChaos
 
-LitmusChaos is automatically installed when you run `npm run percona -- install`. However, you can also install, uninstall, and reinstall it manually:
+LitmusChaos is automatically installed when you run the Percona installation scripts. However, you can also install, uninstall, and reinstall it manually:
 
 **Install LitmusChaos:**
 ```bash
@@ -1208,7 +1226,7 @@ helm repo add litmuschaos https://litmuschaos.github.io/litmus-helm/
 kubectl create ns litmus
 helm install chaos litmuschaos/litmus --namespace=litmus --set portal.frontend.service.type=NodePort
 
-# Note: LitmusChaos is automatically installed when you run npm run percona -- install
+# Note: LitmusChaos is automatically installed when you run the Percona install scripts
 ```
 
 **Verify Installation:**
@@ -1242,7 +1260,7 @@ kubectl create ns litmus
 helm install chaos litmuschaos/litmus --namespace=litmus --set portal.frontend.service.type=NodePort
 ```
 
-**Note:** If you uninstall Percona using `npm run percona -- uninstall`, LitmusChaos will also be automatically uninstalled along with it.
+**Note:** If you uninstall Percona using the uninstall scripts (`./percona/eks/uninstall.sh` or `./percona/on-prem/uninstall.sh`), LitmusChaos will also be automatically uninstalled along with it.
 
 #### Chaos Engineering Best Practices
 

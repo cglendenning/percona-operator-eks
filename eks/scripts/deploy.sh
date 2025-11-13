@@ -760,8 +760,12 @@ main() {
     log_info "Region: $REGION"
     log_info "Deployment time: ${minutes}m ${seconds}s"
     log_info ""
-    log_info "Now run:"
-    log_info "  AWS_PROFILE=\$AWS_PROFILE npm run percona -- install --namespace percona --name pxc-cluster --nodes 3"
+    log_info "Next steps:"
+    log_info "  1. Install Percona XtraDB Cluster:"
+    log_info "     ./percona/eks/install.sh"
+    log_info ""
+    log_info "  2. Or set environment variables and install non-interactively:"
+    log_info "     NAMESPACE=percona CLUSTER_NAME=pxc-cluster PXC_NODES=3 ./percona/eks/install.sh"
 }
 
 # Run main function
