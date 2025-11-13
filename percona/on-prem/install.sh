@@ -317,6 +317,29 @@ prompt_configuration() {
     log_success "Found 'myminio-creds' secret in namespace: $MINIO_SECRET_NAMESPACE"
     echo ""
     
+    # Prompt for PMM configuration
+    echo ""
+    log_info "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+    log_info "  PMM (Percona Monitoring and Management) Configuration"
+    log_info "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+    echo ""
+    
+    read -p "Enable PMM monitoring? (yes/no) [default: yes]: " enable_pmm
+    ENABLE_PMM="${enable_pmm:-yes}"
+    
+    if [[ "$ENABLE_PMM" =~ ^[Yy]([Ee][Ss])?$ ]]; then
+        ENABLE_PMM="true"
+        PMM_SERVER_HOST="monitoring-service"
+        
+        log_info "PMM client version 3.4.1 will be installed"
+        log_success "PMM will be enabled with server host: $PMM_SERVER_HOST"
+    else
+        ENABLE_PMM="false"
+        PMM_SERVER_HOST=""
+        log_info "PMM monitoring will be disabled"
+    fi
+    echo ""
+    
     # Validate CPU resources will fit
     if [ -n "$RECOMMENDED_PXC_CPU" ] && [ -n "$RECOMMENDED_HAPROXY_CPU" ]; then
         # Calculate total CPU requests for the cluster
@@ -391,6 +414,12 @@ prompt_configuration() {
     echo "  - HAProxy: Operator-managed version"
     echo "  - MinIO Bucket: ${MINIO_BUCKET}"
     echo "  - MinIO Secret Source: ${MINIO_SECRET_NAMESPACE}"
+    if [ "$ENABLE_PMM" = "true" ]; then
+        echo "  - PMM Client: 3.4.1 (enabled)"
+        echo "  - PMM Server Host: ${PMM_SERVER_HOST}"
+    else
+        echo "  - PMM Client: Disabled"
+    fi
     echo ""
     
     read -p "Proceed with installation? (yes/no): " confirm
@@ -725,9 +754,20 @@ backup:
       keep: 7
       storageName: minio
 
-# PMM disabled for now (can be enabled later)
+# PMM Configuration
 pmm:
-  enabled: false
+  enabled: ${ENABLE_PMM}
+  image:
+    repository: percona/pmm-client
+    tag: 3.4.1
+  serverHost: "${PMM_SERVER_HOST}"
+  resources:
+    requests:
+      cpu: 50m
+      memory: 64Mi
+    limits:
+      cpu: 200m
+      memory: 256Mi
 EOF
     
     log_success "Helm values generated at /tmp/pxc-values.yaml"
@@ -1074,6 +1114,14 @@ display_info() {
     echo -e "${GREEN}✓${NC} Percona XtraDB Cluster ${actual_pxc_version} is running"
     echo -e "${GREEN}✓${NC} HAProxy ${actual_haproxy_version} is configured"
     echo -e "${GREEN}✓${NC} Percona Operator ${OPERATOR_VERSION}"
+    
+    # Show PMM status if enabled
+    if [ "$ENABLE_PMM" = "true" ]; then
+        local actual_pmm_version=$(kubectl get pods -n "$NAMESPACE" -l app.kubernetes.io/component=pxc -o jsonpath='{.items[0].spec.containers[?(@.name=="pmm-client")].image}' 2>/dev/null | sed 's/.*://' || echo "3.4.1")
+        echo -e "${GREEN}✓${NC} PMM Client ${actual_pmm_version} is enabled"
+        echo -e "${GREEN}✓${NC} PMM Server Host: ${PMM_SERVER_HOST}"
+    fi
+    
     echo -e "${GREEN}✓${NC} All components deployed to namespace: ${NAMESPACE}"
     echo -e "${GREEN}✓${NC} Environment: On-Premise vSphere/vCenter"
     echo ""
@@ -1119,6 +1167,16 @@ display_info() {
     echo "  # Monitor backups"
     echo "  kubectl get pxc-backup -n ${NAMESPACE}"
     echo ""
+    
+    # PMM-specific commands if enabled
+    if [ "$ENABLE_PMM" = "true" ]; then
+        echo "  # Check PMM client status"
+        echo "  kubectl logs -n ${NAMESPACE} ${CLUSTER_NAME}-pxc-db-pxc-0 -c pmm-client"
+        echo ""
+        echo "  # PMM Server"
+        echo "  Server Host: ${PMM_SERVER_HOST}"
+        echo ""
+    fi
     
     log_success "Installation completed successfully!"
 }
