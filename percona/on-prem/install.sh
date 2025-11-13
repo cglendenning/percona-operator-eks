@@ -888,14 +888,14 @@ display_info() {
     echo ""
     
     log_info "Connection Information:"
-    echo "  HAProxy Service: ${CLUSTER_NAME}-haproxy.${NAMESPACE}.svc.cluster.local:3306"
-    echo "  PXC Nodes: ${CLUSTER_NAME}-pxc-0.${CLUSTER_NAME}-pxc.${NAMESPACE}.svc.cluster.local:3306"
+    echo "  HAProxy Service: ${CLUSTER_NAME}-pxc-db-haproxy.${NAMESPACE}.svc.cluster.local:3306"
+    echo "  PXC Nodes: ${CLUSTER_NAME}-pxc-db-pxc-0.${CLUSTER_NAME}-pxc-db-pxc.${NAMESPACE}.svc.cluster.local:3306"
     echo ""
     
     # Get root password
-    local root_password=$(kubectl get secret "${CLUSTER_NAME}-secrets" -n "$NAMESPACE" -o jsonpath='{.data.root}' 2>/dev/null | base64 -d || echo "N/A")
+    local root_password=$(kubectl get secret "${CLUSTER_NAME}-pxc-db-secrets" -n "$NAMESPACE" -o jsonpath='{.data.root}' 2>/dev/null | base64 --decode 2>/dev/null || echo "")
     
-    if [ "$root_password" != "N/A" ]; then
+    if [ -n "$root_password" ]; then
         log_info "Root Password (save this!):"
         echo "  $root_password"
         echo ""
@@ -905,11 +905,17 @@ display_info() {
     echo "  # Check cluster status"
     echo "  kubectl get pxc -n ${NAMESPACE}"
     echo ""
-    echo "  # Connect to MySQL"
-    echo "  kubectl exec -it ${CLUSTER_NAME}-pxc-0 -n ${NAMESPACE} -- mysql -uroot -p'${root_password}'"
+    echo "  # Get root password"
+    echo "  kubectl get secret ${CLUSTER_NAME}-pxc-db-secrets -n ${NAMESPACE} -o jsonpath='{.data.root}' | base64 --decode && echo"
+    echo ""
+    echo "  # Connect to MySQL (via HAProxy)"
+    echo "  kubectl exec -it ${CLUSTER_NAME}-pxc-db-haproxy-0 -n ${NAMESPACE} -c haproxy -- mysql -h127.0.0.1 -uroot -p\$(kubectl get secret ${CLUSTER_NAME}-pxc-db-secrets -n ${NAMESPACE} -o jsonpath='{.data.root}' | base64 --decode)"
+    echo ""
+    echo "  # Connect directly to PXC pod"
+    echo "  kubectl exec -it ${CLUSTER_NAME}-pxc-db-pxc-0 -n ${NAMESPACE} -c pxc -- mysql -uroot -p\$(kubectl get secret ${CLUSTER_NAME}-pxc-db-secrets -n ${NAMESPACE} -o jsonpath='{.data.root}' | base64 --decode)"
     echo ""
     echo "  # View logs"
-    echo "  kubectl logs -n ${NAMESPACE} -l app.kubernetes.io/component=pxc"
+    echo "  kubectl logs -n ${NAMESPACE} -l app.kubernetes.io/component=pxc -c pxc"
     echo ""
     echo "  # Monitor backups"
     echo "  kubectl get pxc-backup -n ${NAMESPACE}"
