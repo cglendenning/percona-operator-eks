@@ -217,6 +217,98 @@ run_diagnostics() {
         log_success "PMM server host is correct: $PMM_SERVICE"
     fi
     
+    # Check for PMM authentication secret
+    log_header "1.1. PMM Authentication Secret"
+    
+    local secret_name="${CLUSTER_NAME}-pxc-db-secrets"
+    local internal_secret_name="internal-${CLUSTER_NAME}-pxc-db"
+    log_info "Checking for PMM authentication in secret: $secret_name"
+    
+    if ! kubectl get secret "$secret_name" -n "$NAMESPACE" &>/dev/null; then
+        log_error "Cluster secrets not found: $secret_name"
+        ISSUES+=("Cluster secrets not found")
+    else
+        log_success "Cluster secrets found: $secret_name"
+        
+        # Check for pmmserverkey (PMM2 API key) - primary method
+        local pmmserverkey=$(kubectl get secret "$secret_name" -n "$NAMESPACE" -o jsonpath='{.data.pmmserverkey}' 2>/dev/null || echo "")
+        
+        # Also check for pmmserver (older/alternative key name)
+        local pmmserver=$(kubectl get secret "$secret_name" -n "$NAMESPACE" -o jsonpath='{.data.pmmserver}' 2>/dev/null || echo "")
+        
+        local has_auth=false
+        
+        if [ -n "$pmmserverkey" ] && [ "$pmmserverkey" != "null" ]; then
+            log_success "PMM authentication key (pmmserverkey) exists in secrets"
+            local decoded_length=$(echo "$pmmserverkey" | base64 -d 2>/dev/null | wc -c | tr -d ' ')
+            echo "  Token length: $decoded_length characters"
+            has_auth=true
+        elif [ -n "$pmmserver" ] && [ "$pmmserver" != "null" ]; then
+            log_success "PMM authentication key (pmmserver) exists in secrets"
+            local decoded_length=$(echo "$pmmserver" | base64 -d 2>/dev/null | wc -c | tr -d ' ')
+            echo "  Token length: $decoded_length characters"
+            log_warn "Note: Using 'pmmserver' key (older format). Consider using 'pmmserverkey' instead."
+            has_auth=true
+        else
+            log_error "PMM authentication key (pmmserverkey) is MISSING from secrets"
+            ISSUES+=("PMM authentication secret missing")
+            echo ""
+            log_info "PMM requires authentication credentials in the cluster secret."
+            echo "  The secret '$secret_name' should contain a 'pmmserverkey' key with the PMM API token."
+            echo ""
+            log_info "To add the PMM server API key:"
+            echo "  1. Get your PMM server API key from the PMM web UI:"
+            echo "     • Log into PMM"
+            echo "     • Navigate to Configuration → API Keys"
+            echo "     • Generate a new API key (or use existing)"
+            echo ""
+            echo "  2. Encode and add it to the secret:"
+            echo "     PMM_API_KEY='your-api-key-here'"
+            echo "     kubectl patch secret $secret_name -n $NAMESPACE --type=merge -p \"{\\\"data\\\":{\\\"pmmserverkey\\\":\\\"\$(echo -n \\\$PMM_API_KEY | base64)\\\"}}\""
+            echo ""
+            echo "  3. Or manually edit the secret:"
+            echo "     kubectl edit secret $secret_name -n $NAMESPACE"
+            echo "     # Add: pmmserverkey: <base64-encoded-api-key>"
+            echo ""
+        fi
+        
+        # Check for internal secrets sync issue
+        if [ "$has_auth" = true ]; then
+            log_info "Checking internal secrets synchronization..."
+            
+            if ! kubectl get secret "$internal_secret_name" -n "$NAMESPACE" &>/dev/null; then
+                log_warn "Internal secret not found: $internal_secret_name"
+                log_info "This is normal if the cluster was just created. The operator will create it."
+            else
+                log_success "Internal secret exists: $internal_secret_name"
+                
+                # Check if internal secret has PMM keys
+                local internal_pmmserverkey=$(kubectl get secret "$internal_secret_name" -n "$NAMESPACE" -o jsonpath='{.data.pmmserverkey}' 2>/dev/null || echo "")
+                
+                if [ -z "$internal_pmmserverkey" ] || [ "$internal_pmmserverkey" != "$pmmserverkey" ]; then
+                    log_error "Internal secrets are OUT OF SYNC with cluster secrets!"
+                    ISSUES+=("Secrets and internal secrets out of sync")
+                    echo ""
+                    log_info "The operator maintains an internal copy of secrets, and they're not synchronized."
+                    echo "  This commonly happens when you update the PMM credentials after the cluster is created."
+                    echo ""
+                    log_info "To fix the sync issue:"
+                    echo "  1. Delete the internal secret (operator will recreate it):"
+                    echo "     kubectl delete secret $internal_secret_name -n $NAMESPACE"
+                    echo ""
+                    echo "  2. Wait for operator to recreate it (usually a few seconds)"
+                    echo ""
+                    echo "  3. Restart PXC pods to apply the new credentials:"
+                    echo "     kubectl delete pod -l app.kubernetes.io/component=pxc -n $NAMESPACE"
+                    echo ""
+                else
+                    log_success "Internal secrets are synchronized with cluster secrets"
+                fi
+            fi
+        fi
+    fi
+    echo ""
+    
     # 2. Check PXC Pods with PMM Client
     log_header "2. PXC Pods with PMM Client Container"
     
@@ -353,52 +445,66 @@ run_diagnostics() {
     
     # Test DNS resolution for FQDN
     log_info "Testing DNS resolution for '$PMM_SERVICE'..."
-    local dns_output=$(kubectl exec "$test_pod" -n "$NAMESPACE" -c pxc -- nslookup "$PMM_SERVICE" 2>&1 || echo "")
-    if echo "$dns_output" | grep -q "Name:"; then
-        local resolved_ip=$(echo "$dns_output" | grep "Address:" | tail -1 | awk '{print $2}')
+    local dns_output=$(kubectl exec "$test_pod" -n "$NAMESPACE" -c pxc -- getent hosts "$PMM_SERVICE" 2>&1 || echo "")
+    if [ -n "$dns_output" ] && echo "$dns_output" | grep -qv "not found\|error"; then
+        local resolved_ip=$(echo "$dns_output" | awk '{print $1}')
         log_success "DNS resolution successful → $resolved_ip"
     else
         log_error "DNS resolution failed for '$PMM_SERVICE'"
         ISSUES+=("DNS resolution failed for PMM service FQDN")
         echo "  DNS output:"
-        echo "$dns_output" | sed 's/^/    /'
+        if [ -z "$dns_output" ]; then
+            echo "    (no output - host not found)"
+        else
+            echo "$dns_output" | sed 's/^/    /'
+        fi
     fi
     echo ""
     
-    # Test TCP connectivity (port 443)
+    # Test TCP connectivity (port 443) using bash built-in
     log_info "Testing TCP connectivity to PMM service on port 443..."
-    local nc_output=$(kubectl exec "$test_pod" -n "$NAMESPACE" -c pxc -- timeout 5 nc -zv "$PMM_SERVICE" 443 2>&1 || echo "failed")
-    if echo "$nc_output" | grep -iq "succeeded\|open"; then
+    local tcp_test=$(kubectl exec "$test_pod" -n "$NAMESPACE" -c pxc -- bash -c "timeout 5 bash -c 'exec 3<>/dev/tcp/$PMM_SERVICE/443' 2>&1 && echo 'success' || echo 'failed'")
+    if echo "$tcp_test" | grep -q "success"; then
         log_success "TCP port 443 is reachable"
     else
         log_error "TCP port 443 is NOT reachable"
         ISSUES+=("Cannot connect to PMM service on port 443")
-        echo "  nc output:"
-        echo "$nc_output" | sed 's/^/    /'
+        echo "  TCP test output:"
+        echo "$tcp_test" | sed 's/^/    /'
     fi
     echo ""
     
     # Test HTTP connectivity
     log_info "Testing HTTP connectivity to PMM service..."
-    local http_test=$(kubectl exec "$test_pod" -n "$NAMESPACE" -c pxc -- timeout 5 curl -s -o /dev/null -w "%{http_code}" "http://$PMM_SERVICE" 2>/dev/null || echo "000")
+    local http_output=$(kubectl exec "$test_pod" -n "$NAMESPACE" -c pxc -- timeout 5 curl -s -o /dev/null -w "HTTP_CODE:%{http_code}" "http://$PMM_SERVICE" 2>&1)
+    local http_test=$(echo "$http_output" | grep "HTTP_CODE:" | cut -d: -f2 || echo "000")
     
-    if [ "$http_test" != "000" ]; then
+    if [ "$http_test" != "000" ] && [ "$http_test" != "" ]; then
         log_success "HTTP connectivity successful (HTTP code: $http_test)"
     else
-        log_warn "HTTP connectivity test returned no response (HTTP code: $http_test)"
+        log_warn "HTTP connectivity test returned no response (HTTP code: ${http_test:-000})"
         WARNINGS+=("HTTP connectivity test inconclusive")
+        if echo "$http_output" | grep -qv "HTTP_CODE:"; then
+            echo "  Error output:"
+            echo "$http_output" | grep -v "HTTP_CODE:" | sed 's/^/    /'
+        fi
     fi
     echo ""
     
     # Test HTTPS connectivity
     log_info "Testing HTTPS connectivity to PMM service..."
-    local https_test=$(kubectl exec "$test_pod" -n "$NAMESPACE" -c pxc -- timeout 5 curl -ks -o /dev/null -w "%{http_code}" "https://$PMM_SERVICE" 2>/dev/null || echo "000")
+    local https_output=$(kubectl exec "$test_pod" -n "$NAMESPACE" -c pxc -- timeout 5 curl -ks -o /dev/null -w "HTTP_CODE:%{http_code}" "https://$PMM_SERVICE" 2>&1)
+    local https_test=$(echo "$https_output" | grep "HTTP_CODE:" | cut -d: -f2 || echo "000")
     
-    if [ "$https_test" != "000" ]; then
+    if [ "$https_test" != "000" ] && [ "$https_test" != "" ]; then
         log_success "HTTPS connectivity successful (HTTP code: $https_test)"
     else
-        log_error "HTTPS connectivity test failed (HTTP code: $https_test)"
+        log_error "HTTPS connectivity test failed (HTTP code: ${https_test:-000})"
         ISSUES+=("Cannot reach PMM service via HTTPS")
+        if echo "$https_output" | grep -qv "HTTP_CODE:"; then
+            echo "  Error output:"
+            echo "$https_output" | grep -v "HTTP_CODE:" | sed 's/^/    /'
+        fi
     fi
     echo ""
     
@@ -434,9 +540,9 @@ run_diagnostics() {
             has_errors=true
         fi
         
-        if echo "$logs" | grep -iq "unauthorized\|authentication\|forbidden\|401\|403"; then
+        if echo "$logs" | grep -iq "unauthorized\|authentication\|forbidden\|401\|403\|invalid.*key\|invalid.*token\|invalid.*credentials\|missing.*token\|missing.*credentials"; then
             log_error "Authentication/authorization errors found in logs"
-            ISSUES+=("Auth errors in PMM client logs")
+            ISSUES+=("PMM authentication failed - check pmmserver secret")
             has_auth_error=true
             has_errors=true
         fi
@@ -555,15 +661,48 @@ run_diagnostics() {
         # Check operator logs for PMM-related errors
         local operator_pod=$(echo "$operator_pods" | head -1 | awk '{print $1}')
         log_info "Checking operator logs for PMM-related messages..."
-        local operator_logs=$(kubectl logs "$operator_pod" -n "$NAMESPACE" --tail=50 2>/dev/null || echo "")
+        local operator_logs=$(kubectl logs "$operator_pod" -n "$NAMESPACE" --tail=100 2>/dev/null || echo "")
         
+        local has_operator_pmm_errors=false
+        
+        # Check for secrets sync error (most common issue)
+        if echo "$operator_logs" | grep -iq "can't enable PMM2\|pmmserverkey.*doesn't exist\|secrets and internal secrets are out of sync"; then
+            log_error "Found PMM secrets synchronization error in operator logs"
+            ISSUES+=("PMM secrets out of sync - operator cannot enable PMM")
+            echo "  Operator error:"
+            echo "$operator_logs" | grep -i "can't enable PMM2\|pmmserverkey\|secrets and internal secrets" | tail -3 | sed 's/^/    /'
+            echo ""
+            log_info "What this means:"
+            echo "  • 'PMM2' = Percona Monitoring and Management version 2 (current version)"
+            echo "  • The operator cannot find 'pmmserverkey' in your cluster secret"
+            echo "  • OR the cluster secret and internal secret are out of sync"
+            echo ""
+            log_info "This error shows in Section 1.1 above with fix instructions."
+            echo ""
+            has_operator_pmm_errors=true
+        fi
+        
+        # Check for authentication errors
+        if echo "$operator_logs" | grep -iq "pmm.*auth\|pmm.*unauthorized\|pmm.*forbidden\|pmm.*invalid.*credential\|pmm.*missing.*token"; then
+            log_error "Found PMM authentication errors in operator logs"
+            ISSUES+=("PMM authentication errors in operator logs")
+            echo "  Recent PMM authentication errors:"
+            echo "$operator_logs" | grep -i "pmm.*auth\|pmm.*unauthorized\|pmm.*forbidden\|pmm.*invalid.*credential\|pmm.*missing.*token" | tail -5 | sed 's/^/    /'
+            echo ""
+            has_operator_pmm_errors=true
+        fi
+        
+        # Check for general PMM errors
         if echo "$operator_logs" | grep -iq "pmm.*error\|pmm.*failed"; then
             log_warn "Found PMM-related errors in operator logs"
             WARNINGS+=("PMM errors in operator logs")
             echo "  Recent PMM-related errors:"
             echo "$operator_logs" | grep -i "pmm.*error\|pmm.*failed" | tail -5 | sed 's/^/    /'
             echo ""
-        else
+            has_operator_pmm_errors=true
+        fi
+        
+        if [ "$has_operator_pmm_errors" = false ]; then
             log_success "No PMM-related errors in recent operator logs"
         fi
     fi
@@ -1008,6 +1147,68 @@ run_summary_and_repair() {
             echo "    Current: ${CURRENT_SERVERHOST:-<not set>}"
             echo "    Expected: $PMM_SERVICE"
             echo "    Solution: Update serverHost using the repair function above"
+            echo ""
+        fi
+        
+        # Check for authentication issues
+        local has_auth_issue=false
+        local has_sync_issue=false
+        
+        for issue in "${ISSUES[@]}"; do
+            if [[ "$issue" =~ "authentication\|PMM authentication\|pmmserverkey\|pmmserver" ]]; then
+                has_auth_issue=true
+            fi
+            if [[ "$issue" =~ "out of sync\|secrets out of sync" ]]; then
+                has_sync_issue=true
+            fi
+        done
+        
+        if [ "$has_sync_issue" = true ]; then
+            echo "  → PMM SECRETS OUT OF SYNC"
+            echo "    The operator's internal secrets don't match your cluster secrets."
+            echo ""
+            log_error "    ROOT CAUSE: Cluster secrets and internal secrets are desynchronized"
+            echo ""
+            echo "    This happens when you add/update PMM credentials after cluster creation."
+            echo "    The operator maintains an internal copy that needs to be regenerated."
+            echo ""
+            echo "    How to fix:"
+            echo "      1. Delete the internal secret (operator will recreate it):"
+            echo "         kubectl delete secret internal-${CLUSTER_NAME}-pxc-db -n $NAMESPACE"
+            echo ""
+            echo "      2. Wait a few seconds for operator to recreate it"
+            echo ""
+            echo "      3. Restart PXC pods to apply changes:"
+            echo "         kubectl delete pod -l app.kubernetes.io/component=pxc -n $NAMESPACE"
+            echo ""
+            echo "      4. Monitor operator logs:"
+            echo "         kubectl logs -n $NAMESPACE -l app.kubernetes.io/name=percona-xtradb-cluster-operator --tail=20 -f"
+            echo ""
+        elif [ "$has_auth_issue" = true ]; then
+            echo "  → PMM AUTHENTICATION FAILED"
+            echo "    The PMM client cannot authenticate to the PMM server."
+            echo ""
+            log_error "    ROOT CAUSE: Missing or invalid 'pmmserverkey' in cluster secret"
+            echo ""
+            echo "    The secret '${CLUSTER_NAME}-pxc-db-secrets' must contain:"
+            echo "      - Key: pmmserverkey"
+            echo "      - Value: Base64-encoded PMM API key (from PMM web UI)"
+            echo ""
+            echo "    How to fix:"
+            echo "      1. Get your PMM server API key:"
+            echo "         • Log into PMM web UI"
+            echo "         • Navigate to Configuration → API Keys"
+            echo "         • Generate a new API key (or use existing)"
+            echo ""
+            echo "      2. Add the key to your cluster secret:"
+            echo "         PMM_API_KEY='your-api-key-here'"
+            echo "         kubectl patch secret ${CLUSTER_NAME}-pxc-db-secrets -n $NAMESPACE --type=merge -p \"{\\\"data\\\":{\\\"pmmserverkey\\\":\\\"\$(echo -n \\\$PMM_API_KEY | base64)\\\"}}\""
+            echo ""
+            echo "      3. Delete internal secret to trigger resync:"
+            echo "         kubectl delete secret internal-${CLUSTER_NAME}-pxc-db -n $NAMESPACE"
+            echo ""
+            echo "      4. Restart PXC pods to apply:"
+            echo "         kubectl delete pod -l app.kubernetes.io/component=pxc -n $NAMESPACE"
             echo ""
         fi
         
