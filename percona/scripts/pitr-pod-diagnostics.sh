@@ -1,8 +1,11 @@
 #!/bin/bash
-# PITR Pod Diagnostics Script
-# Diagnoses common issues with Percona XtraDB Cluster PITR pods
+# PITR Pod Diagnostics and Repair Script
+# Diagnoses and fixes common issues with Percona XtraDB Cluster PITR pods
 
 set -euo pipefail
+
+# Enable fix mode by default
+FIX_MODE="true"
 
 # Colors for output
 RED='\033[0;31m'
@@ -45,17 +48,18 @@ usage() {
     cat << EOF
 Usage: $0 [OPTIONS]
 
-Diagnose PITR pod issues in Percona XtraDB Cluster
+Diagnose and fix PITR pod issues in Percona XtraDB Cluster
 
 OPTIONS:
     -n, --namespace NAMESPACE    Kubernetes namespace (required)
     -c, --cluster CLUSTER_NAME   Cluster name (default: pxc-cluster)
+    --diagnose-only              Only diagnose, don't attempt fixes
     -h, --help                   Show this help message
 
 EXAMPLES:
-    $0 -n prod
-    $0 -n craig-test -c my-pxc-cluster
-    $0 --namespace percona --cluster pxc-cluster
+    $0 -n prod                              # Diagnose and fix issues
+    $0 -n craig-test -c my-pxc-cluster      # Custom cluster name
+    $0 --namespace percona --diagnose-only  # Only diagnose, no fixes
 
 EOF
     exit 1
@@ -71,6 +75,10 @@ while [[ $# -gt 0 ]]; do
         -c|--cluster)
             CLUSTER_NAME="$2"
             shift 2
+            ;;
+        --diagnose-only)
+            FIX_MODE="false"
+            shift
             ;;
         -h|--help)
             usage
@@ -220,43 +228,79 @@ fi
 # 5. MinIO/S3 Secret Check
 log_header "5. Backup Storage Secret Check"
 
-# Check for MinIO secret
-if kubectl get secret percona-backup-minio -n "$NAMESPACE" &>/dev/null; then
-    log_success "MinIO secret 'percona-backup-minio' exists"
+# Track issues for repair
+MINIO_SECRET_MISSING=false
+MINIO_SECRET_SOURCE_NS=""
+
+# Check for myminio-creds secret (correct for on-prem)
+if kubectl get secret myminio-creds -n "$NAMESPACE" &>/dev/null; then
+    log_success "MinIO secret 'myminio-creds' exists"
     
     # Check secret contents
-    ACCESS_KEY=$(kubectl get secret percona-backup-minio -n "$NAMESPACE" -o jsonpath='{.data.AWS_ACCESS_KEY_ID}' 2>/dev/null | base64 -d 2>/dev/null || echo "")
-    if [ -n "$ACCESS_KEY" ]; then
-        log_success "AWS_ACCESS_KEY_ID is set (length: ${#ACCESS_KEY})"
-    else
-        log_error "AWS_ACCESS_KEY_ID is missing or empty in secret"
+    ACCESS_KEY=$(kubectl get secret myminio-creds -n "$NAMESPACE" -o jsonpath='{.data.accesskey}' 2>/dev/null | base64 -d 2>/dev/null || echo "")
+    if [ -z "$ACCESS_KEY" ]; then
+        # Try AWS format
+        ACCESS_KEY=$(kubectl get secret myminio-creds -n "$NAMESPACE" -o jsonpath='{.data.AWS_ACCESS_KEY_ID}' 2>/dev/null | base64 -d 2>/dev/null || echo "")
     fi
     
-    SECRET_KEY=$(kubectl get secret percona-backup-minio -n "$NAMESPACE" -o jsonpath='{.data.AWS_SECRET_ACCESS_KEY}' 2>/dev/null | base64 -d 2>/dev/null || echo "")
-    if [ -n "$SECRET_KEY" ]; then
-        log_success "AWS_SECRET_ACCESS_KEY is set (length: ${#SECRET_KEY})"
+    if [ -n "$ACCESS_KEY" ]; then
+        log_success "Access key is set (length: ${#ACCESS_KEY})"
     else
-        log_error "AWS_SECRET_ACCESS_KEY is missing or empty in secret"
+        log_error "Access key is missing or empty in secret"
+    fi
+    
+    SECRET_KEY=$(kubectl get secret myminio-creds -n "$NAMESPACE" -o jsonpath='{.data.secretkey}' 2>/dev/null | base64 -d 2>/dev/null || echo "")
+    if [ -z "$SECRET_KEY" ]; then
+        # Try AWS format
+        SECRET_KEY=$(kubectl get secret myminio-creds -n "$NAMESPACE" -o jsonpath='{.data.AWS_SECRET_ACCESS_KEY}' 2>/dev/null | base64 -d 2>/dev/null || echo "")
+    fi
+    
+    if [ -n "$SECRET_KEY" ]; then
+        log_success "Secret key is set (length: ${#SECRET_KEY})"
+    else
+        log_error "Secret key is missing or empty in secret"
     fi
 else
-    log_error "MinIO secret 'percona-backup-minio' NOT found"
-    log_info "PITR requires MinIO for backup storage"
-fi
-
-# Check for S3 secret (alternative)
-if kubectl get secret percona-backup-s3 -n "$NAMESPACE" &>/dev/null; then
-    log_success "S3 secret 'percona-backup-s3' exists"
-else
-    log_info "S3 secret 'percona-backup-s3' not found (OK if using MinIO)"
+    log_error "MinIO secret 'myminio-creds' NOT found in namespace '$NAMESPACE'"
+    log_info "This secret is required for PITR backup storage"
+    MINIO_SECRET_MISSING=true
+    
+    # Try to find the secret in other namespaces
+    log_info "Searching for 'myminio-creds' in other namespaces..."
+    FOUND_NAMESPACES=$(kubectl get secrets --all-namespaces -o json 2>/dev/null | jq -r '.items[] | select(.metadata.name=="myminio-creds") | .metadata.namespace' 2>/dev/null || echo "")
+    
+    if [ -n "$FOUND_NAMESPACES" ]; then
+        log_info "Found 'myminio-creds' in namespaces:"
+        echo "$FOUND_NAMESPACES" | while read -r ns; do
+            echo "  - $ns"
+        done
+        MINIO_SECRET_SOURCE_NS=$(echo "$FOUND_NAMESPACES" | head -1)
+    else
+        log_warn "Secret 'myminio-creds' not found in any namespace"
+    fi
 fi
 echo ""
 
 # 6. MinIO Service Check
 log_header "6. MinIO Service Check"
-if kubectl get namespace minio &>/dev/null; then
-    log_success "MinIO namespace exists"
+
+MINIO_NS_FOUND=false
+
+# Check for minio-operator namespace (correct for on-prem)
+if kubectl get namespace minio-operator &>/dev/null; then
+    log_success "MinIO Operator namespace exists"
+    MINIO_NS_FOUND=true
     
-    MINIO_PODS=$(kubectl get pods -n minio -l app=minio --no-headers 2>/dev/null || echo "")
+    # Check for myminio-hl headless service
+    if kubectl get service myminio-hl -n minio-operator &>/dev/null; then
+        log_success "MinIO headless service 'myminio-hl' exists"
+        log_info "Expected endpoint: https://myminio-hl.minio-operator.svc.cluster.local:9000"
+    else
+        log_error "MinIO headless service 'myminio-hl' not found"
+    fi
+    
+    # Check MinIO pods
+    MINIO_PODS=$(kubectl get pods -n minio-operator --no-headers 2>/dev/null | grep myminio || echo "")
     if [ -n "$MINIO_PODS" ]; then
         log_success "MinIO pods found:"
         echo "$MINIO_PODS" | while read -r line; do
@@ -265,27 +309,33 @@ if kubectl get namespace minio &>/dev/null; then
             echo "  - $POD_NAME: $STATUS"
         done
     else
-        log_error "No MinIO pods found in minio namespace"
+        log_warn "No MinIO pods found with name 'myminio' in minio-operator namespace"
     fi
-    
-    # Check MinIO service
-    if kubectl get service minio -n minio &>/dev/null; then
-        log_success "MinIO service exists"
-        MINIO_ENDPOINT=$(kubectl get service minio -n minio -o jsonpath='{.spec.clusterIP}:{.spec.ports[0].port}' 2>/dev/null || echo "unknown")
-        log_info "MinIO endpoint: http://${MINIO_ENDPOINT}"
+fi
+
+# Also check legacy minio namespace
+if kubectl get namespace minio &>/dev/null; then
+    if [ "$MINIO_NS_FOUND" = false ]; then
+        log_info "Found 'minio' namespace (legacy location)"
+        MINIO_NS_FOUND=true
     else
-        log_error "MinIO service not found"
+        log_info "Found both 'minio' and 'minio-operator' namespaces"
     fi
-else
-    log_error "MinIO namespace does not exist"
+fi
+
+if [ "$MINIO_NS_FOUND" = false ]; then
+    log_error "MinIO namespace not found (checked: minio-operator, minio)"
     log_info "MinIO is required for PITR backup storage"
-    log_info "You may need to install MinIO first"
+    log_info "You may need to install MinIO Operator first"
 fi
 echo ""
 
 # 7. PXC Cluster Configuration
 log_header "7. PXC Cluster Backup Configuration"
 PXC_RESOURCE="${CLUSTER_NAME}-pxc-db"
+
+BACKUP_CONFIG_WRONG=false
+GTID_MISSING=false
 
 if kubectl get perconaxtradbcluster "$PXC_RESOURCE" -n "$NAMESPACE" &>/dev/null; then
     log_success "PXC resource '$PXC_RESOURCE' exists"
@@ -295,21 +345,67 @@ if kubectl get perconaxtradbcluster "$PXC_RESOURCE" -n "$NAMESPACE" &>/dev/null;
     if [ -n "$BACKUP_STORAGE" ] && [ "$BACKUP_STORAGE" != "{}" ]; then
         log_success "Backup storage is configured"
         echo ""
-        log_info "Backup storage configuration:"
-        kubectl get perconaxtradbcluster "$PXC_RESOURCE" -n "$NAMESPACE" -o json 2>/dev/null | \
-            jq -r '.spec.backup.storages | to_entries[] | "  Storage: \(.key)\n    Type: \(.value | keys[0])\n    Config: \(.value)"' 2>/dev/null || \
-            echo "$BACKUP_STORAGE"
+        
+        # Check MinIO storage configuration specifically
+        MINIO_STORAGE_TYPE=$(kubectl get perconaxtradbcluster "$PXC_RESOURCE" -n "$NAMESPACE" -o jsonpath='{.spec.backup.storages.minio.type}' 2>/dev/null || echo "")
+        MINIO_VERIFY_TLS=$(kubectl get perconaxtradbcluster "$PXC_RESOURCE" -n "$NAMESPACE" -o jsonpath='{.spec.backup.storages.minio.verifyTLS}' 2>/dev/null || echo "")
+        MINIO_ENDPOINT=$(kubectl get perconaxtradbcluster "$PXC_RESOURCE" -n "$NAMESPACE" -o jsonpath='{.spec.backup.storages.minio.s3.endpointUrl}' 2>/dev/null || echo "")
+        MINIO_CREDS=$(kubectl get perconaxtradbcluster "$PXC_RESOURCE" -n "$NAMESPACE" -o jsonpath='{.spec.backup.storages.minio.s3.credentialsSecret}' 2>/dev/null || echo "")
+        MINIO_BUCKET=$(kubectl get perconaxtradbcluster "$PXC_RESOURCE" -n "$NAMESPACE" -o jsonpath='{.spec.backup.storages.minio.s3.bucket}' 2>/dev/null || echo "")
+        
+        log_info "MinIO storage configuration:"
+        log_info "  Type: ${MINIO_STORAGE_TYPE:-<not set>}"
+        log_info "  VerifyTLS: ${MINIO_VERIFY_TLS:-<not set>}"
+        log_info "  Endpoint: ${MINIO_ENDPOINT:-<not set>}"
+        log_info "  Credentials Secret: ${MINIO_CREDS:-<not set>}"
+        log_info "  Bucket: ${MINIO_BUCKET:-<not set>}"
+        echo ""
+        
+        # Verify correct configuration
+        if [ "$MINIO_STORAGE_TYPE" != "s3" ]; then
+            log_error "✗ Storage type should be 's3', got: ${MINIO_STORAGE_TYPE:-<not set>}"
+            BACKUP_CONFIG_WRONG=true
+        else
+            log_success "✓ Storage type is correct: s3"
+        fi
+        
+        if [ "$MINIO_VERIFY_TLS" != "false" ]; then
+            log_warn "⚠ VerifyTLS should be 'false' for self-signed certs, got: ${MINIO_VERIFY_TLS:-<not set>}"
+            BACKUP_CONFIG_WRONG=true
+        else
+            log_success "✓ VerifyTLS is correct: false"
+        fi
+        
+        if [ "$MINIO_ENDPOINT" != "https://myminio-hl.minio-operator.svc.cluster.local:9000" ]; then
+            log_error "✗ Endpoint should be 'https://myminio-hl.minio-operator.svc.cluster.local:9000', got: ${MINIO_ENDPOINT:-<not set>}"
+            BACKUP_CONFIG_WRONG=true
+        else
+            log_success "✓ Endpoint is correct"
+        fi
+        
+        if [ "$MINIO_CREDS" != "myminio-creds" ]; then
+            log_error "✗ Credentials secret should be 'myminio-creds', got: ${MINIO_CREDS:-<not set>}"
+            BACKUP_CONFIG_WRONG=true
+        else
+            log_success "✓ Credentials secret is correct"
+        fi
     else
-        log_warn "Backup storage configuration is empty or not found"
+        log_error "Backup storage configuration is empty or not found"
+        BACKUP_CONFIG_WRONG=true
     fi
     
     # Check PITR enabled
     PITR_ENABLED=$(kubectl get perconaxtradbcluster "$PXC_RESOURCE" -n "$NAMESPACE" -o jsonpath='{.spec.backup.pitr.enabled}' 2>/dev/null || echo "false")
     if [ "$PITR_ENABLED" = "true" ]; then
-        log_success "PITR is enabled in cluster configuration"
+        log_success "✓ PITR is enabled in cluster configuration"
     else
-        log_error "PITR is NOT enabled in cluster configuration"
-        log_info "To enable: kubectl patch perconaxtradbcluster $PXC_RESOURCE -n $NAMESPACE --type=merge -p '{\"spec\":{\"backup\":{\"pitr\":{\"enabled\":true}}}}'"
+        log_error "✗ PITR is NOT enabled in cluster configuration"
+        BACKUP_CONFIG_WRONG=true
+    fi
+    
+    # Check GTID_CACHE_KEY again and track for repair
+    if [ -z "$GTID_KEY" ]; then
+        GTID_MISSING=true
     fi
 else
     log_error "PXC resource '$PXC_RESOURCE' not found"
@@ -328,48 +424,248 @@ kubectl describe pod "$PITR_POD" -n "$NAMESPACE" 2>/dev/null | grep -A 10 "Limit
     log_warn "Could not retrieve pod description"
 echo ""
 
+# Repair Functions
+copy_minio_secret() {
+    local source_ns="$1"
+    log_info "Copying 'myminio-creds' secret from namespace '$source_ns' to '$NAMESPACE'..."
+    
+    if kubectl get secret myminio-creds -n "$source_ns" -o yaml 2>/dev/null | \
+        sed "s/namespace: $source_ns/namespace: $NAMESPACE/" | \
+        grep -v '^\s*resourceVersion:' | \
+        grep -v '^\s*uid:' | \
+        grep -v '^\s*creationTimestamp:' | \
+        kubectl apply -f - 2>/dev/null; then
+        log_success "✓ Successfully copied 'myminio-creds' secret"
+        return 0
+    else
+        log_error "✗ Failed to copy secret"
+        return 1
+    fi
+}
+
+add_gtid_key() {
+    log_info "Adding GTID_CACHE_KEY to PITR deployment..."
+    
+    if kubectl patch deployment "$PITR_DEPLOYMENT" -n "$NAMESPACE" --type=json -p='[{"op":"add","path":"/spec/template/spec/containers/0/env/-","value":{"name":"GTID_CACHE_KEY","value":"pxc-pitr-cache"}}]' 2>/dev/null; then
+        log_success "✓ Successfully added GTID_CACHE_KEY"
+        return 0
+    else
+        log_error "✗ Failed to add GTID_CACHE_KEY"
+        return 1
+    fi
+}
+
+fix_backup_config() {
+    log_info "Fixing backup storage configuration..."
+    
+    # Prompt for MinIO bucket
+    echo -n "Enter MinIO bucket name: "
+    read -r BUCKET_NAME
+    
+    if [ -z "$BUCKET_NAME" ]; then
+        log_error "Bucket name is required"
+        return 1
+    fi
+    
+    # Create patch JSON
+    local patch='{
+      "spec": {
+        "backup": {
+          "pitr": {
+            "enabled": true
+          },
+          "storages": {
+            "minio": {
+              "type": "s3",
+              "verifyTLS": false,
+              "s3": {
+                "bucket": "'$BUCKET_NAME'",
+                "region": "us-east-1",
+                "credentialsSecret": "myminio-creds",
+                "endpointUrl": "https://myminio-hl.minio-operator.svc.cluster.local:9000"
+              }
+            }
+          }
+        }
+      }
+    }'
+    
+    if kubectl patch perconaxtradbcluster "$PXC_RESOURCE" -n "$NAMESPACE" --type=merge -p "$patch" 2>/dev/null; then
+        log_success "✓ Successfully updated backup configuration"
+        return 0
+    else
+        log_error "✗ Failed to update backup configuration"
+        return 1
+    fi
+}
+
+perform_repairs() {
+    log_header "PERFORMING REPAIRS"
+    local repairs_made=0
+    local repairs_failed=0
+    
+    # 1. Copy MinIO secret if needed
+    if [[ " ${REPAIRS_AVAILABLE[@]} " =~ " copy_minio_secret " ]]; then
+        if [ -n "$MINIO_SECRET_SOURCE_NS" ]; then
+            echo ""
+            log_info "Repair 1/3: Copy MinIO secret"
+            echo -n "Copy 'myminio-creds' from namespace '$MINIO_SECRET_SOURCE_NS'? (yes/no) [yes]: "
+            read -r COPY_SECRET
+            COPY_SECRET=${COPY_SECRET:-yes}
+            
+            if [[ "$COPY_SECRET" =~ ^[Yy]([Ee][Ss])?$ ]]; then
+                if copy_minio_secret "$MINIO_SECRET_SOURCE_NS"; then
+                    ((repairs_made++))
+                    MINIO_SECRET_MISSING=false
+                else
+                    ((repairs_failed++))
+                fi
+            else
+                log_info "Skipped"
+            fi
+        fi
+    fi
+    
+    # 2. Add GTID_CACHE_KEY if needed
+    if [[ " ${REPAIRS_AVAILABLE[@]} " =~ " add_gtid_key " ]]; then
+        echo ""
+        log_info "Repair 2/3: Add GTID_CACHE_KEY"
+        echo -n "Add GTID_CACHE_KEY to PITR deployment? (yes/no) [yes]: "
+        read -r ADD_GTID
+        ADD_GTID=${ADD_GTID:-yes}
+        
+        if [[ "$ADD_GTID" =~ ^[Yy]([Ee][Ss])?$ ]]; then
+            if add_gtid_key; then
+                ((repairs_made++))
+                GTID_MISSING=false
+            else
+                ((repairs_failed++))
+            fi
+        else
+            log_info "Skipped"
+        fi
+    fi
+    
+    # 3. Fix backup config if needed
+    if [[ " ${REPAIRS_AVAILABLE[@]} " =~ " fix_backup_config " ]]; then
+        echo ""
+        log_info "Repair 3/3: Fix backup storage configuration"
+        echo -n "Update backup storage configuration? (yes/no) [yes]: "
+        read -r FIX_BACKUP
+        FIX_BACKUP=${FIX_BACKUP:-yes}
+        
+        if [[ "$FIX_BACKUP" =~ ^[Yy]([Ee][Ss])?$ ]]; then
+            if fix_backup_config; then
+                ((repairs_made++))
+                BACKUP_CONFIG_WRONG=false
+            else
+                ((repairs_failed++))
+            fi
+        else
+            log_info "Skipped"
+        fi
+    fi
+    
+    # Summary
+    echo ""
+    log_header "REPAIR SUMMARY"
+    log_info "Repairs attempted: ${repairs_made}"
+    
+    if [ $repairs_failed -gt 0 ]; then
+        log_error "Repairs failed: ${repairs_failed}"
+    else
+        log_success "All repairs completed successfully"
+    fi
+    
+    # Restart PITR deployment if any repairs were made
+    if [ $repairs_made -gt 0 ]; then
+        echo ""
+        log_info "Restarting PITR deployment to apply changes..."
+        
+        if kubectl rollout restart deployment "$PITR_DEPLOYMENT" -n "$NAMESPACE" 2>/dev/null; then
+            log_success "✓ PITR deployment restarted"
+            log_info "Monitor pod status with: kubectl get pods -n $NAMESPACE -l app.kubernetes.io/component=pitr -w"
+        else
+            log_error "✗ Failed to restart PITR deployment"
+            log_info "Try manually: kubectl rollout restart deployment $PITR_DEPLOYMENT -n $NAMESPACE"
+        fi
+    fi
+}
+
 # Summary and Recommendations
-log_header "SUMMARY AND RECOMMENDATIONS"
+log_header "SUMMARY AND REPAIR OPTIONS"
 
 ISSUES=()
+REPAIRS_AVAILABLE=()
 
-# Check for common issues
-if ! kubectl get secret percona-backup-minio -n "$NAMESPACE" &>/dev/null; then
-    ISSUES+=("MinIO secret is missing")
+# Track issues found
+if [ "$MINIO_SECRET_MISSING" = true ]; then
+    ISSUES+=("MinIO secret 'myminio-creds' is missing in namespace '$NAMESPACE'")
+    if [ -n "$MINIO_SECRET_SOURCE_NS" ]; then
+        REPAIRS_AVAILABLE+=("copy_minio_secret")
+    fi
 fi
 
-GTID_CHECK=$(kubectl get deployment "$PITR_DEPLOYMENT" -n "$NAMESPACE" -o json 2>/dev/null | \
-    jq -r '.spec.template.spec.containers[0].env[]? | select(.name=="GTID_CACHE_KEY") | .name' 2>/dev/null || echo "")
-if [ -z "$GTID_CHECK" ]; then
-    ISSUES+=("GTID_CACHE_KEY environment variable is missing")
+if [ "$GTID_MISSING" = true ]; then
+    ISSUES+=("GTID_CACHE_KEY environment variable is missing from PITR deployment")
+    REPAIRS_AVAILABLE+=("add_gtid_key")
 fi
 
-if ! kubectl get namespace minio &>/dev/null; then
-    ISSUES+=("MinIO namespace/service does not exist")
+if [ "$BACKUP_CONFIG_WRONG" = true ]; then
+    ISSUES+=("Backup storage configuration is incorrect or incomplete")
+    REPAIRS_AVAILABLE+=("fix_backup_config")
 fi
 
-POD_STATUS=$(kubectl get pod "$PITR_POD" -n "$NAMESPACE" -o jsonpath='{.status.phase}' 2>/dev/null || echo "Unknown")
-if [[ "$POD_STATUS" == "CrashLoopBackOff" ]] || [[ "$POD_STATUS" == "Error" ]]; then
-    ISSUES+=("PITR pod is in $POD_STATUS state")
-fi
-
+# Display issues
 if [ ${#ISSUES[@]} -eq 0 ]; then
-    log_success "No major issues detected!"
-    log_info "If PITR is still not working, check the pod logs above for specific errors."
+    log_success "✓ No major configuration issues detected"
+    log_info "If PITR pod is still failing, check the logs above for specific error messages"
 else
-    log_error "Found ${#ISSUES[@]} issue(s):"
+    log_warn "Found ${#ISSUES[@]} issue(s):"
     for issue in "${ISSUES[@]}"; do
         echo "  ✗ $issue"
     done
-    echo ""
-    log_info "Common fixes:"
-    log_info "  1. Ensure MinIO is installed and running"
-    log_info "  2. Add GTID_CACHE_KEY to PITR deployment"
-    log_info "  3. Verify MinIO credentials in secret"
-    log_info "  4. Check network connectivity to MinIO service"
 fi
 
 echo ""
+
+# Offer repairs if in fix mode
+if [ "$FIX_MODE" = "true" ] && [ ${#REPAIRS_AVAILABLE[@]} -gt 0 ]; then
+    log_info "Repair mode is ENABLED. Available fixes:"
+    
+    if [[ " ${REPAIRS_AVAILABLE[@]} " =~ " copy_minio_secret " ]]; then
+        echo "  1. Copy 'myminio-creds' secret from source namespace"
+    fi
+    
+    if [[ " ${REPAIRS_AVAILABLE[@]} " =~ " add_gtid_key " ]]; then
+        echo "  2. Add GTID_CACHE_KEY to PITR deployment"
+    fi
+    
+    if [[ " ${REPAIRS_AVAILABLE[@]} " =~ " fix_backup_config " ]]; then
+        echo "  3. Fix backup storage configuration"
+    fi
+    
+    echo ""
+    
+    # Prompt to proceed
+    echo -n "Would you like to attempt these repairs? (yes/no) [yes]: "
+    read -r PROCEED
+    PROCEED=${PROCEED:-yes}
+    
+    if [[ "$PROCEED" =~ ^[Yy]([Ee][Ss])?$ ]]; then
+        perform_repairs
+    else
+        log_info "Skipping repairs. Run with --diagnose-only to disable repair prompts."
+    fi
+elif [ "$FIX_MODE" = "false" ]; then
+    log_info "Diagnose-only mode. Run without --diagnose-only to enable repairs."
+elif [ ${#REPAIRS_AVAILABLE[@]} -eq 0 ] && [ ${#ISSUES[@]} -gt 0 ]; then
+    log_warn "Issues found but automatic repairs are not available."
+    log_info "Please review the diagnostics above and fix manually."
+fi
+
+echo ""
+log_info "Diagnostic complete"
 log_info "For more help, check:"
 log_info "  - Percona Operator docs: https://docs.percona.com/percona-operator-for-mysql/pxc/"
 log_info "  - PITR documentation: https://docs.percona.com/percona-operator-for-mysql/pxc/backups-pitr.html"
