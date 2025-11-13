@@ -22,7 +22,7 @@ spec:
       serviceAccountName: db-concierge-operator
       containers:
         - name: operator
-          image: db-concierge-operator:latest  # Update with your registry
+          image: 961110019419.dkr.ecr.us-east-1.amazonaws.com/db-concierge-operator:latest  # Update with your registry
           imagePullPolicy: IfNotPresent
           env:
             - name: MYSQL_ADMIN_HOST

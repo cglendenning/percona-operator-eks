@@ -56,7 +56,10 @@ bootstrap-mysql-schema --name myapp --namespace myapp
 - Kubernetes cluster with Percona XtraDB Cluster (PXC) installed and running
 - `kubectl` configured with cluster admin access
 - MySQL root/admin credentials for your PXC cluster
-- Docker (if building operator image locally)
+- **Docker** (for building the operator image) - OR see [alternatives](#building-without-docker) below
+- **For EKS**: AWS CLI configured (`aws configure`) - will use AWS ECR
+- **For GKE**: gcloud CLI configured - will use Google Container Registry
+- **For local clusters** (kind/minikube): No registry needed
 
 ## Installation
 
@@ -72,16 +75,51 @@ The interactive installer will:
 2. Create the `db-concierge` namespace
 3. Set up RBAC (ServiceAccount, ClusterRole, ClusterRoleBinding)
 4. Prompt for your PXC admin credentials
-5. Deploy the operator
-6. Optionally configure developer RBAC
+5. **Build and push operator image** (see note below)
+6. Deploy the operator
+7. Optionally configure developer RBAC
 
-**During installation**, you'll be prompted for MySQL admin credentials:
-```
-MySQL Admin Host: cluster1-haproxy.default.svc.cluster.local
-MySQL Admin Port: 3306
-MySQL Admin User: root
-MySQL Admin Password: <your-pxc-root-password>
-```
+#### About the Operator Image
+
+**Why do I need to build an image?** Unlike Percona's operators which use pre-built public images (e.g., `percona/percona-xtradb-cluster-operator`), DB Concierge is a custom operator built from source.
+
+**Where does it go?** The installer detects your cluster type:
+
+- **EKS**: Automatically uses AWS ECR (Elastic Container Registry)
+  - Creates an ECR repository: `<account-id>.dkr.ecr.<region>.amazonaws.com/db-concierge-operator`
+  - Requires: AWS CLI configured (`aws configure`)
+  - No separate registry setup needed!
+
+- **GKE**: Automatically uses Google Container Registry
+  - Uses: `gcr.io/<project>/db-concierge-operator`
+  - Requires: gcloud CLI configured
+
+- **Local (kind/minikube)**: Loads directly into cluster
+  - No registry needed at all
+
+- **Other clusters**: You can use Docker Hub or any registry you have access to
+
+**During installation**, you'll be prompted for:
+
+1. **MySQL admin credentials:**
+   ```
+   MySQL Admin Host: cluster1-haproxy.default.svc.cluster.local
+   MySQL Admin Port: 3306
+   MySQL Admin User: root
+   MySQL Admin Password: <your-pxc-root-password>
+   ```
+
+2. **Image registry choice** (for EKS, option 1 is recommended):
+   ```
+   Options:
+     1. AWS ECR (Elastic Container Registry) - RECOMMENDED for EKS
+        Creates/uses an ECR repository in your AWS account
+     
+     2. Docker Hub or other public registry
+        Requires: docker login <registry>
+     
+     3. Skip (I've already built and pushed the image)
+   ```
 
 ### Manual Installation
 
@@ -105,10 +143,29 @@ kubectl create secret generic db-concierge-mysql-admin \
   --from-literal=MYSQL_ADMIN_USER=root \
   --from-literal=MYSQL_ADMIN_PASSWORD=your-root-password
 
-# 4. Build and deploy operator
+# 4. Build and push operator image
 cd operator
-docker build -t db-concierge-operator:latest .
-# Push to your registry and update deploy/deployment.yaml with image path
+
+# For EKS with ECR:
+AWS_ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+AWS_REGION=$(aws configure get region)
+ECR_REPO=db-concierge-operator
+
+# Create ECR repository
+aws ecr create-repository --repository-name ${ECR_REPO} --region ${AWS_REGION}
+
+# Login to ECR
+aws ecr get-login-password --region ${AWS_REGION} | \
+  docker login --username AWS --password-stdin ${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com
+
+# Build and push
+docker build -t ${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/${ECR_REPO}:latest .
+docker push ${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/${ECR_REPO}:latest
+
+# Update deployment with ECR image
+sed -i "s|image: db-concierge-operator:latest|image: ${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/${ECR_REPO}:latest|g" ../deploy/deployment.yaml
+
+# 5. Deploy operator
 kubectl apply -f ../deploy/deployment.yaml
 ```
 
@@ -125,6 +182,135 @@ kubectl get pods -n db-concierge
 # Check CRD is installed
 kubectl get crd appdatabases.db.stillwaters.io
 ```
+
+### Building Without Docker
+
+If you're running the installer on a machine without Docker (e.g., a bastion host), you have several options:
+
+#### Option 1: Install Docker
+
+**Amazon Linux 2:**
+```bash
+sudo yum update -y
+sudo yum install docker -y
+sudo service docker start
+sudo usermod -a -G docker $USER
+# Log out and back in for group changes to take effect
+```
+
+**Ubuntu/Debian:**
+```bash
+curl -fsSL https://get.docker.com -o get-docker.sh
+sudo sh get-docker.sh
+sudo usermod -aG docker $USER
+# Log out and back in
+```
+
+**macOS:**
+Install Docker Desktop from https://www.docker.com/products/docker-desktop
+
+#### Option 2: Build on Another Machine
+
+Build the image on your laptop or a build server, then push to ECR:
+
+```bash
+# On machine with Docker:
+cd percona/app-database/operator
+
+# Login to ECR
+AWS_ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+AWS_REGION=$(aws configure get region)
+aws ecr get-login-password --region ${AWS_REGION} | \
+  docker login --username AWS --password-stdin ${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com
+
+# Build and push
+docker build -t ${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/db-concierge-operator:latest .
+docker push ${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/db-concierge-operator:latest
+
+# Back on the machine running kubectl, update deployment:
+cd percona/app-database
+sed -i "s|image: db-concierge-operator:latest|image: ${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/db-concierge-operator:latest|g" deploy/deployment.yaml
+
+# Then continue with installation
+kubectl apply -f deploy/deployment.yaml
+```
+
+#### Option 3: Use AWS CodeBuild
+
+Create a CodeBuild project to build and push the image:
+
+1. **Create `buildspec.yml`** (the installer can generate this for you):
+
+```yaml
+version: 0.2
+phases:
+  pre_build:
+    commands:
+      - echo Logging in to Amazon ECR...
+      - aws ecr get-login-password --region $AWS_DEFAULT_REGION | docker login --username AWS --password-stdin $AWS_ACCOUNT_ID.dkr.ecr.$AWS_DEFAULT_REGION.amazonaws.com
+      - REPOSITORY_URI=$AWS_ACCOUNT_ID.dkr.ecr.$AWS_DEFAULT_REGION.amazonaws.com/db-concierge-operator
+  build:
+    commands:
+      - echo Building the Docker image...
+      - cd operator
+      - docker build -t $REPOSITORY_URI:latest .
+  post_build:
+    commands:
+      - echo Pushing the Docker image...
+      - docker push $REPOSITORY_URI:latest
+```
+
+2. **Create CodeBuild project** with this buildspec and appropriate IAM role with ECR permissions
+
+3. **Trigger build** and wait for completion
+
+4. **Update deployment.yaml** with the ECR URI and continue installation
+
+### Troubleshooting Installation
+
+#### EKS: ImagePullBackOff Error
+
+If the operator pod shows `ImagePullBackOff`:
+
+```bash
+kubectl describe pod -n db-concierge -l app.kubernetes.io/name=db-concierge-operator
+```
+
+**Common causes:**
+
+1. **ECR repository doesn't exist**: Create it manually:
+   ```bash
+   aws ecr create-repository --repository-name db-concierge-operator --region <your-region>
+   ```
+
+2. **EKS nodes can't pull from ECR**: Verify your node IAM role has ECR permissions:
+   ```json
+   {
+     "Version": "2012-10-17",
+     "Statement": [
+       {
+         "Effect": "Allow",
+         "Action": [
+           "ecr:GetAuthorizationToken",
+           "ecr:BatchCheckLayerAvailability",
+           "ecr:GetDownloadUrlForLayer",
+           "ecr:BatchGetImage"
+         ],
+         "Resource": "*"
+       }
+     ]
+   }
+   ```
+
+3. **Image wasn't pushed**: Verify image exists in ECR:
+   ```bash
+   aws ecr describe-images --repository-name db-concierge-operator --region <your-region>
+   ```
+
+4. **Wrong image reference in deployment.yaml**: Check the image path:
+   ```bash
+   kubectl get deployment db-concierge-operator -n db-concierge -o jsonpath='{.spec.template.spec.containers[0].image}'
+   ```
 
 ## Configuration
 

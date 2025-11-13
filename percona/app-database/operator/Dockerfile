@@ -11,8 +11,9 @@ COPY operator.py .
 COPY handlers/ ./handlers/
 
 # Run as non-root user
-RUN useradd -m -u 1000 operator && chown -R operator:operator /app
-USER operator
+RUN adduser --disabled-password --gecos "" dbconcierge && \
+    chown -R dbconcierge:dbconcierge /app
+USER dbconcierge
 
 CMD ["kopf", "run", "--liveness=http://0.0.0.0:8080/healthz", "operator.py"]
 
