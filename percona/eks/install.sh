@@ -21,9 +21,9 @@ NAMESPACE="${NAMESPACE:-percona}"
 CLUSTER_NAME="${CLUSTER_NAME:-pxc-cluster}"
 PXC_NODES="${PXC_NODES:-3}"
 PXC_HAPROXY_SIZE="${PXC_HAPROXY_SIZE:-3}"  # Will be auto-adjusted based on resources
-OPERATOR_VERSION="${OPERATOR_VERSION:-1.15.0}"
+OPERATOR_VERSION="${OPERATOR_VERSION:-1.18.0}"
 PXC_VERSION="${PXC_VERSION:-8.4.6}"  # XtraDB 8.4.6
-HAPROXY_VERSION="${HAPROXY_VERSION:-2.8.15}"  # HAProxy 2.8.15
+HAPROXY_VERSION="${HAPROXY_VERSION:-2.8.15}"  # HAProxy 2.8.15 (bundled with operator)
 STORAGE_CLASS=""  # Will be detected from cluster
 
 # Logging functions
@@ -670,6 +670,9 @@ pxc:
 haproxy:
   enabled: true
   size: ${PXC_HAPROXY_SIZE}
+  image:
+    repository: percona/haproxy
+    tag: ${HAPROXY_VERSION}
   
   resources:
     requests:
@@ -1047,8 +1050,13 @@ configure_pitr() {
 display_info() {
     log_header "Installation Complete!"
     
-    echo -e "${GREEN}✓${NC} Percona XtraDB Cluster ${PXC_VERSION} is running"
-    echo -e "${GREEN}✓${NC} HAProxy ${HAPROXY_VERSION} is configured"
+    # Get actual installed versions
+    local actual_pxc_version=$(kubectl get pods -n "$NAMESPACE" -l app.kubernetes.io/component=pxc -o jsonpath='{.items[0].spec.containers[?(@.name=="pxc")].image}' 2>/dev/null | sed 's/.*://' || echo "${PXC_VERSION}")
+    local actual_haproxy_version=$(kubectl get pods -n "$NAMESPACE" -l app.kubernetes.io/component=haproxy -o jsonpath='{.items[0].spec.containers[?(@.name=="haproxy")].image}' 2>/dev/null | sed 's/.*://' || echo "${HAPROXY_VERSION}")
+    
+    echo -e "${GREEN}✓${NC} Percona XtraDB Cluster ${actual_pxc_version} is running"
+    echo -e "${GREEN}✓${NC} HAProxy ${actual_haproxy_version} is configured"
+    echo -e "${GREEN}✓${NC} Percona Operator ${OPERATOR_VERSION}"
     echo -e "${GREEN}✓${NC} All components deployed to namespace: ${NAMESPACE}"
     echo ""
     
