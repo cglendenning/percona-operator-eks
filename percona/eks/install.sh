@@ -1002,15 +1002,27 @@ configure_pitr() {
     
     # Add GTID_CACHE_KEY environment variable using jq
     log_info "Adding GTID_CACHE_KEY to PITR deployment..."
-    if kubectl get deployment "$pitr_deployment" -n "$NAMESPACE" -o json | \
-       jq '.spec.template.spec.containers[0].env += [{"name":"GTID_CACHE_KEY","value":"pxc-pitr-cache"}]' | \
-       kubectl replace -f - &>/dev/null; then
-        log_success "GTID_CACHE_KEY added successfully"
+    
+    # Check if GTID_CACHE_KEY already exists
+    local has_gtid_key=$(kubectl get deployment "$pitr_deployment" -n "$NAMESPACE" -o json 2>/dev/null | \
+        jq -r '.spec.template.spec.containers[0].env[]? | select(.name=="GTID_CACHE_KEY") | .name' 2>/dev/null || echo "")
+    
+    if [ -n "$has_gtid_key" ]; then
+        log_info "GTID_CACHE_KEY already exists in PITR deployment"
     else
-        log_error "Failed to add GTID_CACHE_KEY"
-        log_error "PITR will not function correctly - manual configuration required"
-        trap - EXIT ERR
-        return 1
+        # Add the environment variable (handle null .env array)
+        if kubectl get deployment "$pitr_deployment" -n "$NAMESPACE" -o json | \
+           jq '.spec.template.spec.containers[0].env = (.spec.template.spec.containers[0].env // []) + [{"name":"GTID_CACHE_KEY","value":"pxc-pitr-cache"}]' | \
+           kubectl replace -f - 2>&1 | tee /tmp/pitr-config.log | grep -q "replaced"; then
+            log_success "GTID_CACHE_KEY added successfully"
+        else
+            log_error "Failed to add GTID_CACHE_KEY"
+            log_error "Error details:"
+            cat /tmp/pitr-config.log
+            log_error "PITR will not function correctly - manual configuration required"
+            trap - EXIT ERR
+            return 1
+        fi
     fi
     
     # Scale operator back up
