@@ -1,6 +1,8 @@
 #!/bin/bash
-# PMM Client Diagnostics Script
+# PMM Client Diagnostics Script (PMM v3 Compatible)
 # Diagnoses PMM client configuration, health, and connectivity
+# Supports PMM v3 authentication via 'pmmservertoken' secret key (users.PMMServerToken)
+# Ref: https://github.com/percona/percona-xtradb-cluster-operator/blob/main/pkg/pxc/users/users.go#L23
 
 set -euo pipefail
 
@@ -230,45 +232,53 @@ run_diagnostics() {
     else
         log_success "Cluster secrets found: $secret_name"
         
-        # Check for pmmserverkey (PMM2 API key) - primary method
-        local pmmserverkey=$(kubectl get secret "$secret_name" -n "$NAMESPACE" -o jsonpath='{.data.pmmserverkey}' 2>/dev/null || echo "")
+        # Check for pmmservertoken (PMM v3 token) - primary method for PMM v3
+        local pmmservertoken=$(kubectl get secret "$secret_name" -n "$NAMESPACE" -o jsonpath='{.data.pmmservertoken}' 2>/dev/null || echo "")
         
-        # Also check for pmmserver (older/alternative key name)
-        local pmmserver=$(kubectl get secret "$secret_name" -n "$NAMESPACE" -o jsonpath='{.data.pmmserver}' 2>/dev/null || echo "")
+        # Also check for pmmserverkey (PMM v2 compatibility)
+        local pmmserverkey=$(kubectl get secret "$secret_name" -n "$NAMESPACE" -o jsonpath='{.data.pmmserverkey}' 2>/dev/null || echo "")
         
         local has_auth=false
         
-        if [ -n "$pmmserverkey" ] && [ "$pmmserverkey" != "null" ]; then
-            log_success "PMM authentication key (pmmserverkey) exists in secrets"
+        if [ -n "$pmmservertoken" ] && [ "$pmmservertoken" != "null" ]; then
+            log_success "PMM v3 authentication token (pmmservertoken) exists in secrets ✓"
+            local decoded_length=$(echo "$pmmservertoken" | base64 -d 2>/dev/null | wc -c | tr -d ' ')
+            echo "  Token length: $decoded_length characters"
+            echo "  This is the REQUIRED key for PMM v3 (users.PMMServerToken)"
+            has_auth=true
+        elif [ -n "$pmmserverkey" ] && [ "$pmmserverkey" != "null" ]; then
+            log_warn "PMM v2 authentication key (pmmserverkey) exists but 'pmmservertoken' is missing"
             local decoded_length=$(echo "$pmmserverkey" | base64 -d 2>/dev/null | wc -c | tr -d ' ')
             echo "  Token length: $decoded_length characters"
-            has_auth=true
-        elif [ -n "$pmmserver" ] && [ "$pmmserver" != "null" ]; then
-            log_success "PMM authentication key (pmmserver) exists in secrets"
-            local decoded_length=$(echo "$pmmserver" | base64 -d 2>/dev/null | wc -c | tr -d ' ')
-            echo "  Token length: $decoded_length characters"
-            log_warn "Note: Using 'pmmserver' key (older format). Consider using 'pmmserverkey' instead."
-            has_auth=true
+            log_error "For PMM v3, the operator requires the 'pmmservertoken' key (users.PMMServerToken)"
+            ISSUES+=("PMM v3 requires 'pmmservertoken' key in secret")
+            REPAIRS_AVAILABLE+=("fix_pmm_secret")
         else
-            log_error "PMM authentication key (pmmserverkey) is MISSING from secrets"
+            log_error "PMM authentication token (pmmservertoken) is MISSING from secrets"
             ISSUES+=("PMM authentication secret missing")
+            REPAIRS_AVAILABLE+=("fix_pmm_secret")
             echo ""
-            log_info "PMM requires authentication credentials in the cluster secret."
-            echo "  The secret '$secret_name' should contain a 'pmmserverkey' key with the PMM API token."
+            log_info "PMM v3 requires authentication credentials in the cluster secret."
+            echo "  The secret '$secret_name' MUST contain a 'pmmservertoken' key with the PMM API token."
+            echo ""
+            log_info "Operator code reference:"
+            echo "  The operator checks: secret.Data[users.PMMServerToken]"
+            echo "  Where users.PMMServerToken = 'pmmservertoken'"
+            echo "  See: https://github.com/percona/percona-xtradb-cluster-operator/blob/main/pkg/pxc/users/users.go#L23"
             echo ""
             log_info "To add the PMM server API key:"
-            echo "  1. Get your PMM server API key from the PMM web UI:"
+            echo "  1. Get your PMM v3 server API key from the PMM web UI:"
             echo "     • Log into PMM"
             echo "     • Navigate to Configuration → API Keys"
             echo "     • Generate a new API key (or use existing)"
             echo ""
-            echo "  2. Encode and add it to the secret:"
+            echo "  2. Add it to the secret with the correct key name 'pmmservertoken':"
             echo "     PMM_API_KEY='your-api-key-here'"
-            echo "     kubectl patch secret $secret_name -n $NAMESPACE --type=merge -p \"{\\\"data\\\":{\\\"pmmserverkey\\\":\\\"\$(echo -n \\\$PMM_API_KEY | base64)\\\"}}\""
+            echo "     kubectl patch secret $secret_name -n $NAMESPACE --type=merge -p \"{\\\"data\\\":{\\\"pmmservertoken\\\":\\\"\$(echo -n \\\$PMM_API_KEY | base64)\\\"}}\""
             echo ""
             echo "  3. Or manually edit the secret:"
             echo "     kubectl edit secret $secret_name -n $NAMESPACE"
-            echo "     # Add: pmmserverkey: <base64-encoded-api-key>"
+            echo "     # Add: pmmservertoken: <base64-encoded-api-key>"
             echo ""
         fi
         
@@ -966,15 +976,127 @@ fix_serverhost() {
     fi
 }
 
+fix_pmm_secret() {
+    log_info "Adding PMM v3 authentication token to cluster secret..."
+    log_info "This adds the 'pmmservertoken' key required by the operator (users.PMMServerToken)"
+    echo ""
+    
+    local secret_name="${CLUSTER_NAME}-pxc-db-secrets"
+    local internal_secret_name="internal-${CLUSTER_NAME}-pxc-db"
+    
+    # Check if we already have pmmservertoken
+    local pmmservertoken=$(kubectl get secret "$secret_name" -n "$NAMESPACE" -o jsonpath='{.data.pmmservertoken}' 2>/dev/null || echo "")
+    
+    if [ -n "$pmmservertoken" ] && [ "$pmmservertoken" != "null" ]; then
+        log_success "✓ 'pmmservertoken' key already exists in secret"
+        return 0
+    fi
+    
+    # Prompt for PMM API key
+    log_info "You need to provide your PMM v3 server API key."
+    log_info "Get it from: PMM UI → Configuration → API Keys"
+    echo ""
+    echo -n "Enter your PMM v3 API key (or 'skip' to do manually): "
+    read -r PMM_API_KEY
+    
+    if [ "$PMM_API_KEY" = "skip" ] || [ -z "$PMM_API_KEY" ]; then
+        log_info "Skipped. To add manually:"
+        echo "  PMM_API_KEY='your-api-key-here'"
+        echo "  kubectl patch secret $secret_name -n $NAMESPACE --type=merge -p \"{\\\"data\\\":{\\\"pmmservertoken\\\":\\\"\$(echo -n \\\$PMM_API_KEY | base64)\\\"}}\""
+        return 1
+    fi
+    
+    log_info "Adding 'pmmservertoken' key to secret: $secret_name"
+    
+    # Base64 encode the API key
+    local encoded_key=$(echo -n "$PMM_API_KEY" | base64)
+    
+    # Patch the secret
+    local error_output
+    if error_output=$(kubectl patch secret "$secret_name" -n "$NAMESPACE" --type=merge -p "{\"data\":{\"pmmservertoken\":\"$encoded_key\"}}" 2>&1); then
+        log_success "✓ Successfully added 'pmmservertoken' key to secret"
+        echo ""
+        
+        # Verify the key was added
+        local verify=$(kubectl get secret "$secret_name" -n "$NAMESPACE" -o jsonpath='{.data.pmmservertoken}' 2>/dev/null || echo "")
+        if [ -n "$verify" ] && [ "$verify" != "null" ]; then
+            local decoded_length=$(echo "$verify" | base64 -d 2>/dev/null | wc -c | tr -d ' ')
+            log_success "✓ Verified: 'pmmservertoken' key exists in secret (length: $decoded_length characters)"
+            echo ""
+            log_info "This satisfies the operator check at:"
+            echo "  https://github.com/percona/percona-xtradb-cluster-operator/blob/main/pkg/pxc/app/statefulset/node.go#L386"
+            echo "  if secret.Data[users.PMMServerToken] != nil && len(secret.Data[users.PMMServerToken]) > 0"
+            echo "  Where users.PMMServerToken = 'pmmservertoken' (see users.go#L23)"
+            echo ""
+        else
+            log_warn "⚠ Could not verify the key was added correctly"
+        fi
+        
+        # Now sync the internal secret
+        log_info "Syncing internal secret..."
+        if kubectl get secret "$internal_secret_name" -n "$NAMESPACE" &>/dev/null; then
+            log_info "Deleting internal secret to trigger operator resync..."
+            if kubectl delete secret "$internal_secret_name" -n "$NAMESPACE" 2>&1; then
+                log_success "✓ Internal secret deleted - operator will recreate it with new credentials"
+            else
+                log_warn "⚠ Could not delete internal secret - you may need to do this manually"
+            fi
+        else
+            log_info "Internal secret doesn't exist yet - operator will create it"
+        fi
+        
+        echo ""
+        log_success "✓ PMM v3 authentication setup complete!"
+        log_info "Next steps:"
+        echo "  1. Wait a few seconds for the operator to sync secrets"
+        echo "  2. Restart PXC pods to apply the new credentials:"
+        echo "     kubectl delete pod -l app.kubernetes.io/component=pxc -n $NAMESPACE"
+        echo ""
+        
+        return 0
+    else
+        log_error "✗ Failed to add 'pmmservertoken' key to secret"
+        log_error "kubectl patch error output:"
+        echo "$error_output" | sed 's/^/  /'
+        echo ""
+        
+        log_info "Try manually with:"
+        echo "  PMM_API_KEY='your-api-key-here'"
+        echo "  kubectl patch secret $secret_name -n $NAMESPACE --type=merge -p \"{\\\"data\\\":{\\\"pmmservertoken\\\":\\\"\$(echo -n \\\$PMM_API_KEY | base64)\\\"}}\""
+        echo ""
+        
+        return 1
+    fi
+}
+
 perform_repairs() {
     log_header "PERFORMING REPAIRS"
     local repairs_made=0
     local repairs_failed=0
     
-    # 1. Enable PMM if needed
+    # 1. Fix PMM secret if needed (MOST CRITICAL for PMM v3)
+    if [[ " ${REPAIRS_AVAILABLE[@]} " =~ " fix_pmm_secret " ]]; then
+        echo ""
+        log_info "Repair 1/4: Add PMM v3 Authentication Token (CRITICAL)"
+        echo -n "Add 'pmmserver' key to cluster secret? (yes/no) [yes]: "
+        read -r FIX_SECRET
+        FIX_SECRET=${FIX_SECRET:-yes}
+        
+        if [[ "$FIX_SECRET" =~ ^[Yy]([Ee][Ss])?$ ]]; then
+            if fix_pmm_secret; then
+                ((repairs_made++))
+            else
+                ((repairs_failed++))
+            fi
+        else
+            log_info "Skipped"
+        fi
+    fi
+    
+    # 2. Enable PMM if needed
     if [[ " ${REPAIRS_AVAILABLE[@]} " =~ " enable_pmm " ]]; then
         echo ""
-        log_info "Repair 1/3: Enable PMM"
+        log_info "Repair 2/4: Enable PMM"
         echo -n "Enable PMM in PXC cluster? (yes/no) [yes]: "
         read -r ENABLE
         ENABLE=${ENABLE:-yes}
@@ -990,10 +1112,10 @@ perform_repairs() {
         fi
     fi
     
-    # 2. Fix version if needed
+    # 3. Fix version if needed
     if [[ " ${REPAIRS_AVAILABLE[@]} " =~ " fix_version " ]]; then
         echo ""
-        log_info "Repair 2/3: Update PMM client version"
+        log_info "Repair 3/4: Update PMM client version"
         echo -n "Update PMM client to version $EXPECTED_VERSION? (yes/no) [yes]: "
         read -r UPDATE_VERSION
         UPDATE_VERSION=${UPDATE_VERSION:-yes}
@@ -1009,10 +1131,10 @@ perform_repairs() {
         fi
     fi
     
-    # 3. Fix server host if needed
+    # 4. Fix server host if needed
     if [[ " ${REPAIRS_AVAILABLE[@]} " =~ " fix_serverhost " ]]; then
         echo ""
-        log_info "Repair 3/3: Update PXC cluster's PMM serverHost configuration"
+        log_info "Repair 4/4: Update PXC cluster's PMM serverHost configuration"
         echo -n "Set spec.pmm.serverHost to '$PMM_SERVICE' (only updates PXC cluster, not PMM namespace)? (yes/no) [yes]: "
         read -r UPDATE_HOST
         UPDATE_HOST=${UPDATE_HOST:-yes}
@@ -1082,16 +1204,20 @@ run_summary_and_repair() {
     if [ "$FIX_MODE" = "true" ] && [ ${#REPAIRS_AVAILABLE[@]} -gt 0 ]; then
         log_info "Repair mode is ENABLED. Available fixes:"
         
+        if [[ " ${REPAIRS_AVAILABLE[@]} " =~ " fix_pmm_secret " ]]; then
+            echo "  1. Add PMM v3 authentication token ('pmmservertoken' key) to cluster secret (CRITICAL)"
+        fi
+        
         if [[ " ${REPAIRS_AVAILABLE[@]} " =~ " enable_pmm " ]]; then
-            echo "  1. Enable PMM in PXC cluster"
+            echo "  2. Enable PMM in PXC cluster"
         fi
         
         if [[ " ${REPAIRS_AVAILABLE[@]} " =~ " fix_version " ]]; then
-            echo "  2. Update PMM client version to $EXPECTED_VERSION"
+            echo "  3. Update PMM client version to $EXPECTED_VERSION"
         fi
         
         if [[ " ${REPAIRS_AVAILABLE[@]} " =~ " fix_serverhost " ]]; then
-            echo "  3. Update PXC cluster PMM serverHost configuration to point to '$PMM_SERVICE'"
+            echo "  4. Update PXC cluster PMM serverHost configuration to point to '$PMM_SERVICE'"
         fi
         
         echo ""
@@ -1155,10 +1281,10 @@ run_summary_and_repair() {
         local has_sync_issue=false
         
         for issue in "${ISSUES[@]}"; do
-            if [[ "$issue" =~ "authentication\|PMM authentication\|pmmserverkey\|pmmserver" ]]; then
+            if [[ "$issue" =~ "authentication"|"PMM authentication"|"pmmserverkey"|"pmmserver"|"PMM v3 requires" ]]; then
                 has_auth_issue=true
             fi
-            if [[ "$issue" =~ "out of sync\|secrets out of sync" ]]; then
+            if [[ "$issue" =~ "out of sync"|"secrets out of sync" ]]; then
                 has_sync_issue=true
             fi
         done
@@ -1185,30 +1311,40 @@ run_summary_and_repair() {
             echo "         kubectl logs -n $NAMESPACE -l app.kubernetes.io/name=percona-xtradb-cluster-operator --tail=20 -f"
             echo ""
         elif [ "$has_auth_issue" = true ]; then
-            echo "  → PMM AUTHENTICATION FAILED"
-            echo "    The PMM client cannot authenticate to the PMM server."
+            echo "  → PMM v3 AUTHENTICATION FAILED"
+            echo "    The PMM client cannot authenticate to the PMM v3 server."
             echo ""
-            log_error "    ROOT CAUSE: Missing or invalid 'pmmserverkey' in cluster secret"
+            log_error "    ROOT CAUSE: Missing or invalid 'pmmservertoken' key in cluster secret"
             echo ""
-            echo "    The secret '${CLUSTER_NAME}-pxc-db-secrets' must contain:"
-            echo "      - Key: pmmserverkey"
-            echo "      - Value: Base64-encoded PMM API key (from PMM web UI)"
+            echo "    For PMM v3, the operator specifically checks for:"
+            echo "      secret.Data[users.PMMServerToken]"
+            echo "    where users.PMMServerToken = 'pmmservertoken'"
+            echo ""
+            echo "    Reference:"
+            echo "      - Constant definition: https://github.com/percona/percona-xtradb-cluster-operator/blob/main/pkg/pxc/users/users.go#L23"
+            echo "      - Operator check: https://github.com/percona/percona-xtradb-cluster-operator/blob/main/pkg/pxc/app/statefulset/node.go#L386"
+            echo ""
+            echo "    The secret '${CLUSTER_NAME}-pxc-db-secrets' MUST contain:"
+            echo "      - Key: pmmservertoken (NOT pmmserverkey, NOT pmmserver)"
+            echo "      - Value: Base64-encoded PMM v3 API token (from PMM web UI)"
             echo ""
             echo "    How to fix:"
-            echo "      1. Get your PMM server API key:"
-            echo "         • Log into PMM web UI"
+            echo "      1. Get your PMM v3 server API token:"
+            echo "         • Log into PMM v3 web UI"
             echo "         • Navigate to Configuration → API Keys"
             echo "         • Generate a new API key (or use existing)"
             echo ""
-            echo "      2. Add the key to your cluster secret:"
+            echo "      2. Add the token to your cluster secret with the CORRECT key name:"
             echo "         PMM_API_KEY='your-api-key-here'"
-            echo "         kubectl patch secret ${CLUSTER_NAME}-pxc-db-secrets -n $NAMESPACE --type=merge -p \"{\\\"data\\\":{\\\"pmmserverkey\\\":\\\"\$(echo -n \\\$PMM_API_KEY | base64)\\\"}}\""
+            echo "         kubectl patch secret ${CLUSTER_NAME}-pxc-db-secrets -n $NAMESPACE --type=merge -p \"{\\\"data\\\":{\\\"pmmservertoken\\\":\\\"\$(echo -n \\\$PMM_API_KEY | base64)\\\"}}\""
             echo ""
             echo "      3. Delete internal secret to trigger resync:"
             echo "         kubectl delete secret internal-${CLUSTER_NAME}-pxc-db -n $NAMESPACE"
             echo ""
             echo "      4. Restart PXC pods to apply:"
             echo "         kubectl delete pod -l app.kubernetes.io/component=pxc -n $NAMESPACE"
+            echo ""
+            echo "    Or use the automated repair function offered above."
             echo ""
         fi
         

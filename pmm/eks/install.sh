@@ -15,7 +15,7 @@ NC='\033[0m' # No Color
 PMM_NAMESPACE="pmm"
 PMM_VERSION="3"
 PMM_IMAGE="percona/pmm-server:${PMM_VERSION}"
-STORAGE_CLASS="gp3"
+STORAGE_CLASS="gp2"
 STORAGE_SIZE="100Gi"
 SERVICE_TYPE="LoadBalancer"
 
@@ -131,6 +131,10 @@ spec:
         app: pmm-server
     spec:
       serviceAccountName: pmm-server
+      securityContext:
+        fsGroup: 1000
+        runAsUser: 1000
+        runAsGroup: 0
       containers:
       - name: pmm-server
         image: ${PMM_IMAGE}
@@ -326,7 +330,7 @@ main() {
     echo "This script will install:"
     echo "  - PMM Server version: ${PMM_VERSION}"
     echo "  - Namespace: ${PMM_NAMESPACE}"
-    echo "  - Storage: ${STORAGE_SIZE} on ${STORAGE_CLASS}"
+    echo "  - Storage: ${STORAGE_SIZE} on ${STORAGE_CLASS} (EBS)"
     echo "  - Service Type: ${SERVICE_TYPE}"
     echo ""
     

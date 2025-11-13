@@ -168,6 +168,10 @@ spec:
         app: pmm-server
     spec:
       serviceAccountName: pmm-server
+      securityContext:
+        fsGroup: 1000
+        runAsUser: 1000
+        runAsGroup: 0
       containers:
       - name: pmm-server
         image: ${PMM_IMAGE}

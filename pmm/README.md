@@ -62,7 +62,7 @@ cd pmm/eks
 **What it installs:**
 - Namespace: `pmm`
 - PMM Server v3 StatefulSet
-- Persistent storage: 100Gi on `gp3` storage class
+- Persistent storage: 100Gi on `gp2` storage class (AWS EBS)
 - Service: LoadBalancer (exposes PMM via AWS ELB)
 - Service account with token for authentication
 
