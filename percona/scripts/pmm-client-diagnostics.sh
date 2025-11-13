@@ -21,7 +21,7 @@ NAMESPACE=""
 CLUSTER_NAME="pxc-cluster"
 EXPECTED_VERSION="3.4.1"
 PMM_NAMESPACE="pmm"
-PMM_SERVICE="monitoring-service"
+PMM_SERVICE="monitoring-service.pmm.svc.cluster.local"
 
 # Logging functions
 log_info() {
@@ -59,7 +59,7 @@ OPTIONS:
     -n, --namespace NAMESPACE      Kubernetes namespace where PXC is installed (required)
     -c, --cluster CLUSTER_NAME     Cluster name (default: pxc-cluster)
     -p, --pmm-namespace NAMESPACE  PMM namespace (default: pmm)
-    -s, --service SERVICE_NAME     PMM service name (default: monitoring-service)
+    -s, --service SERVICE_NAME     PMM service FQDN (default: monitoring-service.pmm.svc.cluster.local)
     --diagnose-only                Only diagnose, don't attempt fixes
     -h, --help                     Show this help message
 

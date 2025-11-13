@@ -329,7 +329,7 @@ prompt_configuration() {
     
     if [[ "$ENABLE_PMM" =~ ^[Yy]([Ee][Ss])?$ ]]; then
         ENABLE_PMM="true"
-        PMM_SERVER_HOST="monitoring-service"
+        PMM_SERVER_HOST="monitoring-service.pmm.svc.cluster.local"
         
         log_info "PMM client version 3.4.1 will be installed"
         log_success "PMM will be enabled with server host: $PMM_SERVER_HOST"
