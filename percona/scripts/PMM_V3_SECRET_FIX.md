@@ -37,7 +37,7 @@ const (
 3. **This is NOT just any secret:** You cannot create a random secret with the `pmmservertoken` key. It must be:
    - Named according to your CR's `spec.secretsName` field
    - In the same namespace as your cluster
-   - Contain the `pmmservertoken` key with your PMM v3 API token (base64-encoded)
+   - Contain the `pmmservertoken` key with your PMM v3 service account token (base64-encoded)
 
 ## Solution
 
@@ -60,23 +60,24 @@ The script will:
 
 ### Option 2: Manual Fix
 
-1. **Get your PMM v3 API token:**
+1. **Get your PMM v3 service account token:**
    - Log into PMM v3 web UI
-   - Navigate to Configuration → API Keys
-   - Generate a new API key (or use existing)
+   - Navigate to Configuration → Service Accounts
+   - Create a new service account or use an existing one
+   - Copy the service account token
 
 2. **Add the token to your cluster secret:**
    ```bash
    # Set your variables
    NAMESPACE="your-namespace"
    CLUSTER_NAME="pxc-cluster"
-   PMM_API_KEY="your-pmm-v3-api-key-here"
+   PMM_TOKEN="your-pmm-v3-service-account-token-here"
    
    # Add the pmmservertoken key to the secret
    kubectl patch secret ${CLUSTER_NAME}-pxc-db-secrets \
      -n $NAMESPACE \
      --type=merge \
-     -p "{\"data\":{\"pmmservertoken\":\"$(echo -n $PMM_API_KEY | base64)\"}}"
+     -p "{\"data\":{\"pmmservertoken\":\"$(echo -n $PMM_TOKEN | base64)\"}}"
    ```
 
 3. **Delete the internal secret to trigger resync:**
@@ -174,7 +175,7 @@ const (
 **For PMM v3, the operator requires:**
 - Secret key name: `pmmservertoken` (defined as `users.PMMServerToken`)
 - Secret name: `<cluster-name>-pxc-db-secrets` (or whatever is in `spec.secretsName`)
-- Value: Base64-encoded PMM v3 API token
+- Value: Base64-encoded PMM v3 service account token
 
 **The updated diagnostics script handles this automatically.**
 

@@ -1,7 +1,8 @@
 #!/bin/bash
 # PMM Client Diagnostics Script (PMM v3 Compatible)
 # Diagnoses PMM client configuration, health, and connectivity
-# Supports PMM v3 authentication via 'pmmservertoken' secret key (users.PMMServerToken)
+# Supports PMM v3 authentication via service account token stored in 'pmmservertoken' secret key
+# Secret key constant: users.PMMServerToken = "pmmservertoken"
 # Ref: https://github.com/percona/percona-xtradb-cluster-operator/blob/main/pkg/pxc/users/users.go#L23
 
 set -euo pipefail
@@ -259,26 +260,27 @@ run_diagnostics() {
             REPAIRS_AVAILABLE+=("fix_pmm_secret")
             echo ""
             log_info "PMM v3 requires authentication credentials in the cluster secret."
-            echo "  The secret '$secret_name' MUST contain a 'pmmservertoken' key with the PMM API token."
+            echo "  The secret '$secret_name' MUST contain a 'pmmservertoken' key with the PMM service account token."
             echo ""
             log_info "Operator code reference:"
             echo "  The operator checks: secret.Data[users.PMMServerToken]"
             echo "  Where users.PMMServerToken = 'pmmservertoken'"
             echo "  See: https://github.com/percona/percona-xtradb-cluster-operator/blob/main/pkg/pxc/users/users.go#L23"
             echo ""
-            log_info "To add the PMM server API key:"
-            echo "  1. Get your PMM v3 server API key from the PMM web UI:"
+            log_info "To add the PMM server service account token:"
+            echo "  1. Get your PMM v3 service account token from the PMM web UI:"
             echo "     • Log into PMM"
-            echo "     • Navigate to Configuration → API Keys"
-            echo "     • Generate a new API key (or use existing)"
+            echo "     • Navigate to Configuration → Service Accounts"
+            echo "     • Create a new service account or use existing"
+            echo "     • Copy the service account token"
             echo ""
             echo "  2. Add it to the secret with the correct key name 'pmmservertoken':"
-            echo "     PMM_API_KEY='your-api-key-here'"
-            echo "     kubectl patch secret $secret_name -n $NAMESPACE --type=merge -p \"{\\\"data\\\":{\\\"pmmservertoken\\\":\\\"\$(echo -n \\\$PMM_API_KEY | base64)\\\"}}\""
+            echo "     PMM_TOKEN='your-service-account-token-here'"
+            echo "     kubectl patch secret $secret_name -n $NAMESPACE --type=merge -p \"{\\\"data\\\":{\\\"pmmservertoken\\\":\\\"\$(echo -n \\\$PMM_TOKEN | base64)\\\"}}\""
             echo ""
             echo "  3. Or manually edit the secret:"
             echo "     kubectl edit secret $secret_name -n $NAMESPACE"
-            echo "     # Add: pmmservertoken: <base64-encoded-api-key>"
+            echo "     # Add: pmmservertoken: <base64-encoded-service-account-token>"
             echo ""
         fi
         
@@ -992,24 +994,24 @@ fix_pmm_secret() {
         return 0
     fi
     
-    # Prompt for PMM API key
-    log_info "You need to provide your PMM v3 server API key."
-    log_info "Get it from: PMM UI → Configuration → API Keys"
+    # Prompt for PMM service account token
+    log_info "You need to provide your PMM v3 service account token."
+    log_info "Get it from: PMM UI → Configuration → Service Accounts"
     echo ""
-    echo -n "Enter your PMM v3 API key (or 'skip' to do manually): "
-    read -r PMM_API_KEY
+    echo -n "Enter your PMM v3 service account token (or 'skip' to do manually): "
+    read -r PMM_TOKEN
     
-    if [ "$PMM_API_KEY" = "skip" ] || [ -z "$PMM_API_KEY" ]; then
+    if [ "$PMM_TOKEN" = "skip" ] || [ -z "$PMM_TOKEN" ]; then
         log_info "Skipped. To add manually:"
-        echo "  PMM_API_KEY='your-api-key-here'"
-        echo "  kubectl patch secret $secret_name -n $NAMESPACE --type=merge -p \"{\\\"data\\\":{\\\"pmmservertoken\\\":\\\"\$(echo -n \\\$PMM_API_KEY | base64)\\\"}}\""
+        echo "  PMM_TOKEN='your-service-account-token-here'"
+        echo "  kubectl patch secret $secret_name -n $NAMESPACE --type=merge -p \"{\\\"data\\\":{\\\"pmmservertoken\\\":\\\"\$(echo -n \\\$PMM_TOKEN | base64)\\\"}}\""
         return 1
     fi
     
     log_info "Adding 'pmmservertoken' key to secret: $secret_name"
     
-    # Base64 encode the API key
-    local encoded_key=$(echo -n "$PMM_API_KEY" | base64)
+    # Base64 encode the service account token
+    local encoded_key=$(echo -n "$PMM_TOKEN" | base64)
     
     # Patch the secret
     local error_output
@@ -1061,8 +1063,8 @@ fix_pmm_secret() {
         echo ""
         
         log_info "Try manually with:"
-        echo "  PMM_API_KEY='your-api-key-here'"
-        echo "  kubectl patch secret $secret_name -n $NAMESPACE --type=merge -p \"{\\\"data\\\":{\\\"pmmservertoken\\\":\\\"\$(echo -n \\\$PMM_API_KEY | base64)\\\"}}\""
+        echo "  PMM_TOKEN='your-service-account-token-here'"
+        echo "  kubectl patch secret $secret_name -n $NAMESPACE --type=merge -p \"{\\\"data\\\":{\\\"pmmservertoken\\\":\\\"\$(echo -n \\\$PMM_TOKEN | base64)\\\"}}\""
         echo ""
         
         return 1
@@ -1326,17 +1328,18 @@ run_summary_and_repair() {
             echo ""
             echo "    The secret '${CLUSTER_NAME}-pxc-db-secrets' MUST contain:"
             echo "      - Key: pmmservertoken (NOT pmmserverkey, NOT pmmserver)"
-            echo "      - Value: Base64-encoded PMM v3 API token (from PMM web UI)"
+            echo "      - Value: Base64-encoded PMM v3 service account token (from PMM web UI)"
             echo ""
             echo "    How to fix:"
-            echo "      1. Get your PMM v3 server API token:"
+            echo "      1. Get your PMM v3 service account token:"
             echo "         • Log into PMM v3 web UI"
-            echo "         • Navigate to Configuration → API Keys"
-            echo "         • Generate a new API key (or use existing)"
+            echo "         • Navigate to Configuration → Service Accounts"
+            echo "         • Create a new service account or use existing"
+            echo "         • Copy the service account token"
             echo ""
             echo "      2. Add the token to your cluster secret with the CORRECT key name:"
-            echo "         PMM_API_KEY='your-api-key-here'"
-            echo "         kubectl patch secret ${CLUSTER_NAME}-pxc-db-secrets -n $NAMESPACE --type=merge -p \"{\\\"data\\\":{\\\"pmmservertoken\\\":\\\"\$(echo -n \\\$PMM_API_KEY | base64)\\\"}}\""
+            echo "         PMM_TOKEN='your-service-account-token-here'"
+            echo "         kubectl patch secret ${CLUSTER_NAME}-pxc-db-secrets -n $NAMESPACE --type=merge -p \"{\\\"data\\\":{\\\"pmmservertoken\\\":\\\"\$(echo -n \\\$PMM_TOKEN | base64)\\\"}}\""
             echo ""
             echo "      3. Delete internal secret to trigger resync:"
             echo "         kubectl delete secret internal-${CLUSTER_NAME}-pxc-db -n $NAMESPACE"
