@@ -285,6 +285,38 @@ prompt_configuration() {
         exit 1
     fi
     
+    # Prompt for MinIO backup configuration
+    echo ""
+    log_info "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+    log_info "  MinIO Backup Configuration"
+    log_info "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+    echo ""
+    
+    read -p "Enter MinIO bucket name [default: percona-backups]: " minio_bucket
+    MINIO_BUCKET="${minio_bucket:-percona-backups}"
+    
+    # Prompt for MinIO credentials secret source namespace
+    read -p "Enter namespace containing 'myminio-creds' secret [default: minio-operator]: " minio_secret_namespace
+    MINIO_SECRET_NAMESPACE="${minio_secret_namespace:-minio-operator}"
+    
+    # Verify the secret exists in the source namespace
+    if ! kubectl get secret myminio-creds -n "$MINIO_SECRET_NAMESPACE" &> /dev/null; then
+        log_error "Secret 'myminio-creds' not found in namespace '$MINIO_SECRET_NAMESPACE'"
+        log_info "Available namespaces with secrets:"
+        kubectl get secrets --all-namespaces -o json 2>/dev/null | jq -r '.items[] | select(.metadata.name=="myminio-creds") | "  - \(.metadata.namespace)"' 2>/dev/null || echo "  (none found)"
+        echo ""
+        read -p "Enter correct namespace: " minio_secret_namespace_retry
+        MINIO_SECRET_NAMESPACE="${minio_secret_namespace_retry}"
+        
+        if [ -z "$MINIO_SECRET_NAMESPACE" ] || ! kubectl get secret myminio-creds -n "$MINIO_SECRET_NAMESPACE" &> /dev/null; then
+            log_error "Secret 'myminio-creds' not found. Cannot proceed without MinIO credentials."
+            exit 1
+        fi
+    fi
+    
+    log_success "Found 'myminio-creds' secret in namespace: $MINIO_SECRET_NAMESPACE"
+    echo ""
+    
     # Validate CPU resources will fit
     if [ -n "$RECOMMENDED_PXC_CPU" ] && [ -n "$RECOMMENDED_HAPROXY_CPU" ]; then
         # Calculate total CPU requests for the cluster
@@ -357,6 +389,8 @@ prompt_configuration() {
     echo "  - Storage Class: ${STORAGE_CLASS}"
     echo "  - PXC Version: ${PXC_VERSION}"
     echo "  - HAProxy: Operator-managed version"
+    echo "  - MinIO Bucket: ${MINIO_BUCKET}"
+    echo "  - MinIO Secret Source: ${MINIO_SECRET_NAMESPACE}"
     echo ""
     
     read -p "Proceed with installation? (yes/no): " confirm
@@ -487,28 +521,27 @@ install_operator() {
     log_success "Operator is ready"
 }
 
-# Create MinIO credentials secret for backups
+# Copy MinIO credentials secret from source namespace
 create_minio_secret() {
-    log_header "Creating MinIO Credentials Secret"
+    log_header "Copying MinIO Credentials Secret"
     
-    # Generate random credentials
-    local minio_access_key="minioadmin"
-    local minio_secret_key=$(openssl rand -base64 32 | tr -d '=+/' | cut -c1-32)
-    
-    # Check if secret already exists
-    if kubectl get secret percona-backup-minio -n "$NAMESPACE" &> /dev/null; then
-        log_warn "Secret percona-backup-minio already exists, skipping creation"
+    # Check if secret already exists in target namespace
+    if kubectl get secret myminio-creds -n "$NAMESPACE" &> /dev/null; then
+        log_warn "Secret 'myminio-creds' already exists in namespace '$NAMESPACE', skipping creation"
         return
     fi
     
-    kubectl create secret generic percona-backup-minio \
-        -n "$NAMESPACE" \
-        --from-literal=AWS_ACCESS_KEY_ID="$minio_access_key" \
-        --from-literal=AWS_SECRET_ACCESS_KEY="$minio_secret_key"
+    # Get the secret from source namespace and copy to target namespace
+    log_info "Copying 'myminio-creds' from namespace '$MINIO_SECRET_NAMESPACE' to '$NAMESPACE'..."
     
-    log_success "MinIO credentials secret created"
-    log_info "Access Key: $minio_access_key"
-    log_info "Secret Key: $minio_secret_key"
+    if kubectl get secret myminio-creds -n "$MINIO_SECRET_NAMESPACE" -o json | \
+       jq 'del(.metadata.namespace,.metadata.creationTimestamp,.metadata.resourceVersion,.metadata.selfLink,.metadata.uid)' | \
+       kubectl apply -n "$NAMESPACE" -f - &> /dev/null; then
+        log_success "MinIO credentials secret 'myminio-creds' copied successfully"
+    else
+        log_error "Failed to copy MinIO credentials secret"
+        exit 1
+    fi
 }
 
 # Generate Helm values
@@ -618,12 +651,12 @@ backup:
   storages:
     minio:
       type: s3
+      verifyTLS: false
       s3:
-        bucket: percona-backups
+        bucket: ${MINIO_BUCKET}
         region: us-east-1
-        endpointUrl: http://minio.minio.svc.cluster.local:9000
-        forcePathStyle: true
-        credentialsSecret: percona-backup-minio
+        endpointUrl: https://myminio-hl.minio-operator.svc.cluster.local:9000
+        credentialsSecret: myminio-creds
         
   schedule:
     - name: "daily-full-backup"
@@ -742,8 +775,26 @@ diagnose_pod_failures() {
     log_info "Checking for resource constraints..."
     local resource_events=$(kubectl get events -n "$namespace" --sort-by='.lastTimestamp' 2>/dev/null | grep -i "insufficient\|failedscheduling\|outof" | tail -5 || echo "")
     if [ -n "$resource_events" ]; then
-        log_error "Found resource constraint events:"
-        echo "$resource_events"
+        # Check if these are recent (last 5 minutes) or historical
+        local recent_events=$(kubectl get events -n "$namespace" --sort-by='.lastTimestamp' 2>/dev/null | \
+            awk -v now="$(date +%s)" '{
+                # Try to parse the AGE column (e.g., "5m", "2h", "3d")
+                age=$5; 
+                if (age ~ /^[0-9]+s$/) seconds = substr(age,1,length(age)-1)
+                else if (age ~ /^[0-9]+m$/) seconds = substr(age,1,length(age)-1) * 60
+                else if (age ~ /^[0-9]+h$/) seconds = substr(age,1,length(age)-1) * 3600
+                else seconds = 999999  # Old event
+                if (seconds <= 300) print $0  # Last 5 minutes
+            }' | grep -i "insufficient\|failedscheduling\|outof" || echo "")
+        
+        if [ -n "$recent_events" ]; then
+            log_error "Found RECENT resource constraint events (last 5 minutes):"
+            echo "$recent_events"
+        else
+            log_warn "Found resource constraint events (older than 5 minutes, likely resolved):"
+            echo "$resource_events"
+            log_info "These appear to be historical - pods eventually scheduled successfully"
+        fi
     else
         log_success "No resource constraint events found"
     fi
