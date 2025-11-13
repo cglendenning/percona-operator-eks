@@ -156,8 +156,8 @@ show_resources() {
         kubectl get pvc -n "$NAMESPACE" --no-headers 2>/dev/null | awk '{print "  - " $1 " (" $2 ", " $3 ")"}'
         echo ""
         
-        # Calculate total storage
-        local total_storage=$(kubectl get pvc -n "$NAMESPACE" --no-headers 2>/dev/null | awk '{print $3}' | sed 's/Gi//' | awk '{sum+=$1} END {print sum}')
+        # Calculate total storage (column 4 is CAPACITY)
+        local total_storage=$(kubectl get pvc -n "$NAMESPACE" --no-headers 2>/dev/null | awk '{print $4}' | sed 's/Gi//' | awk '{sum+=$1} END {print sum}')
         log_warn "Total storage: ${total_storage}Gi"
         
         # Show associated Persistent Volumes
