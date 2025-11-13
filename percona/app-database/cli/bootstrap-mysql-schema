@@ -1,0 +1,341 @@
+#!/usr/bin/env python3
+"""
+bootstrap-mysql-schema CLI
+
+A developer-friendly command-line tool to create MySQL databases and users
+through the DB Concierge operator.
+
+Usage:
+    bootstrap-mysql-schema --name myapp --namespace myapp-namespace
+    bootstrap-mysql-schema --name myapp --namespace myapp-namespace --cluster my-pxc-haproxy
+    bootstrap-mysql-schema --name myapp --namespace myapp-namespace --output-env
+"""
+
+import argparse
+import sys
+import time
+import json
+import subprocess
+import base64
+from typing import Dict, Any, Optional
+import yaml
+
+
+class Colors:
+    """Terminal colors for pretty output"""
+    HEADER = '\033[95m'
+    OKBLUE = '\033[94m'
+    OKCYAN = '\033[96m'
+    OKGREEN = '\033[92m'
+    WARNING = '\033[93m'
+    FAIL = '\033[91m'
+    ENDC = '\033[0m'
+    BOLD = '\033[1m'
+    UNDERLINE = '\033[4m'
+
+
+def run_kubectl(args: list) -> tuple[int, str, str]:
+    """Run kubectl command and return (returncode, stdout, stderr)"""
+    try:
+        result = subprocess.run(
+            ['kubectl'] + args,
+            capture_output=True,
+            text=True
+        )
+        return result.returncode, result.stdout, result.stderr
+    except FileNotFoundError:
+        print(f"{Colors.FAIL}Error: kubectl not found in PATH{Colors.ENDC}")
+        sys.exit(1)
+
+
+def get_current_namespace() -> str:
+    """Get current kubectl context namespace"""
+    rc, stdout, stderr = run_kubectl(['config', 'view', '--minify', '-o', 'jsonpath={..namespace}'])
+    if rc == 0 and stdout.strip():
+        return stdout.strip()
+    return 'default'
+
+
+def create_appdatabase(
+    name: str,
+    namespace: str,
+    cluster: str,
+    app_namespace: str,
+    secret_name: Optional[str] = None,
+    deletion_policy: str = 'Retain',
+    operator_namespace: str = 'db-concierge'
+) -> Dict[str, Any]:
+    """Create AppDatabase resource"""
+    
+    resource = {
+        'apiVersion': 'db.stillwaters.io/v1',
+        'kind': 'AppDatabase',
+        'metadata': {
+            'name': name,
+            'namespace': operator_namespace
+        },
+        'spec': {
+            'clusterRef': cluster,
+            'dbName': name,
+            'appNamespace': app_namespace,
+            'deletionPolicy': deletion_policy
+        }
+    }
+    
+    if secret_name:
+        resource['spec']['secretName'] = secret_name
+    
+    return resource
+
+
+def apply_resource(resource: Dict[str, Any]) -> bool:
+    """Apply Kubernetes resource via kubectl"""
+    yaml_str = yaml.dump(resource)
+    
+    result = subprocess.run(
+        ['kubectl', 'apply', '-f', '-'],
+        input=yaml_str,
+        capture_output=True,
+        text=True
+    )
+    
+    if result.returncode != 0:
+        print(f"{Colors.FAIL}Failed to apply resource:{Colors.ENDC}")
+        print(result.stderr)
+        return False
+    
+    print(result.stdout)
+    return True
+
+
+def wait_for_ready(name: str, namespace: str, timeout: int = 120) -> Optional[Dict[str, Any]]:
+    """Wait for AppDatabase to reach Ready phase"""
+    start_time = time.time()
+    
+    print(f"\n{Colors.OKCYAN}Waiting for database provisioning...{Colors.ENDC}")
+    
+    while time.time() - start_time < timeout:
+        rc, stdout, stderr = run_kubectl([
+            'get', 'appdatabase', name,
+            '-n', namespace,
+            '-o', 'json'
+        ])
+        
+        if rc == 0:
+            try:
+                resource = json.loads(stdout)
+                status = resource.get('status', {})
+                phase = status.get('phase', 'Unknown')
+                message = status.get('message', '')
+                
+                if phase == 'Ready':
+                    print(f"{Colors.OKGREEN}✓ Database provisioned successfully!{Colors.ENDC}")
+                    return resource
+                elif phase == 'Failed':
+                    print(f"{Colors.FAIL}✗ Database provisioning failed: {message}{Colors.ENDC}")
+                    return None
+                else:
+                    print(f"  Status: {phase} - {message}", end='\r')
+                    
+            except json.JSONDecodeError:
+                pass
+        
+        time.sleep(5)
+    
+    print(f"\n{Colors.WARNING}Timeout waiting for database to be ready{Colors.ENDC}")
+    return None
+
+
+def get_secret(name: str, namespace: str) -> Optional[Dict[str, str]]:
+    """Retrieve secret data"""
+    rc, stdout, stderr = run_kubectl([
+        'get', 'secret', name,
+        '-n', namespace,
+        '-o', 'json'
+    ])
+    
+    if rc != 0:
+        return None
+    
+    try:
+        secret = json.loads(stdout)
+        data = secret.get('data', {})
+        
+        # Decode base64 values
+        decoded = {}
+        for key, value in data.items():
+            decoded[key] = base64.b64decode(value).decode('utf-8')
+        
+        return decoded
+    except (json.JSONDecodeError, KeyError):
+        return None
+
+
+def print_env_output(secret_data: Dict[str, str], db_name: str):
+    """Print environment variable format"""
+    print(f"\n{Colors.HEADER}Environment Variables:{Colors.ENDC}")
+    print(f"export MYSQL_HOST={secret_data.get('host', '')}")
+    print(f"export MYSQL_PORT={secret_data.get('port', '3306')}")
+    print(f"export MYSQL_USER={secret_data.get('username', '')}")
+    print(f"export MYSQL_PASSWORD={secret_data.get('password', '')}")
+    print(f"export MYSQL_DATABASE={db_name}")
+    print(f"export MYSQL_URL={secret_data.get('connection-string', '')}")
+
+
+def print_connection_info(secret_data: Dict[str, str], secret_name: str, app_namespace: str, db_name: str):
+    """Print connection information"""
+    print(f"\n{Colors.OKGREEN}{Colors.BOLD}Database Created Successfully!{Colors.ENDC}")
+    print(f"\n{Colors.HEADER}Database Information:{Colors.ENDC}")
+    print(f"  Database Name: {Colors.BOLD}{db_name}{Colors.ENDC}")
+    print(f"  Username:      {secret_data.get('username', 'N/A')}")
+    print(f"  Host:          {secret_data.get('host', 'N/A')}")
+    print(f"  Port:          {secret_data.get('port', '3306')}")
+    
+    print(f"\n{Colors.HEADER}Kubernetes Secret:{Colors.ENDC}")
+    print(f"  Name:      {secret_name}")
+    print(f"  Namespace: {app_namespace}")
+    
+    print(f"\n{Colors.HEADER}Access the secret:{Colors.ENDC}")
+    print(f"  kubectl get secret {secret_name} -n {app_namespace} -o yaml")
+    
+    print(f"\n{Colors.HEADER}Connect to MySQL:{Colors.ENDC}")
+    print(f"  mysql -h {secret_data.get('host', '')} \\")
+    print(f"        -P {secret_data.get('port', '3306')} \\")
+    print(f"        -u {secret_data.get('username', '')} \\")
+    print(f"        -p{secret_data.get('password', '')} \\")
+    print(f"        {db_name}")
+    
+    print(f"\n{Colors.HEADER}Use in your application:{Colors.ENDC}")
+    print(f"  Add this to your Deployment/StatefulSet:")
+    print(f"""
+  env:
+    - name: MYSQL_HOST
+      valueFrom:
+        secretKeyRef:
+          name: {secret_name}
+          key: host
+    - name: MYSQL_PORT
+      valueFrom:
+        secretKeyRef:
+          name: {secret_name}
+          key: port
+    - name: MYSQL_USER
+      valueFrom:
+        secretKeyRef:
+          name: {secret_name}
+          key: username
+    - name: MYSQL_PASSWORD
+      valueFrom:
+        secretKeyRef:
+          name: {secret_name}
+          key: password
+    - name: MYSQL_DATABASE
+      valueFrom:
+        secretKeyRef:
+          name: {secret_name}
+          key: database
+""")
+
+
+def main():
+    parser = argparse.ArgumentParser(
+        description='Bootstrap MySQL schema and user via DB Concierge operator',
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+  # Create database and user for 'wookie' app
+  bootstrap-mysql-schema --name wookie --namespace wookie
+  
+  # Specify a custom PXC cluster
+  bootstrap-mysql-schema --name myapp --namespace myapp --cluster my-pxc-haproxy
+  
+  # Output as environment variables
+  bootstrap-mysql-schema --name myapp --namespace myapp --output-env
+  
+  # Use Retain deletion policy (default - keeps DB when AppDatabase is deleted)
+  bootstrap-mysql-schema --name myapp --namespace myapp --deletion-policy Retain
+  
+  # Use Delete policy (WARNING: DB will be dropped when AppDatabase is deleted)
+  bootstrap-mysql-schema --name myapp --namespace myapp --deletion-policy Delete
+        """
+    )
+    
+    parser.add_argument('--name', required=True, help='Database name (also used as AppDatabase resource name)')
+    parser.add_argument('--namespace', required=True, help='Namespace where the secret will be created')
+    parser.add_argument('--cluster', help='PXC cluster service name (e.g., my-pxc-haproxy)', 
+                       default='cluster1-haproxy')
+    parser.add_argument('--secret-name', help='Custom secret name (defaults to {name}-mysql-creds)')
+    parser.add_argument('--deletion-policy', choices=['Retain', 'Delete'], default='Retain',
+                       help='What to do with database when AppDatabase is deleted (default: Retain)')
+    parser.add_argument('--operator-namespace', default='db-concierge',
+                       help='Namespace where DB Concierge operator is running')
+    parser.add_argument('--output-env', action='store_true',
+                       help='Output credentials as environment variables')
+    parser.add_argument('--no-wait', action='store_true',
+                       help='Do not wait for database to be ready')
+    
+    args = parser.parse_args()
+    
+    # Validate name (must be valid for MySQL and Kubernetes)
+    if not args.name.replace('_', '').replace('-', '').isalnum():
+        print(f"{Colors.FAIL}Error: Name must contain only alphanumeric characters, hyphens, and underscores{Colors.ENDC}")
+        sys.exit(1)
+    
+    secret_name = args.secret_name or f"{args.name}-mysql-creds"
+    
+    print(f"{Colors.HEADER}{Colors.BOLD}DB Concierge - Bootstrap MySQL Schema{Colors.ENDC}")
+    print(f"{Colors.OKCYAN}Creating database: {args.name}{Colors.ENDC}")
+    print(f"{Colors.OKCYAN}Target namespace: {args.namespace}{Colors.ENDC}")
+    print(f"{Colors.OKCYAN}PXC cluster:      {args.cluster}{Colors.ENDC}")
+    print(f"{Colors.OKCYAN}Deletion policy:  {args.deletion_policy}{Colors.ENDC}\n")
+    
+    # Create AppDatabase resource
+    resource = create_appdatabase(
+        name=args.name,
+        namespace=args.namespace,
+        cluster=args.cluster,
+        app_namespace=args.namespace,
+        secret_name=secret_name,
+        deletion_policy=args.deletion_policy,
+        operator_namespace=args.operator_namespace
+    )
+    
+    if not apply_resource(resource):
+        sys.exit(1)
+    
+    if args.no_wait:
+        print(f"\n{Colors.WARNING}Not waiting for database to be ready (--no-wait specified){Colors.ENDC}")
+        print(f"Check status with: kubectl get appdatabase {args.name} -n {args.operator_namespace}")
+        sys.exit(0)
+    
+    # Wait for database to be ready
+    result = wait_for_ready(args.name, args.operator_namespace)
+    
+    if not result:
+        print(f"\n{Colors.FAIL}Failed to provision database. Check operator logs:{Colors.ENDC}")
+        print(f"  kubectl logs -n {args.operator_namespace} -l app.kubernetes.io/name=db-concierge-operator")
+        sys.exit(1)
+    
+    # Get the created secret
+    status = result.get('status', {})
+    actual_secret_name = status.get('secretName', secret_name)
+    
+    print(f"\n{Colors.OKCYAN}Retrieving credentials...{Colors.ENDC}")
+    secret_data = get_secret(actual_secret_name, args.namespace)
+    
+    if not secret_data:
+        print(f"{Colors.WARNING}Warning: Could not retrieve secret {actual_secret_name} from namespace {args.namespace}{Colors.ENDC}")
+        print(f"The database was created, but you'll need to retrieve the secret manually.")
+        sys.exit(0)
+    
+    if args.output_env:
+        print_env_output(secret_data, args.name)
+    else:
+        print_connection_info(secret_data, actual_secret_name, args.namespace, args.name)
+    
+    print(f"\n{Colors.OKGREEN}Done!{Colors.ENDC}\n")
+
+
+if __name__ == '__main__':
+    main()
+

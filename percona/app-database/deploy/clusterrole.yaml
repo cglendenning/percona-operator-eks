@@ -1,0 +1,57 @@
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: db-concierge-operator
+  labels:
+    app.kubernetes.io/name: db-concierge-operator
+rules:
+  # AppDatabase CRD permissions
+  - apiGroups:
+      - db.stillwaters.io
+    resources:
+      - appdatabases
+    verbs:
+      - get
+      - list
+      - watch
+      - patch
+      - update
+  - apiGroups:
+      - db.stillwaters.io
+    resources:
+      - appdatabases/status
+    verbs:
+      - get
+      - patch
+      - update
+  
+  # Secret management across all namespaces (needed to create secrets in app namespaces)
+  - apiGroups:
+      - ""
+    resources:
+      - secrets
+    verbs:
+      - get
+      - list
+      - create
+      - update
+      - patch
+  
+  # Namespace read access (to validate app namespaces exist)
+  - apiGroups:
+      - ""
+    resources:
+      - namespaces
+    verbs:
+      - get
+      - list
+  
+  # Events for logging and debugging
+  - apiGroups:
+      - ""
+    resources:
+      - events
+    verbs:
+      - create
+      - patch
+

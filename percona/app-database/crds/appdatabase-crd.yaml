@@ -1,0 +1,104 @@
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: appdatabases.db.stillwaters.io
+spec:
+  group: db.stillwaters.io
+  versions:
+    - name: v1
+      served: true
+      storage: true
+      schema:
+        openAPIV3Schema:
+          type: object
+          properties:
+            spec:
+              type: object
+              required:
+                - clusterRef
+                - dbName
+                - appNamespace
+              properties:
+                clusterRef:
+                  type: string
+                  description: "Name of the PXC cluster service (e.g., wookie-pxc-haproxy)"
+                dbName:
+                  type: string
+                  description: "MySQL database/schema name"
+                  pattern: '^[a-zA-Z0-9_]+$'
+                appNamespace:
+                  type: string
+                  description: "Target namespace where the secret will be created"
+                secretName:
+                  type: string
+                  description: "Name of the k8s Secret to create (defaults to {dbName}-mysql-creds)"
+                charset:
+                  type: string
+                  description: "Character set for the database"
+                  default: utf8mb4
+                collation:
+                  type: string
+                  description: "Collation for the database"
+                  default: utf8mb4_unicode_ci
+                deletionPolicy:
+                  type: string
+                  description: "What to do when the AppDatabase is deleted (Retain or Delete)"
+                  enum:
+                    - Retain
+                    - Delete
+                  default: Retain
+                userName:
+                  type: string
+                  description: "MySQL username (auto-generated if not provided)"
+                  pattern: '^[a-zA-Z0-9_]+$'
+            status:
+              type: object
+              properties:
+                phase:
+                  type: string
+                  description: "Current phase: Pending, Creating, Ready, Failed"
+                  enum:
+                    - Pending
+                    - Creating
+                    - Ready
+                    - Failed
+                message:
+                  type: string
+                  description: "Human-readable status message"
+                userName:
+                  type: string
+                  description: "The MySQL username that was created"
+                secretName:
+                  type: string
+                  description: "The k8s Secret name that was created"
+                connectionString:
+                  type: string
+                  description: "Connection string template for the database"
+                lastReconcileTime:
+                  type: string
+                  format: date-time
+                  description: "Last time the resource was reconciled"
+      subresources:
+        status: {}
+      additionalPrinterColumns:
+        - name: Database
+          type: string
+          jsonPath: .spec.dbName
+        - name: Namespace
+          type: string
+          jsonPath: .spec.appNamespace
+        - name: Phase
+          type: string
+          jsonPath: .status.phase
+        - name: Age
+          type: date
+          jsonPath: .metadata.creationTimestamp
+  scope: Namespaced
+  names:
+    plural: appdatabases
+    singular: appdatabase
+    kind: AppDatabase
+    shortNames:
+      - appdb
+      - adbs
+

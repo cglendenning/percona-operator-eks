@@ -1,0 +1,57 @@
+# RBAC for developers to create AppDatabase resources in their namespaces
+# This allows devs to request databases without needing cluster admin access
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: appdatabase-creator
+  labels:
+    app.kubernetes.io/name: db-concierge-operator
+    app.kubernetes.io/component: developer-access
+rules:
+  # Allow creating and viewing AppDatabase resources
+  - apiGroups:
+      - db.stillwaters.io
+    resources:
+      - appdatabases
+    verbs:
+      - get
+      - list
+      - watch
+      - create
+      - update
+      - patch
+      - delete
+  
+  # Allow viewing status
+  - apiGroups:
+      - db.stillwaters.io
+    resources:
+      - appdatabases/status
+    verbs:
+      - get
+
+---
+# Example RoleBinding for a development team
+# Create one of these per team/namespace as needed
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: developers-can-create-databases
+  namespace: default  # Change to your dev namespace
+  labels:
+    app.kubernetes.io/name: db-concierge-operator
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: appdatabase-creator
+subjects:
+  # Add your developer users or service accounts here
+  - kind: User
+    name: developer@example.com
+    apiGroup: rbac.authorization.k8s.io
+  # Or grant to all authenticated users in the namespace (less secure)
+  # - kind: Group
+  #   name: system:authenticated
+  #   apiGroup: rbac.authorization.k8s.io
+

@@ -1,0 +1,51 @@
+# Example Helm values.yaml showing how to integrate DB Concierge
+# into your application Helm charts
+
+# values.yaml
+database:
+  # Enable database creation via DB Concierge
+  create: true
+  
+  # Database name (defaults to release name if not specified)
+  name: ""
+  
+  # PXC cluster to use
+  clusterRef: cluster1-haproxy
+  
+  # Operator namespace
+  operatorNamespace: db-concierge
+  
+  # What to do when the Helm release is deleted
+  deletionPolicy: Retain  # or Delete
+  
+  # Optional: custom secret name
+  # secretName: custom-db-creds
+  
+  # Optional: custom MySQL username
+  # userName: custom_user
+
+# Then in your chart templates/appdatabase.yaml:
+# ---
+# {{- if .Values.database.create }}
+# apiVersion: db.stillwaters.io/v1
+# kind: AppDatabase
+# metadata:
+#   name: {{ .Values.database.name | default .Release.Name }}
+#   namespace: {{ .Values.database.operatorNamespace }}
+#   labels:
+#     app.kubernetes.io/name: {{ include "myapp.name" . }}
+#     app.kubernetes.io/instance: {{ .Release.Name }}
+#     app.kubernetes.io/managed-by: {{ .Release.Service }}
+# spec:
+#   clusterRef: {{ .Values.database.clusterRef }}
+#   dbName: {{ .Values.database.name | default .Release.Name }}
+#   appNamespace: {{ .Release.Namespace }}
+#   {{- if .Values.database.secretName }}
+#   secretName: {{ .Values.database.secretName }}
+#   {{- end }}
+#   {{- if .Values.database.userName }}
+#   userName: {{ .Values.database.userName }}
+#   {{- end }}
+#   deletionPolicy: {{ .Values.database.deletionPolicy }}
+# {{- end }}
+

@@ -1,0 +1,45 @@
+# Example AppDatabase for the "wookie" application
+# This creates a MySQL database named "wookie" with a dedicated user
+apiVersion: db.stillwaters.io/v1
+kind: AppDatabase
+metadata:
+  name: wookie
+  namespace: db-concierge
+  labels:
+    app: wookie
+    team: engineering
+spec:
+  # The PXC cluster service to connect to
+  # This should be the HAProxy service name from your PXC cluster
+  clusterRef: cluster1-haproxy
+  
+  # The MySQL database/schema name to create
+  dbName: wookie
+  
+  # The Kubernetes namespace where the secret will be placed
+  appNamespace: wookie
+  
+  # Optional: custom secret name (defaults to {dbName}-mysql-creds)
+  secretName: wookie-mysql-creds
+  
+  # Optional: MySQL user name (defaults to {dbName}_app)
+  # userName: wookie_service
+  
+  # Database character set (optional, defaults to utf8mb4)
+  charset: utf8mb4
+  
+  # Database collation (optional, defaults to utf8mb4_unicode_ci)
+  collation: utf8mb4_unicode_ci
+  
+  # What to do when this AppDatabase resource is deleted
+  # - Retain: Keep the database and user (safe, default)
+  # - Delete: Drop the database and user (DANGEROUS!)
+  deletionPolicy: Retain
+
+---
+# The namespace where your application runs
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: wookie
+

@@ -1,0 +1,65 @@
+# Example showing multiple applications each with their own database
+# This demonstrates the separation of concerns:
+# - Each app gets its own database
+# - Each app gets its own user with scoped permissions
+# - Each app's secret lives in its own namespace
+---
+apiVersion: db.stillwaters.io/v1
+kind: AppDatabase
+metadata:
+  name: frontend
+  namespace: db-concierge
+  labels:
+    app: frontend
+    team: web
+spec:
+  clusterRef: cluster1-haproxy
+  dbName: frontend
+  appNamespace: frontend
+  deletionPolicy: Retain
+
+---
+apiVersion: db.stillwaters.io/v1
+kind: AppDatabase
+metadata:
+  name: backend-api
+  namespace: db-concierge
+  labels:
+    app: backend-api
+    team: api
+spec:
+  clusterRef: cluster1-haproxy
+  dbName: backend_api
+  appNamespace: backend
+  deletionPolicy: Retain
+
+---
+apiVersion: db.stillwaters.io/v1
+kind: AppDatabase
+metadata:
+  name: analytics
+  namespace: db-concierge
+  labels:
+    app: analytics
+    team: data
+spec:
+  clusterRef: cluster1-haproxy
+  dbName: analytics
+  appNamespace: analytics
+  deletionPolicy: Retain
+
+---
+apiVersion: db.stillwaters.io/v1
+kind: AppDatabase
+metadata:
+  name: jobs
+  namespace: db-concierge
+  labels:
+    app: background-jobs
+    team: platform
+spec:
+  clusterRef: cluster1-haproxy
+  dbName: jobs
+  appNamespace: jobs
+  deletionPolicy: Retain
+

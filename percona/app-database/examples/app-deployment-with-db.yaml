@@ -1,0 +1,104 @@
+# Complete example showing how an application uses the database
+# created by the DB Concierge operator
+---
+# 1. Create the namespace
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: myapp
+
+---
+# 2. Request database creation via AppDatabase CRD
+apiVersion: db.stillwaters.io/v1
+kind: AppDatabase
+metadata:
+  name: myapp
+  namespace: db-concierge
+spec:
+  clusterRef: cluster1-haproxy
+  dbName: myapp
+  appNamespace: myapp
+  deletionPolicy: Retain
+
+---
+# 3. Deploy your application that uses the database
+# The secret will be created by the operator in the myapp namespace
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: myapp
+  namespace: myapp
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: myapp
+  template:
+    metadata:
+      labels:
+        app: myapp
+    spec:
+      containers:
+        - name: app
+          image: myapp:latest
+          ports:
+            - containerPort: 8080
+          env:
+            # Database credentials from the secret created by DB Concierge
+            - name: DB_HOST
+              valueFrom:
+                secretKeyRef:
+                  name: myapp-mysql-creds
+                  key: host
+            - name: DB_PORT
+              valueFrom:
+                secretKeyRef:
+                  name: myapp-mysql-creds
+                  key: port
+            - name: DB_NAME
+              valueFrom:
+                secretKeyRef:
+                  name: myapp-mysql-creds
+                  key: database
+            - name: DB_USER
+              valueFrom:
+                secretKeyRef:
+                  name: myapp-mysql-creds
+                  key: username
+            - name: DB_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: myapp-mysql-creds
+                  key: password
+            
+            # Or use the full connection string
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: myapp-mysql-creds
+                  key: connection-string
+          
+          # Optional: Init container to wait for database
+          # initContainers:
+          #   - name: wait-for-db
+          #     image: busybox:1.35
+          #     command:
+          #       - sh
+          #       - -c
+          #       - |
+          #         until nc -z $DB_HOST $DB_PORT; do
+          #           echo "Waiting for database..."
+          #           sleep 2
+          #         done
+          #     env:
+          #       - name: DB_HOST
+          #         valueFrom:
+          #           secretKeyRef:
+          #             name: myapp-mysql-creds
+          #             key: host
+          #       - name: DB_PORT
+          #         valueFrom:
+          #           secretKeyRef:
+          #             name: myapp-mysql-creds
+          #             key: port
+

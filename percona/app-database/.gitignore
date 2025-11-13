@@ -1,0 +1,46 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg
+*.egg-info/
+dist/
+build/
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
+.venv/
+venv/
+ENV/
+env/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Kubernetes
+kubeconfig
+*.kubeconfig
+
+# Secrets (don't commit these!)
+*secret*.yaml
+*.key
+*.crt
+*.pem
+
+# But keep template files
+!operator-secret.yaml
+
+# Docker
+*.log
+
+# Backup files
+*.bak
+*.backup
