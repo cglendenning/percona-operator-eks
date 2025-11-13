@@ -161,14 +161,18 @@ run_diagnostics() {
     fi
     
     local pmm_enabled=$(kubectl get perconaxtradbcluster "$pxc_resource" -n "$NAMESPACE" -o jsonpath='{.spec.pmm.enabled}' 2>/dev/null || echo "false")
-    local pmm_image_repo=$(kubectl get perconaxtradbcluster "$pxc_resource" -n "$NAMESPACE" -o jsonpath='{.spec.pmm.image.repository}' 2>/dev/null || echo "")
-    local pmm_image_tag=$(kubectl get perconaxtradbcluster "$pxc_resource" -n "$NAMESPACE" -o jsonpath='{.spec.pmm.image.tag}' 2>/dev/null || echo "")
+    local pmm_image=$(kubectl get perconaxtradbcluster "$pxc_resource" -n "$NAMESPACE" -o jsonpath='{.spec.pmm.image}' 2>/dev/null || echo "")
     local pmm_server_host=$(kubectl get perconaxtradbcluster "$pxc_resource" -n "$NAMESPACE" -o jsonpath='{.spec.pmm.serverHost}' 2>/dev/null || echo "")
+    
+    # Extract version from image string (format: repository:tag)
+    local pmm_image_tag=""
+    if [ -n "$pmm_image" ]; then
+        pmm_image_tag=$(echo "$pmm_image" | sed 's/.*://')
+    fi
     
     log_info "PMM Configuration in PXC spec:"
     echo "  Enabled: ${pmm_enabled}"
-    echo "  Image Repository: ${pmm_image_repo:-<not set>}"
-    echo "  Image Tag: ${pmm_image_tag:-<not set>}"
+    echo "  Image: ${pmm_image:-<not set>}"
     echo "  Server Host: ${pmm_server_host:-<not set>}"
     echo ""
     
@@ -445,8 +449,7 @@ enable_pmm() {
     
     log_info "Applying new spec.pmm configuration to PXC cluster:"
     echo "  enabled: true"
-    echo "  image.repository: percona/pmm-client"
-    echo "  image.tag: $EXPECTED_VERSION"
+    echo "  image: percona/pmm-client:$EXPECTED_VERSION"
     echo "  serverHost: $PMM_SERVICE  ← PMM client will connect to this service"
     echo "  resources:"
     echo "    requests: cpu=50m, memory=64Mi"
@@ -459,10 +462,7 @@ enable_pmm() {
       "spec": {
         "pmm": {
           "enabled": true,
-          "image": {
-            "repository": "percona/pmm-client",
-            "tag": "'$EXPECTED_VERSION'"
-          },
+          "image": "percona/pmm-client:'$EXPECTED_VERSION'",
           "serverHost": "'$PMM_SERVICE'",
           "resources": {
             "requests": {
@@ -487,14 +487,14 @@ enable_pmm() {
         # Verify the patch was applied
         log_info "Verifying PMM configuration..."
         local new_enabled=$(kubectl get perconaxtradbcluster "$PXC_RESOURCE" -n "$NAMESPACE" -o jsonpath='{.spec.pmm.enabled}' 2>/dev/null || echo "false")
-        local new_version=$(kubectl get perconaxtradbcluster "$PXC_RESOURCE" -n "$NAMESPACE" -o jsonpath='{.spec.pmm.image.tag}' 2>/dev/null || echo "")
+        local new_image=$(kubectl get perconaxtradbcluster "$PXC_RESOURCE" -n "$NAMESPACE" -o jsonpath='{.spec.pmm.image}' 2>/dev/null || echo "")
         
-        if [ "$new_enabled" = "true" ] && [ "$new_version" = "$EXPECTED_VERSION" ]; then
+        if [ "$new_enabled" = "true" ] && [ "$new_image" = "percona/pmm-client:$EXPECTED_VERSION" ]; then
             log_success "✓ PMM configuration verified in cluster spec"
         else
             log_warn "⚠ PMM configuration may not have been fully applied"
             log_warn "  enabled: $new_enabled (expected: true)"
-            log_warn "  version: $new_version (expected: $EXPECTED_VERSION)"
+            log_warn "  image: $new_image (expected: percona/pmm-client:$EXPECTED_VERSION)"
         fi
         
         return 0
@@ -524,24 +524,21 @@ enable_pmm() {
 }
 
 fix_version() {
-    log_info "Updating PMM client version in PXC cluster spec.pmm.image.tag..."
+    log_info "Updating PMM client image in PXC cluster spec.pmm.image..."
     log_info "This ONLY changes PXC cluster configuration - does NOT modify PMM namespace"
     echo ""
     
     # Show current version
-    local current_version=$(kubectl get perconaxtradbcluster "$PXC_RESOURCE" -n "$NAMESPACE" -o jsonpath='{.spec.pmm.image.tag}' 2>/dev/null || echo "unknown")
-    log_info "Current spec.pmm.image.tag: $current_version"
-    log_info "Target spec.pmm.image.tag: $EXPECTED_VERSION"
+    local current_image=$(kubectl get perconaxtradbcluster "$PXC_RESOURCE" -n "$NAMESPACE" -o jsonpath='{.spec.pmm.image}' 2>/dev/null || echo "unknown")
+    log_info "Current spec.pmm.image: $current_image"
+    log_info "Target spec.pmm.image: percona/pmm-client:$EXPECTED_VERSION"
     log_info "Resource being patched: perconaxtradbcluster/$PXC_RESOURCE in namespace $NAMESPACE"
     echo ""
     
     local patch='{
       "spec": {
         "pmm": {
-          "image": {
-            "repository": "percona/pmm-client",
-            "tag": "'$EXPECTED_VERSION'"
-          }
+          "image": "percona/pmm-client:'$EXPECTED_VERSION'"
         }
       }
     }'
@@ -553,11 +550,11 @@ fix_version() {
         VERSION_MISMATCH=false
         
         # Verify the patch was applied
-        local new_version=$(kubectl get perconaxtradbcluster "$PXC_RESOURCE" -n "$NAMESPACE" -o jsonpath='{.spec.pmm.image.tag}' 2>/dev/null || echo "")
-        if [ "$new_version" = "$EXPECTED_VERSION" ]; then
-            log_success "✓ Version update verified: $new_version"
+        local new_image=$(kubectl get perconaxtradbcluster "$PXC_RESOURCE" -n "$NAMESPACE" -o jsonpath='{.spec.pmm.image}' 2>/dev/null || echo "")
+        if [ "$new_image" = "percona/pmm-client:$EXPECTED_VERSION" ]; then
+            log_success "✓ Image update verified: $new_image"
         else
-            log_warn "⚠ Version may not have been updated (current: $new_version)"
+            log_warn "⚠ Image may not have been updated (current: $new_image)"
         fi
         
         return 0
