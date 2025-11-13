@@ -298,72 +298,43 @@ uninstall_helm_releases() {
     log_info "Helm cleanup phase complete - proceeding with aggressive resource deletion"
 }
 
-# Clean up cluster-wide operator resources (SAFELY)
+# Cluster-wide resources are NOT deleted for safety
 cleanup_operator_resources() {
-    log_header "Checking Cluster-Wide Operator Resources"
+    log_header "Cluster-Wide Resources - Safety Policy"
     
-    # SAFETY CHECK: Find ALL Percona Operator installations across ALL namespaces
-    local other_operators=$(helm list -A --filter "percona-operator" -o json 2>/dev/null | \
-        jq -r '.[] | select(.namespace != "'"$NAMESPACE"'") | .namespace' 2>/dev/null || echo "")
-    
-    if [ -n "$other_operators" ]; then
-        log_warn "Found Percona Operator installations in other namespaces:"
-        echo "$other_operators" | while read -r ns; do
-            if [ -n "$ns" ]; then
-                log_warn "  - $ns"
-            fi
-        done
-        echo ""
-        log_info "Cluster-wide resources (ClusterRole, ClusterRoleBinding, Webhooks) are SHARED"
-        log_info "across all namespaces. They will NOT be deleted to avoid breaking other installations."
-        log_info ""
-        log_info "To clean up cluster-wide resources, uninstall ALL Percona Operators first."
-        return
-    fi
-    
-    # No other installations found - safe to delete cluster-wide resources
-    log_info "No other Percona Operator installations found in cluster."
-    log_warn "Cluster-wide resources will be deleted:"
-    log_warn "  - ClusterRole: percona-operator-pxc-operator"
-    log_warn "  - ClusterRoleBinding: percona-operator-pxc-operator"
-    log_warn "  - ValidatingWebhookConfiguration: percona-xtradbcluster-webhook"
-    log_warn "  - MutatingWebhookConfiguration: percona-xtradbcluster-webhook"
+    log_info "This uninstall script ONLY removes resources in namespace: $NAMESPACE"
+    log_info ""
+    log_info "Cluster-wide resources (ClusterRole, ClusterRoleBinding, CRDs, Webhooks)"
+    log_info "are NEVER deleted to ensure safety in multi-tenant environments."
+    log_info ""
+    log_info "These resources are:"
+    log_info "  ✓ Shared across all Percona installations"
+    log_info "  ✓ Namespace-specific (e.g., percona-operator-${NAMESPACE}-pxc-operator)"
+    log_info "  ✓ Harmless when left behind (do not consume resources)"
+    log_info "  ✓ Required by the operator's unique release per namespace design"
     echo ""
     
-    read -p "Delete cluster-wide operator resources? (yes/no): " confirm_cluster_cleanup
+    # Show which cluster-wide resources exist for this namespace
+    local release_name="percona-operator-${NAMESPACE}"
+    local found_resources=false
     
-    if [ "$confirm_cluster_cleanup" != "yes" ]; then
-        log_info "Skipping cluster-wide resource cleanup"
-        return
+    if kubectl get clusterrole "${release_name}-pxc-operator" &>/dev/null; then
+        log_info "Found ClusterRole: ${release_name}-pxc-operator (will remain)"
+        found_resources=true
     fi
     
-    log_info "Removing cluster-wide resources..."
-    
-    # Delete ClusterRole
-    if kubectl get clusterrole percona-operator-pxc-operator &>/dev/null; then
-        timeout 30 kubectl delete clusterrole percona-operator-pxc-operator 2>/dev/null || true
-        log_success "Deleted ClusterRole: percona-operator-pxc-operator"
+    if kubectl get clusterrolebinding "${release_name}-pxc-operator" &>/dev/null; then
+        log_info "Found ClusterRoleBinding: ${release_name}-pxc-operator (will remain)"
+        found_resources=true
     fi
     
-    # Delete ClusterRoleBinding
-    if kubectl get clusterrolebinding percona-operator-pxc-operator &>/dev/null; then
-        timeout 30 kubectl delete clusterrolebinding percona-operator-pxc-operator 2>/dev/null || true
-        log_success "Deleted ClusterRoleBinding: percona-operator-pxc-operator"
+    if [ "$found_resources" = false ]; then
+        log_info "No namespace-specific cluster-wide resources found."
     fi
     
-    # Delete ValidatingWebhookConfiguration
-    if kubectl get validatingwebhookconfiguration percona-xtradbcluster-webhook &>/dev/null; then
-        timeout 30 kubectl delete validatingwebhookconfiguration percona-xtradbcluster-webhook 2>/dev/null || true
-        log_success "Deleted ValidatingWebhookConfiguration: percona-xtradbcluster-webhook"
-    fi
-    
-    # Delete MutatingWebhookConfiguration
-    if kubectl get mutatingwebhookconfiguration percona-xtradbcluster-webhook &>/dev/null; then
-        timeout 30 kubectl delete mutatingwebhookconfiguration percona-xtradbcluster-webhook 2>/dev/null || true
-        log_success "Deleted MutatingWebhookConfiguration: percona-xtradbcluster-webhook"
-    fi
-    
-    log_success "Cluster-wide operator resources cleaned up"
+    echo ""
+    log_success "Namespace-scoped resources will be completely removed"
+    log_success "Cluster-wide resources will remain (safe for multi-namespace setups)"
 }
 
 # Delete PXC custom resources
@@ -493,11 +464,12 @@ diagnose_stuck_resources() {
     log_warn "Diagnosing what's blocking deletion..."
     echo ""
     
-    # Check volumeattachments
+    # Check volumeattachments (informational - these are cluster-scoped and safe to leave)
     local va_count=$(kubectl get volumeattachments --no-headers 2>/dev/null | grep -c "$NAMESPACE" || echo "0")
     if [ "$va_count" -gt 0 ]; then
-        echo -e "${YELLOW}[BLOCKING]${NC} $va_count VolumeAttachment(s) still present:"
+        echo -e "${BLUE}[INFO]${NC} $va_count VolumeAttachment(s) exist - will auto-clean:"
         kubectl get volumeattachments --no-headers 2>/dev/null | grep "$NAMESPACE" | awk '{print "  - " $1}' || true
+        echo "  (These are cluster-scoped and will be cleaned up automatically by Kubernetes)"
     fi
     
     # Check PVCs
@@ -532,20 +504,24 @@ diagnose_stuck_resources() {
     echo ""
 }
 
-# Force cleanup volumeattachments
+# Check volumeattachments (informational only - not deleted for safety)
 cleanup_volumeattachments() {
-    log_info "Checking for stuck VolumeAttachments..."
-    local vas=$(kubectl get volumeattachments --no-headers 2>/dev/null | grep "$NAMESPACE" | awk '{print $1}' || echo "")
+    log_info "Checking for VolumeAttachments..."
+    local vas=$(kubectl get volumeattachments --no-headers 2>/dev/null | grep "$NAMESPACE" || echo "")
     
     if [ -n "$vas" ]; then
-        log_warn "Found stuck VolumeAttachments. Force deleting..."
-        echo "$vas" | while read -r va; do
-            if [ -n "$va" ]; then
-                log_info "Deleting VolumeAttachment: $va"
-                kubectl delete volumeattachment "$va" --force --grace-period=0 2>/dev/null || true
-            fi
-        done
-        sleep 2
+        log_info "Found VolumeAttachments that may be related to this namespace:"
+        echo "$vas" | awk '{print "  - " $1}'
+        echo ""
+        log_info "VolumeAttachments are cluster-scoped resources and are NOT automatically deleted."
+        log_info "They should be cleaned up automatically by Kubernetes when PVs are removed."
+        log_info ""
+        log_info "If VolumeAttachments remain stuck after uninstall, investigate manually:"
+        log_info "  1. Check which PV they reference: kubectl get volumeattachment <name> -o yaml"
+        log_info "  2. Verify the PV no longer exists: kubectl get pv"
+        log_info "  3. If orphaned, delete manually: kubectl delete volumeattachment <name>"
+    else
+        log_info "No VolumeAttachments found matching this namespace"
     fi
 }
 
@@ -611,9 +587,8 @@ delete_storage() {
     # Delete PVCs
     log_warn "Deleting all PVCs in namespace $NAMESPACE..."
     
-    # Force cleanup volumeattachments first
-    log_info "Force deleting VolumeAttachments..."
-    timeout 60 bash -c 'kubectl get volumeattachments --no-headers 2>/dev/null | grep "'"$NAMESPACE"'" | awk '"'"'{print $1}'"'"' | xargs -r kubectl delete volumeattachment --force --grace-period=0 2>/dev/null' || true
+    # Note: VolumeAttachments are NOT deleted - they're cluster-scoped and will auto-clean
+    log_info "Note: VolumeAttachments will be cleaned up automatically by Kubernetes"
     
     # Remove PVC finalizers
     log_info "Removing PVC finalizers..."
