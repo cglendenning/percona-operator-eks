@@ -94,15 +94,15 @@ def create_user_and_grant(conn, user_name: str, password: str, db_name: str, log
             if user_exists:
                 # Update password for existing user
                 logger.info(f"User {user_name} exists, updating password")
-                cursor.execute(f"ALTER USER '{user_name}'@'%' IDENTIFIED BY %s", (password,))
+                cursor.execute(f"ALTER USER %s@'%%' IDENTIFIED BY %s", (user_name, password))
             else:
                 # Create new user
                 logger.info(f"Creating user: {user_name}")
-                cursor.execute(f"CREATE USER '{user_name}'@'%' IDENTIFIED BY %s", (password,))
+                cursor.execute(f"CREATE USER %s@'%%' IDENTIFIED BY %s", (user_name, password))
             
             # Grant privileges on the specific database
             logger.info(f"Granting privileges on {db_name} to {user_name}")
-            cursor.execute(f"GRANT ALL PRIVILEGES ON `{db_name}`.* TO '{user_name}'@'%'")
+            cursor.execute(f"GRANT ALL PRIVILEGES ON `{db_name}`.* TO %s@'%%'", (user_name,))
             cursor.execute("FLUSH PRIVILEGES")
             conn.commit()
             return True
