@@ -391,18 +391,20 @@ install_operator() {
     log_header "Installing Percona Operator ${OPERATOR_VERSION}"
     
     # Check for existing operator installations in other namespaces
-    local existing_operator=$(helm list -A --filter "percona-operator" -o json 2>/dev/null | jq -r '.[0].namespace // empty' 2>/dev/null || echo "")
+    local existing_operators=$(helm list -A -o json 2>/dev/null | jq -r '.[] | select(.name | startswith("percona-operator")) | .namespace' 2>/dev/null | tr '\n' ', ' | sed 's/,$//' || echo "")
     
-    if [ -n "$existing_operator" ] && [ "$existing_operator" != "$NAMESPACE" ]; then
-        log_error "Found existing Percona Operator in namespace: $existing_operator"
-        log_error "The Percona Operator uses cluster-wide resources that conflict across namespaces."
-        echo ""
-        log_info "Please run the uninstall script first:"
-        log_info "  cd $(dirname "$SCRIPT_DIR")"
-        log_info "  ./percona/on-prem/uninstall.sh"
-        echo ""
-        log_info "Then re-run this installation script."
-        exit 1
+    if [ -n "$existing_operators" ]; then
+        log_info "Found existing Percona Operators in namespaces: $existing_operators"
+        log_info "This is OK - each operator watches only its own namespace"
+    fi
+    
+    # Use a unique release name per namespace to avoid ClusterRole conflicts
+    local release_name="percona-operator-${NAMESPACE}"
+    
+    # Check if operator already exists in this namespace
+    if helm list -n "$NAMESPACE" -o json 2>/dev/null | jq -e ".[] | select(.name == \"$release_name\")" &>/dev/null; then
+        log_warn "Operator release '$release_name' already exists in namespace $NAMESPACE"
+        log_info "Will upgrade the existing installation"
     fi
     
     # Add Percona Helm repo
@@ -412,9 +414,9 @@ install_operator() {
     
     log_success "Helm repository updated"
     
-    # Install operator
-    log_info "Installing Percona Operator via Helm..."
-    helm upgrade --install percona-operator \
+    # Install operator with namespace-specific release name
+    log_info "Installing Percona Operator via Helm (release: $release_name)..."
+    helm upgrade --install "$release_name" \
         percona/pxc-operator \
         --version "$OPERATOR_VERSION" \
         --namespace "$NAMESPACE" \
@@ -427,9 +429,12 @@ install_operator() {
     # Wait for operator to be ready
     log_info "Waiting for operator to be ready..."
     
+    # The deployment name is based on the release name
+    local expected_deploy_name="${release_name}-pxc-operator"
+    
     # Try to find the operator deployment with various possible names
     local deployment_found=false
-    for deploy_name in "pxc-operator" "percona-xtradb-cluster-operator" "percona-operator-pxc-operator"; do
+    for deploy_name in "$expected_deploy_name" "pxc-operator" "percona-xtradb-cluster-operator" "${release_name}"; do
         if kubectl get deployment "$deploy_name" -n "$NAMESPACE" &> /dev/null; then
             log_info "Found operator deployment: $deploy_name"
             kubectl wait --for=condition=available --timeout=300s \
@@ -870,7 +875,8 @@ configure_pitr() {
     log_header "Configuring PITR"
 
     local pitr_deployment="${CLUSTER_NAME}-pxc-db-pitr"
-    local operator_deployment="percona-operator-pxc-operator"
+    # Operator deployment name is based on release name (namespace-specific)
+    local operator_deployment="percona-operator-${NAMESPACE}-pxc-operator"
 
     # Wait for PITR deployment to be created
     log_info "Waiting for PITR deployment..."
