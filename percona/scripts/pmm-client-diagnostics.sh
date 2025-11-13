@@ -1078,7 +1078,7 @@ perform_repairs() {
     if [[ " ${REPAIRS_AVAILABLE[@]} " =~ " fix_pmm_secret " ]]; then
         echo ""
         log_info "Repair 1/4: Add PMM v3 Authentication Token (CRITICAL)"
-        echo -n "Add 'pmmserver' key to cluster secret? (yes/no) [yes]: "
+        echo -n "Add 'pmmservertoken' key to cluster secret? (yes/no) [yes]: "
         read -r FIX_SECRET
         FIX_SECRET=${FIX_SECRET:-yes}
         
