@@ -59,14 +59,14 @@ check_prerequisites() {
     fi
     log_success "kubectl and aws CLI found"
     
-    if ! kubectl cluster-info &> /dev/null; then
+    if ! kubectl --kubeconfig="$KUBECONFIG" cluster-info &> /dev/null; then
         log_error "Cannot connect to Kubernetes cluster. Please configure kubectl."
         exit 1
     fi
     log_success "Connected to Kubernetes cluster"
     
     # Verify EKS cluster
-    local cluster_name=$(kubectl config current-context | grep -o 'percona-eks' || echo "")
+    local cluster_name=$(kubectl --kubeconfig="$KUBECONFIG" config current-context | grep -o 'percona-eks' || echo "")
     if [ -n "$cluster_name" ]; then
         log_success "Connected to EKS cluster: $cluster_name"
     else
@@ -78,10 +78,10 @@ check_prerequisites() {
 create_namespace() {
     log_header "Creating PMM Namespace"
     
-    if kubectl get namespace "$PMM_NAMESPACE" &>/dev/null; then
+    if kubectl --kubeconfig="$KUBECONFIG" get namespace "$PMM_NAMESPACE" &>/dev/null; then
         log_warn "Namespace '$PMM_NAMESPACE' already exists"
     else
-        kubectl create namespace "$PMM_NAMESPACE"
+        kubectl --kubeconfig="$KUBECONFIG" create namespace "$PMM_NAMESPACE"
         log_success "Namespace '$PMM_NAMESPACE' created"
     fi
 }
@@ -92,7 +92,7 @@ deploy_pmm_server() {
     
     log_info "Creating PMM Server StatefulSet..."
     
-    cat <<EOF | kubectl apply -f -
+    cat <<EOF | kubectl --kubeconfig="$KUBECONFIG" apply -f -
 apiVersion: v1
 kind: ServiceAccount
 metadata:
@@ -212,12 +212,12 @@ wait_for_pmm_ready() {
     log_header "Waiting for PMM Server to be Ready"
     
     log_info "Waiting for PMM Server pod to start..."
-    kubectl wait --for=condition=ready pod -l app=pmm-server -n "$PMM_NAMESPACE" --timeout=600s || {
+    kubectl --kubeconfig="$KUBECONFIG" wait --for=condition=ready pod -l app=pmm-server -n "$PMM_NAMESPACE" --timeout=600s || {
         log_error "PMM Server pod did not become ready in time"
         log_info "Checking pod status:"
-        kubectl get pods -n "$PMM_NAMESPACE"
+        kubectl --kubeconfig="$KUBECONFIG" get pods -n "$PMM_NAMESPACE"
         log_info "Checking pod events:"
-        kubectl get events -n "$PMM_NAMESPACE" --sort-by='.lastTimestamp'
+        kubectl --kubeconfig="$KUBECONFIG" get events -n "$PMM_NAMESPACE" --sort-by='.lastTimestamp'
         exit 1
     }
     
@@ -231,7 +231,7 @@ create_service_account_token() {
     log_info "PMM v3 uses service account tokens for authentication"
     
     # Create a secret for the service account token
-    cat <<EOF | kubectl apply -f -
+    cat <<EOF | kubectl --kubeconfig="$KUBECONFIG" apply -f -
 apiVersion: v1
 kind: Secret
 metadata:
@@ -245,7 +245,7 @@ EOF
     # Wait for token to be populated
     log_info "Waiting for token to be generated..."
     for i in {1..30}; do
-        TOKEN=$(kubectl get secret pmm-server-token -n "$PMM_NAMESPACE" -o jsonpath='{.data.token}' 2>/dev/null || echo "")
+        TOKEN=$(kubectl --kubeconfig="$KUBECONFIG" get secret pmm-server-token -n "$PMM_NAMESPACE" -o jsonpath='{.data.token}' 2>/dev/null || echo "")
         if [ -n "$TOKEN" ]; then
             log_success "Service account token created"
             return 0
@@ -264,7 +264,7 @@ get_access_info() {
     log_info "Waiting for LoadBalancer to get external IP..."
     local lb_hostname=""
     for i in {1..60}; do
-        lb_hostname=$(kubectl get svc monitoring-service -n "$PMM_NAMESPACE" -o jsonpath='{.status.loadBalancer.ingress[0].hostname}' 2>/dev/null || echo "")
+        lb_hostname=$(kubectl --kubeconfig="$KUBECONFIG" get svc monitoring-service -n "$PMM_NAMESPACE" -o jsonpath='{.status.loadBalancer.ingress[0].hostname}' 2>/dev/null || echo "")
         if [ -n "$lb_hostname" ]; then
             break
         fi
@@ -282,7 +282,7 @@ get_access_info() {
     fi
     
     # Get service account token
-    local token=$(kubectl get secret pmm-server-token -n "$PMM_NAMESPACE" -o jsonpath='{.data.token}' 2>/dev/null | base64 -d || echo "")
+    local token=$(kubectl --kubeconfig="$KUBECONFIG" get secret pmm-server-token -n "$PMM_NAMESPACE" -o jsonpath='{.data.token}' 2>/dev/null | base64 -d || echo "")
     
     echo ""
     echo -e "${GREEN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"

@@ -24,7 +24,7 @@ if ! command -v kubectl &> /dev/null; then
     exit 1
 fi
 
-if ! kubectl cluster-info &> /dev/null; then
+if ! kubectl --kubeconfig="$KUBECONFIG" cluster-info &> /dev/null; then
     echo -e "${RED}Error: Cannot connect to Kubernetes cluster. Please check your kubeconfig.${NC}"
     exit 1
 fi
@@ -32,7 +32,7 @@ fi
 echo -e "${GREEN}✓ kubectl found and cluster accessible${NC}"
 
 # Check if user has cluster-admin rights
-if ! kubectl auth can-i create clusterroles &> /dev/null; then
+if ! kubectl --kubeconfig="$KUBECONFIG" auth can-i create clusterroles &> /dev/null; then
     echo -e "${YELLOW}Warning: You may not have sufficient permissions to install cluster-scoped resources.${NC}"
     echo -e "${YELLOW}Installation may fail. Consider running with cluster-admin privileges.${NC}"
     read -p "Continue anyway? (y/N) " -n 1 -r
@@ -45,32 +45,32 @@ fi
 # Step 1: Install CRD
 echo ""
 echo -e "${BLUE}[1/6] Installing AppDatabase CRD...${NC}"
-kubectl apply -f "${SCRIPT_DIR}/crds/appdatabase-crd.yaml"
+kubectl --kubeconfig="$KUBECONFIG" apply -f "${SCRIPT_DIR}/crds/appdatabase-crd.yaml"
 echo -e "${GREEN}✓ CRD installed${NC}"
 
 # Step 2: Create namespace
 echo ""
 echo -e "${BLUE}[2/6] Creating db-concierge namespace...${NC}"
-if kubectl get namespace db-concierge &> /dev/null; then
+if kubectl --kubeconfig="$KUBECONFIG" get namespace db-concierge &> /dev/null; then
     echo -e "${YELLOW}Namespace db-concierge already exists, skipping${NC}"
 else
-    kubectl apply -f "${SCRIPT_DIR}/deploy/namespace.yaml"
+    kubectl --kubeconfig="$KUBECONFIG" apply -f "${SCRIPT_DIR}/deploy/namespace.yaml"
     echo -e "${GREEN}✓ Namespace created${NC}"
 fi
 
 # Step 3: Create RBAC
 echo ""
 echo -e "${BLUE}[3/6] Creating RBAC resources...${NC}"
-kubectl apply -f "${SCRIPT_DIR}/deploy/serviceaccount.yaml"
-kubectl apply -f "${SCRIPT_DIR}/deploy/clusterrole.yaml"
-kubectl apply -f "${SCRIPT_DIR}/deploy/clusterrolebinding.yaml"
+kubectl --kubeconfig="$KUBECONFIG" apply -f "${SCRIPT_DIR}/deploy/serviceaccount.yaml"
+kubectl --kubeconfig="$KUBECONFIG" apply -f "${SCRIPT_DIR}/deploy/clusterrole.yaml"
+kubectl --kubeconfig="$KUBECONFIG" apply -f "${SCRIPT_DIR}/deploy/clusterrolebinding.yaml"
 echo -e "${GREEN}✓ RBAC resources created${NC}"
 
 # Step 4: Create MySQL admin credentials secret
 echo ""
 echo -e "${BLUE}[4/6] Configuring MySQL admin credentials...${NC}"
 
-if kubectl get secret db-concierge-mysql-admin -n db-concierge &> /dev/null; then
+if kubectl --kubeconfig="$KUBECONFIG" get secret db-concierge-mysql-admin -n db-concierge &> /dev/null; then
     echo -e "${YELLOW}Secret db-concierge-mysql-admin already exists.${NC}"
     read -p "Update it? (y/N) " -n 1 -r
     echo
@@ -108,11 +108,11 @@ if [ "$UPDATE_SECRET" = true ]; then
     fi
     
     # Create or update secret
-    if kubectl get secret db-concierge-mysql-admin -n db-concierge &> /dev/null; then
-        kubectl delete secret db-concierge-mysql-admin -n db-concierge
+    if kubectl --kubeconfig="$KUBECONFIG" get secret db-concierge-mysql-admin -n db-concierge &> /dev/null; then
+        kubectl --kubeconfig="$KUBECONFIG" delete secret db-concierge-mysql-admin -n db-concierge
     fi
     
-    kubectl create secret generic db-concierge-mysql-admin \
+    kubectl --kubeconfig="$KUBECONFIG" create secret generic db-concierge-mysql-admin \
         -n db-concierge \
         --from-literal=MYSQL_ADMIN_HOST="${MYSQL_HOST}" \
         --from-literal=MYSQL_ADMIN_PORT="${MYSQL_PORT}" \
@@ -281,7 +281,7 @@ SCRIPT_EOF
     fi
     
     # Detect cluster type
-    CLUSTER_CONTEXT=$(kubectl config current-context)
+    CLUSTER_CONTEXT=$(kubectl --kubeconfig="$KUBECONFIG" config current-context)
     
     if echo "$CLUSTER_CONTEXT" | grep -q "kind"; then
         echo -e "${GREEN}Detected kind cluster - can build and load locally${NC}"
@@ -289,10 +289,10 @@ SCRIPT_EOF
     elif echo "$CLUSTER_CONTEXT" | grep -q "minikube"; then
         echo -e "${GREEN}Detected minikube cluster - can build locally${NC}"
         DETECTED_TYPE="minikube"
-    elif echo "$CLUSTER_CONTEXT" | grep -q "eks" || kubectl get nodes -o jsonpath='{.items[0].spec.providerID}' | grep -q "aws"; then
+    elif echo "$CLUSTER_CONTEXT" | grep -q "eks" || kubectl --kubeconfig="$KUBECONFIG" get nodes -o jsonpath='{.items[0].spec.providerID}' | grep -q "aws"; then
         echo -e "${GREEN}Detected EKS cluster - need to use container registry${NC}"
         DETECTED_TYPE="eks"
-    elif echo "$CLUSTER_CONTEXT" | grep -q "gke" || kubectl get nodes -o jsonpath='{.items[0].spec.providerID}' | grep -q "gce"; then
+    elif echo "$CLUSTER_CONTEXT" | grep -q "gke" || kubectl --kubeconfig="$KUBECONFIG" get nodes -o jsonpath='{.items[0].spec.providerID}' | grep -q "gce"; then
         echo -e "${GREEN}Detected GKE cluster - need to use container registry${NC}"
         DETECTED_TYPE="gke"
     else
@@ -466,7 +466,7 @@ SCRIPT_EOF
 fi
 
 # Deploy operator
-kubectl apply -f "${SCRIPT_DIR}/deploy/deployment.yaml"
+kubectl --kubeconfig="$KUBECONFIG" apply -f "${SCRIPT_DIR}/deploy/deployment.yaml"
 echo -e "${GREEN}✓ Operator deployed${NC}"
 
 # Step 6: Optional - Install developer RBAC
@@ -484,7 +484,7 @@ if [[ $REPLY =~ ^[Yy]$ ]]; then
     read -p "Apply the RBAC configuration? (y/N) " -n 1 -r
     echo
     if [[ $REPLY =~ ^[Yy]$ ]]; then
-        kubectl apply -f "${SCRIPT_DIR}/deploy/dev-rbac.yaml"
+        kubectl --kubeconfig="$KUBECONFIG" apply -f "${SCRIPT_DIR}/deploy/dev-rbac.yaml"
         echo -e "${GREEN}✓ Developer RBAC installed${NC}"
     else
         echo -e "${YELLOW}Skipped developer RBAC installation${NC}"
@@ -498,7 +498,7 @@ fi
 # Wait for operator to be ready
 echo ""
 echo -e "${BLUE}Waiting for operator to be ready...${NC}"
-kubectl wait --for=condition=available --timeout=120s deployment/db-concierge-operator -n db-concierge
+kubectl --kubeconfig="$KUBECONFIG" wait --for=condition=available --timeout=120s deployment/db-concierge-operator -n db-concierge
 
 # Installation complete
 echo ""

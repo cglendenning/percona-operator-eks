@@ -58,7 +58,7 @@ check_prerequisites() {
     fi
     log_success "kubectl found"
     
-    if ! kubectl cluster-info &> /dev/null; then
+    if ! kubectl --kubeconfig="$KUBECONFIG" cluster-info &> /dev/null; then
         log_error "Cannot connect to Kubernetes cluster. Please configure kubectl."
         exit 1
     fi
@@ -72,13 +72,13 @@ prompt_configuration() {
     # Storage class selection
     log_info "Available StorageClasses in cluster:"
     echo ""
-    kubectl get storageclass --no-headers -o custom-columns=NAME:.metadata.name,PROVISIONER:.provisioner,DEFAULT:.metadata.annotations."storageclass\.kubernetes\.io/is-default-class" 2>/dev/null || {
+    kubectl --kubeconfig="$KUBECONFIG" get storageclass --no-headers -o custom-columns=NAME:.metadata.name,PROVISIONER:.provisioner,DEFAULT:.metadata.annotations."storageclass\.kubernetes\.io/is-default-class" 2>/dev/null || {
         log_warn "Could not list storage classes"
     }
     echo ""
     
     # Detect default storage class
-    local default_sc=$(kubectl get storageclass -o json 2>/dev/null | \
+    local default_sc=$(kubectl --kubeconfig="$KUBECONFIG" get storageclass -o json 2>/dev/null | \
         jq -r '.items[] | select(.metadata.annotations."storageclass.kubernetes.io/is-default-class" == "true") | .metadata.name' | head -1)
     
     if [ -z "$default_sc" ]; then
@@ -96,7 +96,7 @@ prompt_configuration() {
     fi
     
     # Verify storage class exists
-    if ! kubectl get storageclass "$STORAGE_CLASS" &>/dev/null; then
+    if ! kubectl --kubeconfig="$KUBECONFIG" get storageclass "$STORAGE_CLASS" &>/dev/null; then
         log_error "StorageClass '$STORAGE_CLASS' not found"
         exit 1
     fi
@@ -115,10 +115,10 @@ prompt_configuration() {
 create_namespace() {
     log_header "Creating PMM Namespace"
     
-    if kubectl get namespace "$PMM_NAMESPACE" &>/dev/null; then
+    if kubectl --kubeconfig="$KUBECONFIG" get namespace "$PMM_NAMESPACE" &>/dev/null; then
         log_warn "Namespace '$PMM_NAMESPACE' already exists"
     else
-        kubectl create namespace "$PMM_NAMESPACE"
+        kubectl --kubeconfig="$KUBECONFIG" create namespace "$PMM_NAMESPACE"
         log_success "Namespace '$PMM_NAMESPACE' created"
     fi
 }
@@ -129,7 +129,7 @@ deploy_pmm_server() {
     
     log_info "Creating PMM Server StatefulSet..."
     
-    cat <<EOF | kubectl apply -f -
+    cat <<EOF | kubectl --kubeconfig="$KUBECONFIG" apply -f -
 apiVersion: v1
 kind: ServiceAccount
 metadata:
@@ -246,12 +246,12 @@ wait_for_pmm_ready() {
     log_header "Waiting for PMM Server to be Ready"
     
     log_info "Waiting for PMM Server pod to start..."
-    kubectl wait --for=condition=ready pod -l app=pmm-server -n "$PMM_NAMESPACE" --timeout=600s || {
+    kubectl --kubeconfig="$KUBECONFIG" wait --for=condition=ready pod -l app=pmm-server -n "$PMM_NAMESPACE" --timeout=600s || {
         log_error "PMM Server pod did not become ready in time"
         log_info "Checking pod status:"
-        kubectl get pods -n "$PMM_NAMESPACE"
+        kubectl --kubeconfig="$KUBECONFIG" get pods -n "$PMM_NAMESPACE"
         log_info "Checking pod events:"
-        kubectl get events -n "$PMM_NAMESPACE" --sort-by='.lastTimestamp'
+        kubectl --kubeconfig="$KUBECONFIG" get events -n "$PMM_NAMESPACE" --sort-by='.lastTimestamp'
         exit 1
     }
     
@@ -265,7 +265,7 @@ create_service_account_token() {
     log_info "PMM v3 uses service account tokens for authentication"
     
     # Create a secret for the service account token
-    cat <<EOF | kubectl apply -f -
+    cat <<EOF | kubectl --kubeconfig="$KUBECONFIG" apply -f -
 apiVersion: v1
 kind: Secret
 metadata:
@@ -279,7 +279,7 @@ EOF
     # Wait for token to be populated
     log_info "Waiting for token to be generated..."
     for i in {1..30}; do
-        TOKEN=$(kubectl get secret pmm-server-token -n "$PMM_NAMESPACE" -o jsonpath='{.data.token}' 2>/dev/null || echo "")
+        TOKEN=$(kubectl --kubeconfig="$KUBECONFIG" get secret pmm-server-token -n "$PMM_NAMESPACE" -o jsonpath='{.data.token}' 2>/dev/null || echo "")
         if [ -n "$TOKEN" ]; then
             log_success "Service account token created"
             return 0
@@ -296,14 +296,14 @@ get_access_info() {
     log_header "PMM Server Access Information"
     
     # Get NodePort information
-    local http_nodeport=$(kubectl get svc monitoring-service -n "$PMM_NAMESPACE" -o jsonpath='{.spec.ports[?(@.name=="http")].nodePort}' 2>/dev/null || echo "")
-    local https_nodeport=$(kubectl get svc monitoring-service -n "$PMM_NAMESPACE" -o jsonpath='{.spec.ports[?(@.name=="https")].nodePort}' 2>/dev/null || echo "")
+    local http_nodeport=$(kubectl --kubeconfig="$KUBECONFIG" get svc monitoring-service -n "$PMM_NAMESPACE" -o jsonpath='{.spec.ports[?(@.name=="http")].nodePort}' 2>/dev/null || echo "")
+    local https_nodeport=$(kubectl --kubeconfig="$KUBECONFIG" get svc monitoring-service -n "$PMM_NAMESPACE" -o jsonpath='{.spec.ports[?(@.name=="https")].nodePort}' 2>/dev/null || echo "")
     
     # Get node IPs
-    local node_ips=$(kubectl get nodes -o jsonpath='{.items[*].status.addresses[?(@.type=="InternalIP")].address}' 2>/dev/null | tr ' ' '\n' | head -3)
+    local node_ips=$(kubectl --kubeconfig="$KUBECONFIG" get nodes -o jsonpath='{.items[*].status.addresses[?(@.type=="InternalIP")].address}' 2>/dev/null | tr ' ' '\n' | head -3)
     
     # Get service account token
-    local token=$(kubectl get secret pmm-server-token -n "$PMM_NAMESPACE" -o jsonpath='{.data.token}' 2>/dev/null | base64 -d || echo "")
+    local token=$(kubectl --kubeconfig="$KUBECONFIG" get secret pmm-server-token -n "$PMM_NAMESPACE" -o jsonpath='{.data.token}' 2>/dev/null | base64 -d || echo "")
     
     echo ""
     echo -e "${GREEN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"

@@ -68,7 +68,7 @@ check_prerequisites() {
     if ! command -v kubectl &> /dev/null; then
         missing+=("kubectl")
     else
-        log_success "kubectl found: $(kubectl version --client --short 2>/dev/null | head -n1 || echo 'installed')"
+        log_success "kubectl found: $(kubectl --kubeconfig="$KUBECONFIG" version --client --short 2>/dev/null | head -n1 || echo 'installed')"
     fi
     
     # Check helm
@@ -94,7 +94,7 @@ check_prerequisites() {
             log_info "  export KUBECONFIG=~/.kube/config"
             echo ""
             log_info "Current KUBECONFIG: ${KUBECONFIG:-<not set>}"
-            log_info "kubectl config: $(kubectl config view --minify -o jsonpath='{.current-context}' 2>/dev/null || echo '<unknown>')"
+            log_info "kubectl config: $(kubectl --kubeconfig="$KUBECONFIG" config view --minify -o jsonpath='{.current-context}' 2>/dev/null || echo '<unknown>')"
             echo ""
             exit 1
         fi
@@ -122,7 +122,7 @@ check_prerequisites() {
     fi
     
     # Check cluster connectivity
-    if ! kubectl cluster-info &> /dev/null; then
+    if ! kubectl --kubeconfig="$KUBECONFIG" cluster-info &> /dev/null; then
         log_error "Cannot connect to Kubernetes cluster"
         log_error "Please configure kubectl and try again"
         exit 1
@@ -131,9 +131,9 @@ check_prerequisites() {
     log_success "Connected to Kubernetes cluster"
     
     # Display cluster info
-    local cluster_version=$(kubectl version -o json 2>/dev/null | jq -r '.serverVersion.gitVersion // empty' 2>/dev/null || echo "")
+    local cluster_version=$(kubectl --kubeconfig="$KUBECONFIG" version -o json 2>/dev/null | jq -r '.serverVersion.gitVersion // empty' 2>/dev/null || echo "")
     if [ -z "$cluster_version" ]; then
-        cluster_version=$(kubectl get nodes -o json 2>/dev/null | jq -r '.items[0].status.nodeInfo.kubeletVersion // empty' 2>/dev/null || echo "unknown")
+        cluster_version=$(kubectl --kubeconfig="$KUBECONFIG" get nodes -o json 2>/dev/null | jq -r '.items[0].status.nodeInfo.kubeletVersion // empty' 2>/dev/null || echo "unknown")
     fi
     log_info "Cluster version: $cluster_version"
 }
@@ -143,8 +143,8 @@ detect_node_resources() {
     log_header "Analyzing Node Resources"
     
     # Get CPU capacity across all nodes
-    local node_cpus=$(kubectl get nodes -o jsonpath='{.items[*].status.capacity.cpu}' 2>/dev/null | tr ' ' '\n' | head -1)
-    local node_memory=$(kubectl get nodes -o jsonpath='{.items[*].status.capacity.memory}' 2>/dev/null | tr ' ' '\n' | head -1)
+    local node_cpus=$(kubectl --kubeconfig="$KUBECONFIG" get nodes -o jsonpath='{.items[*].status.capacity.cpu}' 2>/dev/null | tr ' ' '\n' | head -1)
+    local node_memory=$(kubectl --kubeconfig="$KUBECONFIG" get nodes -o jsonpath='{.items[*].status.capacity.memory}' 2>/dev/null | tr ' ' '\n' | head -1)
     
     if [ -z "$node_cpus" ] || [ -z "$node_memory" ]; then
         log_warn "Could not detect node resources"
@@ -219,7 +219,7 @@ prompt_configuration() {
     echo ""
     
     # Get storage class information with provisioner and default status
-    local sc_info=$(kubectl get storageclass -o json 2>/dev/null | jq -r '.items[] | 
+    local sc_info=$(kubectl --kubeconfig="$KUBECONFIG" get storageclass -o json 2>/dev/null | jq -r '.items[] | 
         "\(.metadata.name)|\(.provisioner)|\(.metadata.annotations["storageclass.kubernetes.io/is-default-class"] // "false")"' 2>/dev/null || echo "")
     
     if [ -n "$sc_info" ]; then
@@ -234,7 +234,7 @@ prompt_configuration() {
     echo ""
     
     # Detect default storage class
-    local default_sc=$(kubectl get storageclass -o json 2>/dev/null | jq -r '.items[] | 
+    local default_sc=$(kubectl --kubeconfig="$KUBECONFIG" get storageclass -o json 2>/dev/null | jq -r '.items[] | 
         select(.metadata.annotations["storageclass.kubernetes.io/is-default-class"] == "true") | 
         .metadata.name' 2>/dev/null | head -1 || echo "")
     
@@ -254,7 +254,7 @@ prompt_configuration() {
     fi
     
     # Verify storage class exists
-    if ! kubectl get storageclass "$STORAGE_CLASS" &> /dev/null; then
+    if ! kubectl --kubeconfig="$KUBECONFIG" get storageclass "$STORAGE_CLASS" &> /dev/null; then
         log_warn "StorageClass '$STORAGE_CLASS' not found in cluster"
         read -p "Continue anyway? (yes/no): " confirm_sc
         if [[ "$confirm_sc" != "yes" ]]; then
@@ -300,15 +300,15 @@ prompt_configuration() {
     MINIO_SECRET_NAMESPACE="${minio_secret_namespace:-minio-operator}"
     
     # Verify the secret exists in the source namespace
-    if ! kubectl get secret myminio-creds -n "$MINIO_SECRET_NAMESPACE" &> /dev/null; then
+    if ! kubectl --kubeconfig="$KUBECONFIG" get secret myminio-creds -n "$MINIO_SECRET_NAMESPACE" &> /dev/null; then
         log_error "Secret 'myminio-creds' not found in namespace '$MINIO_SECRET_NAMESPACE'"
         log_info "Available namespaces with secrets:"
-        kubectl get secrets --all-namespaces -o json 2>/dev/null | jq -r '.items[] | select(.metadata.name=="myminio-creds") | "  - \(.metadata.namespace)"' 2>/dev/null || echo "  (none found)"
+        kubectl --kubeconfig="$KUBECONFIG" get secrets --all-namespaces -o json 2>/dev/null | jq -r '.items[] | select(.metadata.name=="myminio-creds") | "  - \(.metadata.namespace)"' 2>/dev/null || echo "  (none found)"
         echo ""
         read -p "Enter correct namespace: " minio_secret_namespace_retry
         MINIO_SECRET_NAMESPACE="${minio_secret_namespace_retry}"
         
-        if [ -z "$MINIO_SECRET_NAMESPACE" ] || ! kubectl get secret myminio-creds -n "$MINIO_SECRET_NAMESPACE" &> /dev/null; then
+        if [ -z "$MINIO_SECRET_NAMESPACE" ] || ! kubectl --kubeconfig="$KUBECONFIG" get secret myminio-creds -n "$MINIO_SECRET_NAMESPACE" &> /dev/null; then
             log_error "Secret 'myminio-creds' not found. Cannot proceed without MinIO credentials."
             exit 1
         fi
@@ -348,7 +348,7 @@ prompt_configuration() {
         local total_cpu_per_node=$(echo "scale=0; ($pxc_cpu_m + $haproxy_cpu_m) * 2" | bc)  # 2 pods per node average
         
         # Get node CPU capacity
-        local node_cpus=$(kubectl get nodes -o jsonpath='{.items[0].status.capacity.cpu}' 2>/dev/null)
+        local node_cpus=$(kubectl --kubeconfig="$KUBECONFIG" get nodes -o jsonpath='{.items[0].status.capacity.cpu}' 2>/dev/null)
         local node_cpu_m=$((node_cpus * 1000))
         local usable_cpu_m=$(echo "scale=0; $node_cpu_m * 0.80" | bc)  # 80% usable
         
@@ -433,15 +433,15 @@ prompt_configuration() {
 create_namespace() {
     log_header "Creating Namespace: ${NAMESPACE}"
     
-    if kubectl get namespace "$NAMESPACE" &> /dev/null; then
+    if kubectl --kubeconfig="$KUBECONFIG" get namespace "$NAMESPACE" &> /dev/null; then
         log_warn "Namespace ${NAMESPACE} already exists"
     else
-        kubectl create namespace "$NAMESPACE"
+        kubectl --kubeconfig="$KUBECONFIG" create namespace "$NAMESPACE"
         log_success "Namespace ${NAMESPACE} created"
     fi
     
     # Label namespace for monitoring
-    kubectl label namespace "$NAMESPACE" \
+    kubectl --kubeconfig="$KUBECONFIG" label namespace "$NAMESPACE" \
         "app.kubernetes.io/name=percona-xtradb-cluster" \
         "app.kubernetes.io/managed-by=percona-operator" \
         --overwrite
@@ -498,9 +498,9 @@ install_operator() {
     # Try to find the operator deployment with various possible names
     local deployment_found=false
     for deploy_name in "$expected_deploy_name" "pxc-operator" "percona-xtradb-cluster-operator" "${release_name}"; do
-        if kubectl get deployment "$deploy_name" -n "$NAMESPACE" &> /dev/null; then
+        if kubectl --kubeconfig="$KUBECONFIG" get deployment "$deploy_name" -n "$NAMESPACE" &> /dev/null; then
             log_info "Found operator deployment: $deploy_name"
-            kubectl wait --for=condition=available --timeout=300s \
+            kubectl --kubeconfig="$KUBECONFIG" wait --for=condition=available --timeout=300s \
                 "deployment/$deploy_name" \
                 -n "$NAMESPACE"
             deployment_found=true
@@ -512,9 +512,9 @@ install_operator() {
     if [ "$deployment_found" = false ]; then
         log_info "Trying to find operator by label..."
         for label in "app.kubernetes.io/name=pxc-operator" "app.kubernetes.io/name=percona-xtradb-cluster-operator"; do
-            if kubectl get pods -l "$label" -n "$NAMESPACE" --no-headers 2>/dev/null | grep -q .; then
+            if kubectl --kubeconfig="$KUBECONFIG" get pods -l "$label" -n "$NAMESPACE" --no-headers 2>/dev/null | grep -q .; then
                 log_info "Found operator pods with label: $label"
-                kubectl wait --for=condition=ready --timeout=300s \
+                kubectl --kubeconfig="$KUBECONFIG" wait --for=condition=ready --timeout=300s \
                     pod -l "$label" \
                     -n "$NAMESPACE"
                 break
@@ -526,7 +526,7 @@ install_operator() {
     log_info "Waiting for operator webhook service to be ready..."
     local webhook_ready=false
     for i in {1..60}; do
-        local endpoints=$(kubectl get endpoints percona-xtradb-cluster-operator -n "$NAMESPACE" -o jsonpath='{.subsets[*].addresses[*].ip}' 2>/dev/null || echo "")
+        local endpoints=$(kubectl --kubeconfig="$KUBECONFIG" get endpoints percona-xtradb-cluster-operator -n "$NAMESPACE" -o jsonpath='{.subsets[*].addresses[*].ip}' 2>/dev/null || echo "")
         if [ -n "$endpoints" ]; then
             webhook_ready=true
             log_success "Operator webhook service is ready"
@@ -539,7 +539,7 @@ install_operator() {
     if [ "$webhook_ready" = false ]; then
         log_error "Operator webhook service did not become ready in time"
         log_info "Check operator pod logs:"
-        kubectl logs -n "$NAMESPACE" -l app.kubernetes.io/name=pxc-operator --tail=50
+        kubectl --kubeconfig="$KUBECONFIG" logs -n "$NAMESPACE" -l app.kubernetes.io/name=pxc-operator --tail=50
         exit 1
     fi
     
@@ -555,7 +555,7 @@ create_minio_secret() {
     log_header "Copying MinIO Credentials Secret"
     
     # Check if secret already exists in target namespace
-    if kubectl get secret myminio-creds -n "$NAMESPACE" &> /dev/null; then
+    if kubectl --kubeconfig="$KUBECONFIG" get secret myminio-creds -n "$NAMESPACE" &> /dev/null; then
         log_warn "Secret 'myminio-creds' already exists in namespace '$NAMESPACE', skipping creation"
         return
     fi
@@ -563,9 +563,9 @@ create_minio_secret() {
     # Get the secret from source namespace and copy to target namespace
     log_info "Copying 'myminio-creds' from namespace '$MINIO_SECRET_NAMESPACE' to '$NAMESPACE'..."
     
-    if kubectl get secret myminio-creds -n "$MINIO_SECRET_NAMESPACE" -o json | \
+    if kubectl --kubeconfig="$KUBECONFIG" get secret myminio-creds -n "$MINIO_SECRET_NAMESPACE" -o json | \
        jq 'del(.metadata.namespace,.metadata.creationTimestamp,.metadata.resourceVersion,.metadata.selfLink,.metadata.uid)' | \
-       kubectl apply -n "$NAMESPACE" -f - &> /dev/null; then
+       kubectl --kubeconfig="$KUBECONFIG" apply -n "$NAMESPACE" -f - &> /dev/null; then
         log_success "MinIO credentials secret 'myminio-creds' copied successfully"
     else
         log_error "Failed to copy MinIO credentials secret"
@@ -579,7 +579,7 @@ create_minio_bucket() {
     
     # Check if MinIO pod exists
     local minio_pod="myminio-pool-0-0"
-    if ! kubectl get pod "$minio_pod" -n minio-operator &> /dev/null; then
+    if ! kubectl --kubeconfig="$KUBECONFIG" get pod "$minio_pod" -n minio-operator &> /dev/null; then
         log_error "MinIO pod '$minio_pod' not found in namespace 'minio-operator'"
         log_error "Please ensure MinIO is installed before running this script"
         exit 1
@@ -588,8 +588,8 @@ create_minio_bucket() {
     log_info "Extracting MinIO credentials from secret..."
     
     # Get credentials from the secret
-    local access_key=$(kubectl get secret myminio-creds -n "$MINIO_SECRET_NAMESPACE" -o jsonpath='{.data.accesskey}' 2>/dev/null | base64 -d 2>/dev/null || echo "")
-    local secret_key=$(kubectl get secret myminio-creds -n "$MINIO_SECRET_NAMESPACE" -o jsonpath='{.data.secretkey}' 2>/dev/null | base64 -d 2>/dev/null || echo "")
+    local access_key=$(kubectl --kubeconfig="$KUBECONFIG" get secret myminio-creds -n "$MINIO_SECRET_NAMESPACE" -o jsonpath='{.data.accesskey}' 2>/dev/null | base64 -d 2>/dev/null || echo "")
+    local secret_key=$(kubectl --kubeconfig="$KUBECONFIG" get secret myminio-creds -n "$MINIO_SECRET_NAMESPACE" -o jsonpath='{.data.secretkey}' 2>/dev/null | base64 -d 2>/dev/null || echo "")
     
     if [ -z "$access_key" ] || [ -z "$secret_key" ]; then
         log_error "Failed to extract credentials from 'myminio-creds' secret"
@@ -599,7 +599,7 @@ create_minio_bucket() {
     log_info "Setting up MinIO client alias in pod '$minio_pod'..."
     
     # Set up mc alias
-    if ! kubectl -n minio-operator exec -it "$minio_pod" -- bash -c \
+    if ! kubectl --kubeconfig="$KUBECONFIG" -n minio-operator exec -it "$minio_pod" -- bash -c \
         "mc --insecure alias set local https://localhost:9000 $access_key $secret_key" 2>/dev/null; then
         log_error "Failed to set up MinIO client alias"
         exit 1
@@ -609,7 +609,7 @@ create_minio_bucket() {
     
     # Check if bucket already exists
     log_info "Checking if bucket '$MINIO_BUCKET' already exists..."
-    local bucket_exists=$(kubectl -n minio-operator exec -it "$minio_pod" -- bash -c \
+    local bucket_exists=$(kubectl --kubeconfig="$KUBECONFIG" -n minio-operator exec -it "$minio_pod" -- bash -c \
         "mc --insecure ls local | grep -w '$MINIO_BUCKET'" 2>/dev/null || echo "")
     
     if [ -n "$bucket_exists" ]; then
@@ -617,7 +617,7 @@ create_minio_bucket() {
     else
         # Create bucket
         log_info "Creating bucket '$MINIO_BUCKET'..."
-        if kubectl -n minio-operator exec -it "$minio_pod" -- bash -c \
+        if kubectl --kubeconfig="$KUBECONFIG" -n minio-operator exec -it "$minio_pod" -- bash -c \
             "mc --insecure mb -p local/$MINIO_BUCKET" 2>/dev/null; then
             log_success "Bucket '$MINIO_BUCKET' created successfully"
         else
@@ -628,7 +628,7 @@ create_minio_bucket() {
     
     # List buckets to verify
     log_info "Current MinIO buckets:"
-    kubectl -n minio-operator exec -it "$minio_pod" -- bash -c \
+    kubectl --kubeconfig="$KUBECONFIG" -n minio-operator exec -it "$minio_pod" -- bash -c \
         "mc --insecure ls local" 2>/dev/null | sed 's/^/  /' || log_warn "Could not list buckets"
     
     echo ""
@@ -785,7 +785,7 @@ diagnose_pod_failures() {
     echo ""
     
     # Get all pods with the label
-    local pods=$(kubectl get pods -n "$namespace" -l "$label_selector" --no-headers 2>/dev/null || echo "")
+    local pods=$(kubectl --kubeconfig="$KUBECONFIG" get pods -n "$namespace" -l "$label_selector" --no-headers 2>/dev/null || echo "")
     
     if [ -z "$pods" ]; then
         log_error "No pods found with label $label_selector in namespace $namespace"
@@ -794,7 +794,7 @@ diagnose_pod_failures() {
     
     # Show pod status summary
     log_info "Pod Status Summary:"
-    kubectl get pods -n "$namespace" -l "$label_selector" 2>/dev/null || true
+    kubectl --kubeconfig="$KUBECONFIG" get pods -n "$namespace" -l "$label_selector" 2>/dev/null || true
     echo ""
     
     # Check each pod individually
@@ -815,24 +815,24 @@ diagnose_pod_failures() {
             # Show pod events
             echo ""
             log_info "Recent events for $pod_name:"
-            kubectl get events -n "$namespace" --field-selector involvedObject.name="$pod_name" --sort-by='.lastTimestamp' 2>/dev/null | tail -10 || true
+            kubectl --kubeconfig="$KUBECONFIG" get events -n "$namespace" --field-selector involvedObject.name="$pod_name" --sort-by='.lastTimestamp' 2>/dev/null | tail -10 || true
             echo ""
             
             # Show container statuses
             log_info "Container statuses for $pod_name:"
-            kubectl get pod "$pod_name" -n "$namespace" -o json 2>/dev/null | jq -r '.status.containerStatuses[]? | "  - \(.name): ready=\(.ready), restarts=\(.restartCount), state=\(.state | keys[0])"' 2>/dev/null || true
+            kubectl --kubeconfig="$KUBECONFIG" get pod "$pod_name" -n "$namespace" -o json 2>/dev/null | jq -r '.status.containerStatuses[]? | "  - \(.name): ready=\(.ready), restarts=\(.restartCount), state=\(.state | keys[0])"' 2>/dev/null || true
             echo ""
             
             # Get logs from failing containers
-            local containers=$(kubectl get pod "$pod_name" -n "$namespace" -o jsonpath='{.spec.containers[*].name}' 2>/dev/null || echo "")
+            local containers=$(kubectl --kubeconfig="$KUBECONFIG" get pod "$pod_name" -n "$namespace" -o jsonpath='{.spec.containers[*].name}' 2>/dev/null || echo "")
             for container in $containers; do
                 # Check if container has terminated or is in waiting state
-                local container_state=$(kubectl get pod "$pod_name" -n "$namespace" -o json 2>/dev/null | jq -r ".status.containerStatuses[]? | select(.name==\"$container\") | .state | keys[0]" 2>/dev/null || echo "")
+                local container_state=$(kubectl --kubeconfig="$KUBECONFIG" get pod "$pod_name" -n "$namespace" -o json 2>/dev/null | jq -r ".status.containerStatuses[]? | select(.name==\"$container\") | .state | keys[0]" 2>/dev/null || echo "")
                 
                 if [ "$container_state" = "waiting" ] || [ "$container_state" = "terminated" ]; then
                     log_warn "Logs from container '$container' in pod '$pod_name':"
-                    kubectl logs "$pod_name" -n "$namespace" -c "$container" --tail=30 2>/dev/null || \
-                        kubectl logs "$pod_name" -n "$namespace" -c "$container" --previous --tail=30 2>/dev/null || \
+                    kubectl --kubeconfig="$KUBECONFIG" logs "$pod_name" -n "$namespace" -c "$container" --tail=30 2>/dev/null || \
+                        kubectl --kubeconfig="$KUBECONFIG" logs "$pod_name" -n "$namespace" -c "$container" --previous --tail=30 2>/dev/null || \
                         log_error "  Cannot retrieve logs for container $container"
                     echo ""
                 fi
@@ -844,22 +844,22 @@ diagnose_pod_failures() {
             
             # Show which containers aren't ready
             log_info "Container statuses for $pod_name:"
-            kubectl get pod "$pod_name" -n "$namespace" -o json 2>/dev/null | jq -r '.status.containerStatuses[]? | "  - \(.name): ready=\(.ready), restarts=\(.restartCount), state=\(.state | keys[0])"' 2>/dev/null || true
+            kubectl --kubeconfig="$KUBECONFIG" get pod "$pod_name" -n "$namespace" -o json 2>/dev/null | jq -r '.status.containerStatuses[]? | "  - \(.name): ready=\(.ready), restarts=\(.restartCount), state=\(.state | keys[0])"' 2>/dev/null || true
             echo ""
             
             # Show recent events
             log_info "Recent events for $pod_name:"
-            kubectl get events -n "$namespace" --field-selector involvedObject.name="$pod_name" --sort-by='.lastTimestamp' 2>/dev/null | tail -5 || true
+            kubectl --kubeconfig="$KUBECONFIG" get events -n "$namespace" --field-selector involvedObject.name="$pod_name" --sort-by='.lastTimestamp' 2>/dev/null | tail -5 || true
             echo ""
             
             # Get logs from non-ready containers
-            local containers=$(kubectl get pod "$pod_name" -n "$namespace" -o jsonpath='{.spec.containers[*].name}' 2>/dev/null || echo "")
+            local containers=$(kubectl --kubeconfig="$KUBECONFIG" get pod "$pod_name" -n "$namespace" -o jsonpath='{.spec.containers[*].name}' 2>/dev/null || echo "")
             for container in $containers; do
-                local container_ready=$(kubectl get pod "$pod_name" -n "$namespace" -o json 2>/dev/null | jq -r ".status.containerStatuses[]? | select(.name==\"$container\") | .ready" 2>/dev/null || echo "false")
+                local container_ready=$(kubectl --kubeconfig="$KUBECONFIG" get pod "$pod_name" -n "$namespace" -o json 2>/dev/null | jq -r ".status.containerStatuses[]? | select(.name==\"$container\") | .ready" 2>/dev/null || echo "false")
                 
                 if [ "$container_ready" = "false" ]; then
                     log_warn "Logs from non-ready container '$container' in pod '$pod_name' (last 30 lines):"
-                    kubectl logs "$pod_name" -n "$namespace" -c "$container" --tail=30 2>/dev/null || log_error "  Cannot retrieve logs"
+                    kubectl --kubeconfig="$KUBECONFIG" logs "$pod_name" -n "$namespace" -c "$container" --tail=30 2>/dev/null || log_error "  Cannot retrieve logs"
                     echo ""
                 fi
             done
@@ -869,15 +869,15 @@ diagnose_pod_failures() {
     # Check node resources
     echo ""
     log_info "Node Resource Status:"
-    kubectl top nodes 2>/dev/null || log_warn "Cannot get node metrics (metrics-server may not be installed)"
+    kubectl --kubeconfig="$KUBECONFIG" top nodes 2>/dev/null || log_warn "Cannot get node metrics (metrics-server may not be installed)"
     echo ""
     
     # Check for resource constraints
     log_info "Checking for resource constraints..."
-    local resource_events=$(kubectl get events -n "$namespace" --sort-by='.lastTimestamp' 2>/dev/null | grep -i "insufficient\|failedscheduling\|outof" | tail -5 || echo "")
+    local resource_events=$(kubectl --kubeconfig="$KUBECONFIG" get events -n "$namespace" --sort-by='.lastTimestamp' 2>/dev/null | grep -i "insufficient\|failedscheduling\|outof" | tail -5 || echo "")
     if [ -n "$resource_events" ]; then
         # Check if these are recent (last 5 minutes) or historical
-        local recent_events=$(kubectl get events -n "$namespace" --sort-by='.lastTimestamp' 2>/dev/null | \
+        local recent_events=$(kubectl --kubeconfig="$KUBECONFIG" get events -n "$namespace" --sort-by='.lastTimestamp' 2>/dev/null | \
             awk -v now="$(date +%s)" '{
                 # Try to parse the AGE column (e.g., "5m", "2h", "3d")
                 age=$5; 
@@ -920,14 +920,14 @@ install_cluster() {
     fi
     
     # Clean up any orphaned PXC resources from previous failed installs
-    if kubectl get pxc -n "$NAMESPACE" --no-headers 2>/dev/null | grep -q .; then
+    if kubectl --kubeconfig="$KUBECONFIG" get pxc -n "$NAMESPACE" --no-headers 2>/dev/null | grep -q .; then
         log_warn "Found orphaned PXC resources from previous install. Cleaning up..."
         
         # Remove finalizers
-        kubectl get pxc -n "$NAMESPACE" -o name 2>/dev/null | xargs -r -I {} kubectl patch {} -n "$NAMESPACE" -p '{"metadata":{"finalizers":[]}}' --type=merge 2>/dev/null || true
+        kubectl --kubeconfig="$KUBECONFIG" get pxc -n "$NAMESPACE" -o name 2>/dev/null | xargs -r -I {} kubectl --kubeconfig="$KUBECONFIG" patch {} -n "$NAMESPACE" -p '{"metadata":{"finalizers":[]}}' --type=merge 2>/dev/null || true
         
         # Force delete
-        kubectl delete pxc --all -n "$NAMESPACE" --force --grace-period=0 2>/dev/null || true
+        kubectl --kubeconfig="$KUBECONFIG" delete pxc --all -n "$NAMESPACE" --force --grace-period=0 2>/dev/null || true
         
         # Wait for deletion
         sleep 5
@@ -945,10 +945,10 @@ install_cluster() {
         log_error "Helm install failed. Checking for issues..."
         echo ""
         log_info "Recent events:"
-        kubectl get events -n "$NAMESPACE" --sort-by='.lastTimestamp' | tail -20
+        kubectl --kubeconfig="$KUBECONFIG" get events -n "$NAMESPACE" --sort-by='.lastTimestamp' | tail -20
         echo ""
         log_info "Pod status:"
-        kubectl get pods -n "$NAMESPACE"
+        kubectl --kubeconfig="$KUBECONFIG" get pods -n "$NAMESPACE"
         exit 1
     fi
     
@@ -969,7 +969,7 @@ install_cluster() {
         local total_pods=$PXC_NODES
         
         # Get pod status with READY column
-        local pod_status=$(kubectl get pods -n "$NAMESPACE" -l app.kubernetes.io/component=pxc --no-headers 2>/dev/null || echo "")
+        local pod_status=$(kubectl --kubeconfig="$KUBECONFIG" get pods -n "$NAMESPACE" -l app.kubernetes.io/component=pxc --no-headers 2>/dev/null || echo "")
         
         if [ -n "$pod_status" ]; then
             # Count pods where READY column shows all containers ready (e.g., "3/3", "2/2")
@@ -1015,7 +1015,7 @@ install_cluster() {
     
     # Wait for HAProxy pods
     log_info "Waiting for HAProxy pods to be ready..."
-    kubectl wait --for=condition=ready --timeout=300s \
+    kubectl --kubeconfig="$KUBECONFIG" wait --for=condition=ready --timeout=300s \
         pod -l app.kubernetes.io/component=haproxy \
         -n "$NAMESPACE"
     
@@ -1034,14 +1034,14 @@ configure_pitr() {
     log_info "Waiting for PITR deployment..."
     local retries=0
     while [ $retries -lt 60 ]; do
-        if kubectl get deployment "$pitr_deployment" -n "$NAMESPACE" &>/dev/null; then
+        if kubectl --kubeconfig="$KUBECONFIG" get deployment "$pitr_deployment" -n "$NAMESPACE" &>/dev/null; then
             break
         fi
         sleep 5
         retries=$((retries + 1))
     done
 
-    if ! kubectl get deployment "$pitr_deployment" -n "$NAMESPACE" &>/dev/null; then
+    if ! kubectl --kubeconfig="$KUBECONFIG" get deployment "$pitr_deployment" -n "$NAMESPACE" &>/dev/null; then
         log_warn "PITR deployment not found after 5 minutes"
         return
     fi
@@ -1049,11 +1049,11 @@ configure_pitr() {
     log_info "PITR deployment found, configuring GTID_CACHE_KEY..."
 
     # Setup trap to ensure operator is scaled back up on exit/error
-    trap 'kubectl scale deployment "$operator_deployment" -n "$NAMESPACE" --replicas=1 &>/dev/null || true' EXIT ERR
+    trap 'kubectl --kubeconfig="$KUBECONFIG" scale deployment "$operator_deployment" -n "$NAMESPACE" --replicas=1 &>/dev/null || true' EXIT ERR
 
     # Scale down operator to prevent reconciliation
     log_info "Temporarily scaling down operator..."
-    if ! kubectl scale deployment "$operator_deployment" -n "$NAMESPACE" --replicas=0; then
+    if ! kubectl --kubeconfig="$KUBECONFIG" scale deployment "$operator_deployment" -n "$NAMESPACE" --replicas=0; then
         log_error "Failed to scale down operator"
         trap - EXIT ERR
         return 1
@@ -1064,16 +1064,16 @@ configure_pitr() {
     log_info "Adding GTID_CACHE_KEY to PITR deployment..."
     
     # Check if GTID_CACHE_KEY already exists
-    local has_gtid_key=$(kubectl get deployment "$pitr_deployment" -n "$NAMESPACE" -o json 2>/dev/null | \
+    local has_gtid_key=$(kubectl --kubeconfig="$KUBECONFIG" get deployment "$pitr_deployment" -n "$NAMESPACE" -o json 2>/dev/null | \
         jq -r '.spec.template.spec.containers[0].env[]? | select(.name=="GTID_CACHE_KEY") | .name' 2>/dev/null || echo "")
     
     if [ -n "$has_gtid_key" ]; then
         log_info "GTID_CACHE_KEY already exists in PITR deployment"
     else
         # Add the environment variable (handle null .env array)
-        if kubectl get deployment "$pitr_deployment" -n "$NAMESPACE" -o json | \
+        if kubectl --kubeconfig="$KUBECONFIG" get deployment "$pitr_deployment" -n "$NAMESPACE" -o json | \
            jq '.spec.template.spec.containers[0].env = (.spec.template.spec.containers[0].env // []) + [{"name":"GTID_CACHE_KEY","value":"pxc-pitr-cache"}]' | \
-           kubectl replace -f - 2>&1 | tee /tmp/pitr-config.log | grep -q "replaced"; then
+           kubectl --kubeconfig="$KUBECONFIG" replace -f - 2>&1 | tee /tmp/pitr-config.log | grep -q "replaced"; then
             log_success "GTID_CACHE_KEY added successfully"
         else
             log_error "Failed to add GTID_CACHE_KEY"
@@ -1087,7 +1087,7 @@ configure_pitr() {
 
     # Scale operator back up
     log_info "Scaling operator back up..."
-    if ! kubectl scale deployment "$operator_deployment" -n "$NAMESPACE" --replicas=1; then
+    if ! kubectl --kubeconfig="$KUBECONFIG" scale deployment "$operator_deployment" -n "$NAMESPACE" --replicas=1; then
         log_error "Failed to scale operator back up - please run manually:"
         log_error "  kubectl scale deployment $operator_deployment -n $NAMESPACE --replicas=1"
         trap - EXIT ERR
@@ -1098,7 +1098,7 @@ configure_pitr() {
     trap - EXIT ERR
 
     # Wait for operator to be ready
-    kubectl wait --for=condition=available deployment/"$operator_deployment" -n "$NAMESPACE" --timeout=60s &>/dev/null || true
+    kubectl --kubeconfig="$KUBECONFIG" wait --for=condition=available deployment/"$operator_deployment" -n "$NAMESPACE" --timeout=60s &>/dev/null || true
 
     log_success "PITR configured with GTID cache key"
 }
@@ -1108,8 +1108,8 @@ display_info() {
     log_header "Installation Complete!"
     
     # Get actual installed versions
-    local actual_pxc_version=$(kubectl get pods -n "$NAMESPACE" -l app.kubernetes.io/component=pxc -o jsonpath='{.items[0].spec.containers[?(@.name=="pxc")].image}' 2>/dev/null | sed 's/.*://' || echo "${PXC_VERSION}")
-    local actual_haproxy_version=$(kubectl get pods -n "$NAMESPACE" -l app.kubernetes.io/component=haproxy -o jsonpath='{.items[0].spec.containers[?(@.name=="haproxy")].image}' 2>/dev/null | sed 's/.*://' || echo "operator-default")
+    local actual_pxc_version=$(kubectl --kubeconfig="$KUBECONFIG" get pods -n "$NAMESPACE" -l app.kubernetes.io/component=pxc -o jsonpath='{.items[0].spec.containers[?(@.name=="pxc")].image}' 2>/dev/null | sed 's/.*://' || echo "${PXC_VERSION}")
+    local actual_haproxy_version=$(kubectl --kubeconfig="$KUBECONFIG" get pods -n "$NAMESPACE" -l app.kubernetes.io/component=haproxy -o jsonpath='{.items[0].spec.containers[?(@.name=="haproxy")].image}' 2>/dev/null | sed 's/.*://' || echo "operator-default")
     
     echo -e "${GREEN}✓${NC} Percona XtraDB Cluster ${actual_pxc_version} is running"
     echo -e "${GREEN}✓${NC} HAProxy ${actual_haproxy_version} is configured"
@@ -1117,7 +1117,7 @@ display_info() {
     
     # Show PMM status if enabled
     if [ "$ENABLE_PMM" = "true" ]; then
-        local actual_pmm_version=$(kubectl get pods -n "$NAMESPACE" -l app.kubernetes.io/component=pxc -o jsonpath='{.items[0].spec.containers[?(@.name=="pmm-client")].image}' 2>/dev/null | sed 's/.*://' || echo "3.4.1")
+        local actual_pmm_version=$(kubectl --kubeconfig="$KUBECONFIG" get pods -n "$NAMESPACE" -l app.kubernetes.io/component=pxc -o jsonpath='{.items[0].spec.containers[?(@.name=="pmm-client")].image}' 2>/dev/null | sed 's/.*://' || echo "3.4.1")
         echo -e "${GREEN}✓${NC} PMM Client ${actual_pmm_version} is enabled"
         echo -e "${GREEN}✓${NC} PMM Server Host: ${PMM_SERVER_HOST}"
     fi
@@ -1127,11 +1127,11 @@ display_info() {
     echo ""
     
     log_info "Cluster Status:"
-    kubectl get pods -n "$NAMESPACE" -o wide
+    kubectl --kubeconfig="$KUBECONFIG" get pods -n "$NAMESPACE" -o wide
     echo ""
     
     log_info "Services:"
-    kubectl get svc -n "$NAMESPACE"
+    kubectl --kubeconfig="$KUBECONFIG" get svc -n "$NAMESPACE"
     echo ""
     
     log_info "Connection Information:"
@@ -1140,7 +1140,7 @@ display_info() {
     echo ""
     
     # Get root password
-    local root_password=$(kubectl get secret "${CLUSTER_NAME}-pxc-db-secrets" -n "$NAMESPACE" -o jsonpath='{.data.root}' 2>/dev/null | decode_base64 2>/dev/null || echo "")
+    local root_password=$(kubectl --kubeconfig="$KUBECONFIG" get secret "${CLUSTER_NAME}-pxc-db-secrets" -n "$NAMESPACE" -o jsonpath='{.data.root}' 2>/dev/null | decode_base64 2>/dev/null || echo "")
     
     if [ -n "$root_password" ]; then
         log_info "Root Password (save this!):"
