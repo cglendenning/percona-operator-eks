@@ -1086,30 +1086,78 @@ delete_namespace() {
 
 # Display completion summary
 show_summary() {
-    log_header "Uninstallation Complete"
+    log_header "Uninstallation Summary"
     
-    echo -e "${GREEN}[OK]${NC} Percona XtraDB Cluster uninstalled from namespace: ${NAMESPACE}"
+    # Check actual final state of namespace
+    local final_ns_state=$(kubectl --kubeconfig="$KUBECONFIG" get namespace "$NAMESPACE" -o jsonpath='{.status.phase}' 2>/dev/null || echo "NotFound")
+    
+    echo -e "${GREEN}[OK]${NC} Percona XtraDB Cluster uninstall process completed"
+    echo -e "${GREEN}[OK]${NC} Namespace: ${NAMESPACE}"
     echo -e "${GREEN}[OK]${NC} Environment: On-Premise vSphere/vCenter"
     echo ""
     
+    # Report on data/PVCs
     if [ "$DELETE_PVCS" = "yes" ]; then
         echo -e "${GREEN}[OK]${NC} All data deleted (PVCs and PVs removed)"
     else
         echo -e "${YELLOW}[INFO]${NC} Data preserved (PVCs remain)"
-        echo "  View: ${CYAN}kubectl get pvc -n $NAMESPACE${NC}"
-        echo "  Delete later: ${CYAN}kubectl delete pvc --all -n $NAMESPACE${NC}"
+        if [ "$final_ns_state" != "NotFound" ] && [ "$final_ns_state" != "Terminating" ]; then
+            echo -e "  View: ${CYAN}kubectl get pvc -n $NAMESPACE${NC}"
+            echo -e "  Delete later: ${CYAN}kubectl delete pvc --all -n $NAMESPACE${NC}"
+        fi
     fi
     echo ""
     
+    # Report on namespace state - this is critical
     if [ "$DELETE_NAMESPACE" = "yes" ]; then
-        echo -e "${GREEN}[OK]${NC} Namespace deleted"
+        if [ "$final_ns_state" = "NotFound" ]; then
+            echo -e "${GREEN}[OK]${NC} Namespace successfully deleted"
+        elif [ "$final_ns_state" = "Terminating" ]; then
+            echo -e "${YELLOW}[WARNING]${NC} Namespace is still in Terminating state"
+            echo -e "${YELLOW}[WARNING]${NC} This usually indicates resources with finalizers are blocking deletion"
+            echo ""
+            echo -e "${RED}⚠️  MANUAL ACTION REQUIRED${NC}"
+            echo ""
+            log_info "The namespace could not be fully deleted. Try these steps:"
+            echo ""
+            echo "  1. Check what's blocking (may show nothing if API rejecting queries):"
+            echo -e "     ${CYAN}kubectl api-resources --verbs=list --namespaced -o name | xargs -n 1 kubectl get --show-kind --ignore-not-found -n $NAMESPACE${NC}"
+            echo ""
+            echo "  2. Force finalize the namespace:"
+            echo -e "     ${CYAN}kubectl get namespace $NAMESPACE -o json | jq '.spec.finalizers = []' > /tmp/ns.json${NC}"
+            echo -e "     ${CYAN}kubectl replace --raw \"/api/v1/namespaces/$NAMESPACE/finalize\" -f /tmp/ns.json${NC}"
+            echo ""
+            echo "  3. If still stuck, check for these common blockers:"
+            echo "     - PVCs with finalizers"
+            echo "     - PXC custom resources"
+            echo "     - ValidatingWebhookConfiguration or MutatingWebhookConfiguration"
+            echo ""
+        else
+            echo -e "${YELLOW}[WARNING]${NC} Namespace still exists: ${final_ns_state}"
+            echo -e "  Delete manually: ${CYAN}kubectl delete namespace $NAMESPACE${NC}"
+        fi
     else
-        echo -e "${YELLOW}[INFO]${NC} Namespace preserved: ${NAMESPACE}"
-        echo "  Delete later: ${CYAN}kubectl delete namespace $NAMESPACE${NC}"
+        echo -e "${YELLOW}[INFO]${NC} Namespace preserved: ${NAMESPACE} (${final_ns_state})"
+        if [ "$final_ns_state" = "Terminating" ]; then
+            echo -e "${YELLOW}[WARNING]${NC} Note: Namespace is in Terminating state"
+        elif [ "$final_ns_state" != "NotFound" ]; then
+            echo -e "  Delete later: ${CYAN}kubectl delete namespace $NAMESPACE${NC}"
+        fi
     fi
     echo ""
     
-    log_success "Uninstallation completed successfully!"
+    # Final success/warning message based on actual state
+    if [ "$DELETE_NAMESPACE" = "yes" ] && [ "$final_ns_state" = "NotFound" ]; then
+        log_success "Uninstallation completed successfully!"
+    elif [ "$DELETE_NAMESPACE" = "yes" ] && [ "$final_ns_state" = "Terminating" ]; then
+        echo -e "${YELLOW}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+        echo -e "${YELLOW}  Uninstallation INCOMPLETE - Namespace Still Terminating${NC}"
+        echo -e "${YELLOW}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+    elif [ "$DELETE_NAMESPACE" != "yes" ] && [ "$final_ns_state" != "NotFound" ]; then
+        log_success "Uninstallation completed - namespace preserved as requested"
+    else
+        log_success "Uninstallation process completed"
+    fi
 }
 
 # Main uninstallation flow - methodical and transparent
@@ -1125,34 +1173,49 @@ main() {
         log_header "Namespace Already Terminating"
         echo -e "${YELLOW}⚠️  WARNING: Namespace '$NAMESPACE' is stuck in Terminating state${NC}"
         echo ""
-        log_info "This usually happens when resources have finalizers that prevent deletion."
-        log_info "The uninstall script can attempt to force-finalize the namespace."
+        log_info "This usually happens when resources with finalizers are blocking deletion."
         echo ""
-        log_info "Options:"
-        echo "  1. Force-finalize namespace now (skip to cleanup)"
-        echo "  2. Run full uninstall process (may help clear blocking resources)"
-        echo "  3. Abort"
+        echo "What would you like to do?"
+        echo ""
+        echo "  ${CYAN}1. Force-finalize the namespace immediately${NC}"
+        echo "     - Attempts to remove finalizers and force-delete the namespace"
+        echo "     - Quick, but may not work if resources are truly stuck"
+        echo ""
+        echo "  ${CYAN}2. Clean up resources first, then finalize (RECOMMENDED)${NC}"
+        echo "     - Removes PXC clusters, pods, and other resources that may be blocking"
+        echo "     - More thorough, better chance of success"
+        echo "     - Note: Some resource queries may fail due to Terminating state"
+        echo ""
+        echo "  ${CYAN}3. Cancel and troubleshoot manually${NC}"
+        echo "     - Exit the script so you can investigate what's blocking deletion"
         echo ""
         read -p "Choose option (1/2/3) [2]: " terminating_option
         terminating_option="${terminating_option:-2}"
         
         if [ "$terminating_option" = "1" ]; then
-            log_info "Attempting to force-finalize namespace..."
+            echo ""
+            log_info "Option 1: Attempting immediate force-finalization..."
             DELETE_NAMESPACE="yes"
             delete_namespace
             verify_current_state "Force Finalize"
             show_summary
             exit 0
         elif [ "$terminating_option" = "3" ]; then
+            echo ""
             log_info "Uninstallation cancelled by user"
+            log_info "The namespace remains in Terminating state"
+            echo ""
+            log_info "To investigate, try:"
+            echo "  kubectl api-resources --verbs=list --namespaced -o name | xargs -n 1 kubectl get --show-kind --ignore-not-found -n $NAMESPACE"
             exit 0
         fi
         # Option 2 falls through to normal process
         echo ""
-        log_info "Proceeding with full uninstall process..."
-        log_warn "Some resource queries may fail due to Terminating state"
+        log_info "Option 2: Proceeding with full cleanup process..."
+        log_warn "Note: Some resource queries may fail due to Terminating state"
+        log_info "The script will do its best to remove blocking resources"
         echo ""
-        sleep 2
+        sleep 3
     fi
     
     show_resources
