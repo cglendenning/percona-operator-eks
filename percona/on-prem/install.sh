@@ -303,6 +303,14 @@ prompt_configuration() {
     read -p "Enter the k8s secret in namespace '$MINIO_SECRET_NAMESPACE' that contains the minio credentials [default: minio-creds]: " minio_secret_name
     MINIO_SOURCE_SECRET_NAME="${minio_secret_name:-minio-creds}"
     
+    # Prompt for MinIO pod name
+    read -p "Enter MinIO pod name for bucket operations [default: minio-pool-0-0]: " minio_pod_name
+    MINIO_POD_NAME="${minio_pod_name:-minio-pool-0-0}"
+    
+    # Prompt for MinIO endpoint URL
+    read -p "Enter MinIO endpoint URL [default: https://minio-hl.minio-operator.svc.cluster.local:9000]: " minio_endpoint
+    MINIO_ENDPOINT="${minio_endpoint:-https://minio-hl.minio-operator.svc.cluster.local:9000}"
+    
     # Verify the secret exists in the source namespace
     if ! kubectl --kubeconfig="$KUBECONFIG" get secret "$MINIO_SOURCE_SECRET_NAME" -n "$MINIO_SECRET_NAMESPACE" &> /dev/null; then
         log_error "Secret '$MINIO_SOURCE_SECRET_NAME' not found in namespace '$MINIO_SECRET_NAMESPACE'"
@@ -560,15 +568,32 @@ create_minio_secret() {
         return
     fi
     
-    # Get the secret from source namespace and copy to target namespace with name 'minio-creds'
-    log_info "Copying secret '$MINIO_SOURCE_SECRET_NAME' from namespace '$MINIO_SECRET_NAMESPACE' to namespace '$NAMESPACE' as 'minio-creds'..."
+    # Extract credentials from source secret
+    log_info "Extracting credentials from secret '$MINIO_SOURCE_SECRET_NAME' in namespace '$MINIO_SECRET_NAMESPACE'..."
     
-    if kubectl --kubeconfig="$KUBECONFIG" get secret "$MINIO_SOURCE_SECRET_NAME" -n "$MINIO_SECRET_NAMESPACE" -o json | \
-       jq '.metadata.name = "minio-creds" | del(.metadata.namespace,.metadata.creationTimestamp,.metadata.resourceVersion,.metadata.selfLink,.metadata.uid)' | \
-       kubectl --kubeconfig="$KUBECONFIG" apply -n "$NAMESPACE" -f - &> /dev/null; then
+    local access_key=$(kubectl --kubeconfig="$KUBECONFIG" get secret "$MINIO_SOURCE_SECRET_NAME" -n "$MINIO_SECRET_NAMESPACE" -o jsonpath='{.data.accesskey}' 2>/dev/null || echo "")
+    local secret_key=$(kubectl --kubeconfig="$KUBECONFIG" get secret "$MINIO_SOURCE_SECRET_NAME" -n "$MINIO_SECRET_NAMESPACE" -o jsonpath='{.data.secretkey}' 2>/dev/null || echo "")
+    
+    if [ -z "$access_key" ] || [ -z "$secret_key" ]; then
+        log_error "Failed to extract credentials from secret '$MINIO_SOURCE_SECRET_NAME'"
+        log_error "Secret must contain 'accesskey' and 'secretkey' fields"
+        exit 1
+    fi
+    
+    # Create new secret with AWS-style keys for S3 compatibility
+    log_info "Creating secret 'minio-creds' in namespace '$NAMESPACE' with AWS S3-compatible format..."
+    
+    kubectl --kubeconfig="$KUBECONFIG" create secret generic minio-creds \
+        -n "$NAMESPACE" \
+        --from-literal=AWS_ACCESS_KEY_ID=$(echo "$access_key" | base64 -d) \
+        --from-literal=AWS_SECRET_ACCESS_KEY=$(echo "$secret_key" | base64 -d) \
+        --dry-run=client -o yaml | kubectl --kubeconfig="$KUBECONFIG" apply -f - &> /dev/null
+    
+    if [ $? -eq 0 ]; then
         log_success "MinIO credentials secret 'minio-creds' created successfully in namespace '$NAMESPACE'"
+        log_info "Secret contains AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY for S3-compatible access"
     else
-        log_error "Failed to copy MinIO credentials secret"
+        log_error "Failed to create MinIO credentials secret"
         exit 1
     fi
 }
@@ -578,9 +603,9 @@ create_minio_bucket() {
     log_header "Creating MinIO Bucket"
     
     # Check if MinIO pod exists
-    local minio_pod="myminio-pool-0-0"
-    if ! kubectl --kubeconfig="$KUBECONFIG" get pod "$minio_pod" -n minio-operator &> /dev/null; then
-        log_error "MinIO pod '$minio_pod' not found in namespace 'minio-operator'"
+    local minio_pod="$MINIO_POD_NAME"
+    if ! kubectl --kubeconfig="$KUBECONFIG" get pod "$minio_pod" -n "$MINIO_SECRET_NAMESPACE" &> /dev/null; then
+        log_error "MinIO pod '$minio_pod' not found in namespace '$MINIO_SECRET_NAMESPACE'"
         log_error "Please ensure MinIO is installed before running this script"
         exit 1
     fi
@@ -599,7 +624,7 @@ create_minio_bucket() {
     log_info "Setting up MinIO client alias in pod '$minio_pod'..."
     
     # Set up mc alias
-    if ! kubectl --kubeconfig="$KUBECONFIG" -n minio-operator exec -it "$minio_pod" -- bash -c \
+    if ! kubectl --kubeconfig="$KUBECONFIG" -n "$MINIO_SECRET_NAMESPACE" exec -it "$minio_pod" -- bash -c \
         "mc --insecure alias set local https://localhost:9000 $access_key $secret_key" 2>/dev/null; then
         log_error "Failed to set up MinIO client alias"
         exit 1
@@ -609,7 +634,7 @@ create_minio_bucket() {
     
     # Check if bucket already exists
     log_info "Checking if bucket '$MINIO_BUCKET' already exists..."
-    local bucket_exists=$(kubectl --kubeconfig="$KUBECONFIG" -n minio-operator exec -it "$minio_pod" -- bash -c \
+    local bucket_exists=$(kubectl --kubeconfig="$KUBECONFIG" -n "$MINIO_SECRET_NAMESPACE" exec -it "$minio_pod" -- bash -c \
         "mc --insecure ls local | grep -w '$MINIO_BUCKET'" 2>/dev/null || echo "")
     
     if [ -n "$bucket_exists" ]; then
@@ -617,7 +642,7 @@ create_minio_bucket() {
     else
         # Create bucket
         log_info "Creating bucket '$MINIO_BUCKET'..."
-        if kubectl --kubeconfig="$KUBECONFIG" -n minio-operator exec -it "$minio_pod" -- bash -c \
+        if kubectl --kubeconfig="$KUBECONFIG" -n "$MINIO_SECRET_NAMESPACE" exec -it "$minio_pod" -- bash -c \
             "mc --insecure mb -p local/$MINIO_BUCKET" 2>/dev/null; then
             log_success "Bucket '$MINIO_BUCKET' created successfully"
         else
@@ -628,7 +653,7 @@ create_minio_bucket() {
     
     # List buckets to verify
     log_info "Current MinIO buckets:"
-    kubectl --kubeconfig="$KUBECONFIG" -n minio-operator exec -it "$minio_pod" -- bash -c \
+    kubectl --kubeconfig="$KUBECONFIG" -n "$MINIO_SECRET_NAMESPACE" exec -it "$minio_pod" -- bash -c \
         "mc --insecure ls local" 2>/dev/null | sed 's/^/  /' || log_warn "Could not list buckets"
     
     echo ""
@@ -745,7 +770,7 @@ backup:
       s3:
         bucket: ${MINIO_BUCKET}
         region: us-east-1
-        endpointUrl: https://myminio-hl.minio-operator.svc.cluster.local:9000
+        endpointUrl: ${MINIO_ENDPOINT}
         credentialsSecret: minio-creds
         
   schedule:
