@@ -1133,6 +1133,132 @@ configure_pitr() {
     log_success "PITR configured with GTID cache key"
 }
 
+# Configure PMM Service Account Token
+configure_pmm_token() {
+    # Skip if PMM is not enabled
+    if [ "$ENABLE_PMM" != "true" ]; then
+        return 0
+    fi
+    
+    log_header "Configuring PMM Service Account Token"
+    
+    local secret_name="${CLUSTER_NAME}-pxc-db-secrets"
+    local pmm_token=""
+    
+    # Check if the secret already has a pmmservertoken
+    local existing_token=$(kubectl --kubeconfig="$KUBECONFIG" get secret "$secret_name" -n "$NAMESPACE" -o jsonpath='{.data.pmmservertoken}' 2>/dev/null | base64 -d 2>/dev/null || echo "")
+    
+    if [ -n "$existing_token" ]; then
+        log_info "PMM service account token already exists in secret '$secret_name'"
+        read -p "Do you want to update it? (yes/no) [no]: " update_token
+        update_token="${update_token:-no}"
+        if [[ ! "$update_token" =~ ^[Yy]([Ee][Ss])?$ ]]; then
+            log_info "Keeping existing PMM token"
+            return 0
+        fi
+    fi
+    
+    # Try to generate token automatically via PMM API
+    log_info "Attempting to generate PMM service account token via API..."
+    log_info "PMM Server: http://${PMM_SERVER_HOST}"
+    
+    # Prompt for PMM admin credentials
+    echo ""
+    log_info "Enter PMM admin credentials (default is admin/admin on first install)"
+    read -p "PMM Admin Username [default: admin]: " pmm_user
+    pmm_user="${pmm_user:-admin}"
+    
+    read -sp "PMM Admin Password [default: admin]: " pmm_password
+    echo ""
+    pmm_password="${pmm_password:-admin}"
+    
+    # Try to create service account token via PMM API
+    log_info "Creating service account token with Admin role..."
+    
+    local api_response=$(kubectl --kubeconfig="$KUBECONFIG" run pmm-api-call --rm -i --restart=Never --image=curlimages/curl:latest -n "$NAMESPACE" -- \
+        curl -s -w "\n%{http_code}" \
+        -X POST "http://${PMM_SERVER_HOST}/v1/management/SecurityChecks/ListSecurityChecks" \
+        -u "${pmm_user}:${pmm_password}" \
+        -H "Content-Type: application/json" 2>/dev/null || echo "000")
+    
+    local http_code=$(echo "$api_response" | tail -n1)
+    
+    if [ "$http_code" = "200" ] || [ "$http_code" = "401" ]; then
+        log_info "PMM API is accessible"
+        
+        # Create service account token
+        local token_name="pxc-cluster-$(date +%s)"
+        local token_response=$(kubectl --kubeconfig="$KUBECONFIG" run pmm-api-token --rm -i --restart=Never --image=curlimages/curl:latest -n "$NAMESPACE" -- \
+            curl -s -w "\n%{http_code}" \
+            -X POST "http://${PMM_SERVER_HOST}/v1/management/User/CreateAPIKey" \
+            -u "${pmm_user}:${pmm_password}" \
+            -H "Content-Type: application/json" \
+            -d "{\"name\":\"${token_name}\",\"role\":\"Admin\"}" 2>/dev/null || echo "000")
+        
+        local token_http_code=$(echo "$token_response" | tail -n1)
+        local token_body=$(echo "$token_response" | sed '$d')
+        
+        if [ "$token_http_code" = "200" ]; then
+            pmm_token=$(echo "$token_body" | grep -o '"api_key":"[^"]*"' | sed 's/"api_key":"\([^"]*\)"/\1/' || echo "")
+            
+            if [ -n "$pmm_token" ]; then
+                log_success "PMM service account token created successfully via API"
+            else
+                log_warn "Failed to extract token from API response"
+            fi
+        else
+            log_warn "Failed to create token via API (HTTP $token_http_code)"
+        fi
+    else
+        log_warn "PMM API not accessible or authentication failed"
+    fi
+    
+    # If automatic generation failed, prompt for manual token
+    if [ -z "$pmm_token" ]; then
+        log_warn "Automatic token generation failed"
+        echo ""
+        log_info "Please generate a PMM service account token manually:"
+        echo ""
+        echo "  1. Access PMM UI: http://${PMM_SERVER_HOST}"
+        echo "  2. Login with admin credentials"
+        echo "  3. Go to: Configuration → Settings → API Keys"
+        echo "  4. Click 'Add API Key'"
+        echo "  5. Name: pxc-cluster-token"
+        echo "  6. Role: Admin"
+        echo "  7. Click 'Generate'"
+        echo "  8. Copy the generated token"
+        echo ""
+        
+        read -sp "Enter the PMM service account token: " pmm_token
+        echo ""
+        
+        if [ -z "$pmm_token" ]; then
+            log_error "No token provided. PMM integration will not work."
+            log_error "You can add the token later by patching the secret:"
+            echo "  kubectl patch secret $secret_name -n $NAMESPACE -p '{\"data\":{\"pmmservertoken\":\"<base64-encoded-token>\"}}'"
+            return 1
+        fi
+    fi
+    
+    # Add token to the secret
+    log_info "Adding PMM token to secret '$secret_name'..."
+    
+    local encoded_token=$(echo -n "$pmm_token" | base64)
+    
+    if kubectl --kubeconfig="$KUBECONFIG" patch secret "$secret_name" -n "$NAMESPACE" \
+        -p "{\"data\":{\"pmmservertoken\":\"${encoded_token}\"}}" &>/dev/null; then
+        log_success "PMM service account token added to secret successfully"
+        log_info "PMM clients will use this token to authenticate with PMM server"
+    else
+        log_error "Failed to patch secret with PMM token"
+        log_error "You can add it manually:"
+        echo "  kubectl patch secret $secret_name -n $NAMESPACE -p '{\"data\":{\"pmmservertoken\":\"${encoded_token}\"}}'"
+        return 1
+    fi
+    
+    echo ""
+}
+
 # Display cluster information
 display_info() {
     log_header "Installation Complete!"
@@ -1150,6 +1276,14 @@ display_info() {
         local actual_pmm_version=$(kubectl --kubeconfig="$KUBECONFIG" get pods -n "$NAMESPACE" -l app.kubernetes.io/component=pxc -o jsonpath='{.items[0].spec.containers[?(@.name=="pmm-client")].image}' 2>/dev/null | sed 's/.*://' || echo "3.4.1")
         echo -e "${GREEN}✓${NC} PMM Client ${actual_pmm_version} is enabled"
         echo -e "${GREEN}✓${NC} PMM Server Host: ${PMM_SERVER_HOST}"
+        
+        # Check if PMM token was configured
+        local has_pmm_token=$(kubectl --kubeconfig="$KUBECONFIG" get secret "${CLUSTER_NAME}-pxc-db-secrets" -n "$NAMESPACE" -o jsonpath='{.data.pmmservertoken}' 2>/dev/null || echo "")
+        if [ -n "$has_pmm_token" ]; then
+            echo -e "${GREEN}✓${NC} PMM Service Account Token configured"
+        else
+            echo -e "${YELLOW}⚠${NC} PMM Service Account Token NOT configured (PMM monitoring may not work)"
+        fi
     fi
     
     echo -e "${GREEN}✓${NC} All components deployed to namespace: ${NAMESPACE}"
@@ -1225,6 +1359,7 @@ main() {
     generate_helm_values
     install_cluster
     configure_pitr
+    configure_pmm_token
     display_info
     
     # Cleanup temp files
