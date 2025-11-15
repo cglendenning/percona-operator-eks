@@ -60,7 +60,7 @@ check_prerequisites() {
     log_success "helm found"
     
     # Check cluster connectivity
-    if ! kubectl cluster-info &> /dev/null; then
+    if ! kubectl --kubeconfig="$KUBECONFIG" cluster-info &> /dev/null; then
         log_error "Cannot connect to Kubernetes cluster"
         log_error "Please configure kubectl and try again"
         exit 1
@@ -74,7 +74,7 @@ prompt_namespace() {
     
     # List namespaces with Percona resources
     log_info "Namespaces with Percona resources:"
-    kubectl get pxc --all-namespaces 2>/dev/null | grep -v "^NAMESPACE" | awk '{print "  - " $1}' || echo "  (none found)"
+    kubectl --kubeconfig="$KUBECONFIG" get pxc --all-namespaces 2>/dev/null | grep -v "^NAMESPACE" | awk '{print "  - " $1}' || echo "  (none found)"
     echo ""
     
     read -p "Enter namespace to uninstall from: " namespace_input
@@ -86,11 +86,11 @@ prompt_namespace() {
     fi
     
     # Verify namespace exists or has orphaned resources
-    local ns_status=$(kubectl get namespace "$NAMESPACE" -o jsonpath='{.status.phase}' 2>/dev/null || echo "NotFound")
+    local ns_status=$(kubectl --kubeconfig="$KUBECONFIG" get namespace "$NAMESPACE" -o jsonpath='{.status.phase}' 2>/dev/null || echo "NotFound")
     
     if [ "$ns_status" = "NotFound" ]; then
         # Check if there are orphaned PXC resources referencing this namespace
-        local orphaned_pxc=$(kubectl get pxc --all-namespaces 2>/dev/null | grep "^$NAMESPACE " || echo "")
+        local orphaned_pxc=$(kubectl --kubeconfig="$KUBECONFIG" get pxc --all-namespaces 2>/dev/null | grep "^$NAMESPACE " || echo "")
         
         if [ -n "$orphaned_pxc" ]; then
             log_warn "Namespace '$NAMESPACE' doesn't exist, but orphaned PXC resources were found"
@@ -124,7 +124,7 @@ show_resources() {
     
     echo -e "${MAGENTA}═══ PXC Clusters ═══${NC}"
     # Check both namespace-scoped and orphaned (cluster-wide) PXC resources
-    local pxc_resources=$(kubectl get pxc --all-namespaces --no-headers 2>/dev/null | grep "^$NAMESPACE " || echo "")
+    local pxc_resources=$(kubectl --kubeconfig="$KUBECONFIG" get pxc --all-namespaces --no-headers 2>/dev/null | grep "^$NAMESPACE " || echo "")
     if [ -n "$pxc_resources" ]; then
         echo "$pxc_resources" | awk '{print "  - " $2 " (Age: " $NF ")"}'
     else
@@ -133,39 +133,39 @@ show_resources() {
     echo ""
     
     echo -e "${MAGENTA}═══ Pods ═══${NC}"
-    local pod_count=$(kubectl get pods -n "$NAMESPACE" --no-headers 2>/dev/null | wc -l | tr -d ' ')
+    local pod_count=$(kubectl --kubeconfig="$KUBECONFIG" get pods -n "$NAMESPACE" --no-headers 2>/dev/null | wc -l | tr -d ' ')
     if [ "$pod_count" -gt 0 ]; then
-        kubectl get pods -n "$NAMESPACE" --no-headers 2>/dev/null | awk '{print "  - " $1 " (" $3 ")"}'
+        kubectl --kubeconfig="$KUBECONFIG" get pods -n "$NAMESPACE" --no-headers 2>/dev/null | awk '{print "  - " $1 " (" $3 ")"}'
     else
         echo "  (none found)"
     fi
     echo ""
     
     echo -e "${MAGENTA}═══ Services ═══${NC}"
-    local svc_count=$(kubectl get svc -n "$NAMESPACE" --no-headers 2>/dev/null | wc -l | tr -d ' ')
+    local svc_count=$(kubectl --kubeconfig="$KUBECONFIG" get svc -n "$NAMESPACE" --no-headers 2>/dev/null | wc -l | tr -d ' ')
     if [ "$svc_count" -gt 0 ]; then
-        kubectl get svc -n "$NAMESPACE" --no-headers 2>/dev/null | awk '{print "  - " $1 " (" $2 ")"}'
+        kubectl --kubeconfig="$KUBECONFIG" get svc -n "$NAMESPACE" --no-headers 2>/dev/null | awk '{print "  - " $1 " (" $2 ")"}'
     else
         echo "  (none found)"
     fi
     echo ""
     
     echo -e "${MAGENTA}═══ Persistent Volume Claims ═══${NC}"
-    local pvc_count=$(kubectl get pvc -n "$NAMESPACE" --no-headers 2>/dev/null | wc -l | tr -d ' ')
+    local pvc_count=$(kubectl --kubeconfig="$KUBECONFIG" get pvc -n "$NAMESPACE" --no-headers 2>/dev/null | wc -l | tr -d ' ')
     if [ "$pvc_count" -gt 0 ]; then
-        kubectl get pvc -n "$NAMESPACE" --no-headers 2>/dev/null | awk '{print "  - " $1 " (" $2 ", " $3 ")"}'
+        kubectl --kubeconfig="$KUBECONFIG" get pvc -n "$NAMESPACE" --no-headers 2>/dev/null | awk '{print "  - " $1 " (" $2 ", " $3 ")"}'
         echo ""
         
         # Calculate total storage (column 4 is CAPACITY)
-        local total_storage=$(kubectl get pvc -n "$NAMESPACE" --no-headers 2>/dev/null | awk '{print $4}' | sed 's/Gi//' | awk '{sum+=$1} END {print sum}')
+        local total_storage=$(kubectl --kubeconfig="$KUBECONFIG" get pvc -n "$NAMESPACE" --no-headers 2>/dev/null | awk '{print $4}' | sed 's/Gi//' | awk '{sum+=$1} END {print sum}')
         log_warn "Total storage: ${total_storage}Gi"
         
         # Show associated Persistent Volumes
         echo ""
         echo -e "${MAGENTA}═══ Associated Persistent Volumes ═══${NC}"
-        kubectl get pvc -n "$NAMESPACE" --no-headers 2>/dev/null | awk '{print $3}' | while read -r pv; do
+        kubectl --kubeconfig="$KUBECONFIG" get pvc -n "$NAMESPACE" --no-headers 2>/dev/null | awk '{print $3}' | while read -r pv; do
             if [ -n "$pv" ] && [ "$pv" != "<none>" ]; then
-                local pv_info=$(kubectl get pv "$pv" --no-headers 2>/dev/null | awk '{print $1 " (" $2 ", " $5 ", " $6 ")"}' || echo "$pv (details unavailable)")
+                local pv_info=$(kubectl --kubeconfig="$KUBECONFIG" get pv "$pv" --no-headers 2>/dev/null | awk '{print $1 " (" $2 ", " $5 ", " $6 ")"}' || echo "$pv (details unavailable)")
                 echo "  - $pv_info"
             fi
         done
@@ -175,9 +175,9 @@ show_resources() {
     echo ""
     
     echo -e "${MAGENTA}═══ Secrets ═══${NC}"
-    local secret_count=$(kubectl get secrets -n "$NAMESPACE" --no-headers 2>/dev/null | grep -v "default-token" | wc -l | tr -d ' ')
+    local secret_count=$(kubectl --kubeconfig="$KUBECONFIG" get secrets -n "$NAMESPACE" --no-headers 2>/dev/null | grep -v "default-token" | wc -l | tr -d ' ')
     if [ "$secret_count" -gt 0 ]; then
-        kubectl get secrets -n "$NAMESPACE" --no-headers 2>/dev/null | grep -v "default-token" | awk '{print "  - " $1 " (" $2 ")"}'
+        kubectl --kubeconfig="$KUBECONFIG" get secrets -n "$NAMESPACE" --no-headers 2>/dev/null | grep -v "default-token" | awk '{print "  - " $1 " (" $2 ")"}'
     else
         echo "  (none found)"
     fi
@@ -227,7 +227,7 @@ uninstall_helm_releases() {
     log_header "Uninstalling Helm Releases"
     
     # Check if namespace exists - if not, skip Helm (it will fail anyway)
-    if ! kubectl get namespace "$NAMESPACE" &>/dev/null; then
+    if ! kubectl --kubeconfig="$KUBECONFIG" get namespace "$NAMESPACE" &>/dev/null; then
         log_warn "Namespace doesn't exist - skipping Helm uninstall"
         log_info "Will proceed directly to aggressive resource cleanup"
         return
@@ -274,9 +274,9 @@ uninstall_helm_releases() {
                 log_warn "Helm release '$release' still exists - diagnosing..."
                 
                 # Diagnose why it's stuck
-                local blocking_pods=$(kubectl get pods -n "$NAMESPACE" --no-headers 2>/dev/null | grep -v "Running\|Completed" | wc -l | tr -d ' ')
-                local blocking_pvcs=$(kubectl get pvc -n "$NAMESPACE" --no-headers 2>/dev/null | wc -l | tr -d ' ')
-                local blocking_finalizers=$(kubectl get pxc -n "$NAMESPACE" -o json 2>/dev/null | jq -r '.items[].metadata.finalizers[]' 2>/dev/null | wc -l | tr -d ' ')
+                local blocking_pods=$(kubectl --kubeconfig="$KUBECONFIG" get pods -n "$NAMESPACE" --no-headers 2>/dev/null | grep -v "Running\|Completed" | wc -l | tr -d ' ')
+                local blocking_pvcs=$(kubectl --kubeconfig="$KUBECONFIG" get pvc -n "$NAMESPACE" --no-headers 2>/dev/null | wc -l | tr -d ' ')
+                local blocking_finalizers=$(kubectl --kubeconfig="$KUBECONFIG" get pxc -n "$NAMESPACE" -o json 2>/dev/null | jq -r '.items[].metadata.finalizers[]' 2>/dev/null | wc -l | tr -d ' ')
                 
                 if [ "$blocking_pods" -gt 0 ]; then
                     log_warn "  → $blocking_pods pod(s) not in Running/Completed state"
@@ -318,12 +318,12 @@ cleanup_operator_resources() {
     local release_name="percona-operator-${NAMESPACE}"
     local found_resources=false
     
-    if kubectl get clusterrole "${release_name}-pxc-operator" &>/dev/null; then
+    if kubectl --kubeconfig="$KUBECONFIG" get clusterrole "${release_name}-pxc-operator" &>/dev/null; then
         log_info "Found ClusterRole: ${release_name}-pxc-operator (will remain)"
         found_resources=true
     fi
     
-    if kubectl get clusterrolebinding "${release_name}-pxc-operator" &>/dev/null; then
+    if kubectl --kubeconfig="$KUBECONFIG" get clusterrolebinding "${release_name}-pxc-operator" &>/dev/null; then
         log_info "Found ClusterRoleBinding: ${release_name}-pxc-operator (will remain)"
         found_resources=true
     fi
@@ -344,19 +344,19 @@ delete_pxc_resources() {
     # Check if namespace exists - critical for determining deletion strategy
     local ns_exists="false"
     local ns_recreated="false"
-    if kubectl get namespace "$NAMESPACE" &>/dev/null; then
+    if kubectl --kubeconfig="$KUBECONFIG" get namespace "$NAMESPACE" &>/dev/null; then
         ns_exists="true"
         log_info "Namespace exists - using namespace-scoped operations"
     else
         # Check if there are orphaned PXC resources
-        local orphaned_count=$(kubectl get pxc --all-namespaces --no-headers 2>/dev/null | grep "^$NAMESPACE " | wc -l | tr -d ' ')
+        local orphaned_count=$(kubectl --kubeconfig="$KUBECONFIG" get pxc --all-namespaces --no-headers 2>/dev/null | grep "^$NAMESPACE " | wc -l | tr -d ' ')
         
         if [ "$orphaned_count" -gt 0 ]; then
             log_warn "Namespace doesn't exist but $orphaned_count orphaned PXC resource(s) found"
             log_warn "Kubernetes API rejects operations on orphaned resources without namespace"
             log_info "Temporarily recreating namespace to enable cleanup..."
             
-            if kubectl create namespace "$NAMESPACE" &>/dev/null; then
+            if kubectl --kubeconfig="$KUBECONFIG" create namespace "$NAMESPACE" &>/dev/null; then
                 ns_exists="true"
                 ns_recreated="true"
                 log_success "Namespace temporarily recreated for cleanup"
@@ -374,7 +374,7 @@ delete_pxc_resources() {
     
     while [ $attempt -le $max_attempts ]; do
         # Get current list of PXC resources
-        local pxc_list=$(kubectl get pxc --all-namespaces --no-headers 2>/dev/null | grep "^$NAMESPACE " | awk '{print $2}' || echo "")
+        local pxc_list=$(kubectl --kubeconfig="$KUBECONFIG" get pxc --all-namespaces --no-headers 2>/dev/null | grep "^$NAMESPACE " | awk '{print $2}' || echo "")
         
         if [ -z "$pxc_list" ]; then
             log_success "All PXC resources deleted"
@@ -404,20 +404,20 @@ delete_pxc_resources() {
             
             # Always use kubectl operations when namespace exists (including recreated)
             log_info "  → Removing finalizers..."
-            timeout 20 kubectl patch pxc "$pxc_name" -n "$NAMESPACE" -p '{"metadata":{"finalizers":[]}}' --type=merge 2>/dev/null || true
-            timeout 20 kubectl patch pxc "$pxc_name" -n "$NAMESPACE" --type json -p='[{"op": "remove", "path": "/metadata/finalizers"}]' 2>/dev/null || true
+            timeout 20 kubectl --kubeconfig="$KUBECONFIG" patch pxc "$pxc_name" -n "$NAMESPACE" -p '{"metadata":{"finalizers":[]}}' --type=merge 2>/dev/null || true
+            timeout 20 kubectl --kubeconfig="$KUBECONFIG" patch pxc "$pxc_name" -n "$NAMESPACE" --type json -p='[{"op": "remove", "path": "/metadata/finalizers"}]' 2>/dev/null || true
             
             log_info "  → Deleting resource..."
-            timeout 20 kubectl delete pxc "$pxc_name" -n "$NAMESPACE" --force --grace-period=0 2>/dev/null || true
+            timeout 20 kubectl --kubeconfig="$KUBECONFIG" delete pxc "$pxc_name" -n "$NAMESPACE" --force --grace-period=0 2>/dev/null || true
             
             # Step 4: Verify it's gone
             sleep 2
-            if kubectl get pxc --all-namespaces 2>/dev/null | grep -q "^$NAMESPACE $pxc_name"; then
+            if kubectl --kubeconfig="$KUBECONFIG" get pxc --all-namespaces 2>/dev/null | grep -q "^$NAMESPACE $pxc_name"; then
                 log_warn "  → Still exists after deletion attempt"
                 
                 # Last resort - try raw API delete even if namespace exists
                 log_info "  → Attempting raw API deletion as last resort..."
-                kubectl delete --raw "/apis/pxc.percona.com/v1/namespaces/$NAMESPACE/perconaxtradbclusters/$pxc_name" 2>/dev/null || true
+                kubectl --kubeconfig="$KUBECONFIG" delete --raw "/apis/pxc.percona.com/v1/namespaces/$NAMESPACE/perconaxtradbclusters/$pxc_name" 2>/dev/null || true
             else
                 log_success "  → Deleted successfully"
             fi
@@ -427,7 +427,7 @@ delete_pxc_resources() {
         sleep 3
         
         # Check if anything remains
-        local remaining=$(kubectl get pxc --all-namespaces --no-headers 2>/dev/null | grep "^$NAMESPACE " | wc -l | tr -d ' ')
+        local remaining=$(kubectl --kubeconfig="$KUBECONFIG" get pxc --all-namespaces --no-headers 2>/dev/null | grep "^$NAMESPACE " | wc -l | tr -d ' ')
         if [ "$remaining" -eq 0 ]; then
             log_success "All PXC resources deleted after $attempt attempt(s)"
             return 0
@@ -437,11 +437,11 @@ delete_pxc_resources() {
     done
     
     # Final check after all attempts
-    local final_count=$(kubectl get pxc --all-namespaces --no-headers 2>/dev/null | grep "^$NAMESPACE " | wc -l | tr -d ' ')
+    local final_count=$(kubectl --kubeconfig="$KUBECONFIG" get pxc --all-namespaces --no-headers 2>/dev/null | grep "^$NAMESPACE " | wc -l | tr -d ' ')
     if [ "$final_count" -gt 0 ]; then
         log_error "Failed to delete $final_count PXC resource(s) after $max_attempts attempts"
         log_warn "Showing remaining resources:"
-        kubectl get pxc --all-namespaces 2>/dev/null | grep "^$NAMESPACE "
+        kubectl --kubeconfig="$KUBECONFIG" get pxc --all-namespaces 2>/dev/null | grep "^$NAMESPACE "
         log_info "Manual cleanup may be needed"
     else
         log_success "All PXC resources deleted"
@@ -450,7 +450,7 @@ delete_pxc_resources() {
     # Clean up recreated namespace if we created it
     if [ "$ns_recreated" = "true" ]; then
         log_info "Cleaning up temporarily recreated namespace..."
-        if kubectl delete namespace "$NAMESPACE" --timeout=30s 2>/dev/null; then
+        if kubectl --kubeconfig="$KUBECONFIG" delete namespace "$NAMESPACE" --timeout=30s 2>/dev/null; then
             log_success "Temporary namespace deleted"
         else
             log_warn "Temporary namespace may still exist - will be cleaned up in namespace deletion step"
@@ -465,29 +465,29 @@ diagnose_stuck_resources() {
     echo ""
     
     # Check volumeattachments (informational - these are cluster-scoped and safe to leave)
-    local va_count=$(kubectl get volumeattachments --no-headers 2>/dev/null | grep -c "$NAMESPACE" || echo "0")
+    local va_count=$(kubectl --kubeconfig="$KUBECONFIG" get volumeattachments --no-headers 2>/dev/null | grep -c "$NAMESPACE" || echo "0")
     if [ "$va_count" -gt 0 ]; then
         echo -e "${BLUE}[INFO]${NC} $va_count VolumeAttachment(s) exist - will auto-clean:"
-        kubectl get volumeattachments --no-headers 2>/dev/null | grep "$NAMESPACE" | awk '{print "  - " $1}' || true
+        kubectl --kubeconfig="$KUBECONFIG" get volumeattachments --no-headers 2>/dev/null | grep "$NAMESPACE" | awk '{print "  - " $1}' || true
         echo "  (These are cluster-scoped and will be cleaned up automatically by Kubernetes)"
     fi
     
     # Check PVCs
-    local pvc_count=$(kubectl get pvc -n "$NAMESPACE" --no-headers 2>/dev/null | wc -l | tr -d ' ')
+    local pvc_count=$(kubectl --kubeconfig="$KUBECONFIG" get pvc -n "$NAMESPACE" --no-headers 2>/dev/null | wc -l | tr -d ' ')
     if [ "$pvc_count" -gt 0 ]; then
         echo -e "${YELLOW}[BLOCKING]${NC} $pvc_count PVC(s) in namespace:"
-        kubectl get pvc -n "$NAMESPACE" --no-headers 2>/dev/null | awk '{print "  - " $1 " [" $2 "]"}' || true
+        kubectl --kubeconfig="$KUBECONFIG" get pvc -n "$NAMESPACE" --no-headers 2>/dev/null | awk '{print "  - " $1 " [" $2 "]"}' || true
     fi
     
     # Check PVs
-    local pv_count=$(kubectl get pv --no-headers 2>/dev/null | grep -c "$NAMESPACE" || echo "0")
+    local pv_count=$(kubectl --kubeconfig="$KUBECONFIG" get pv --no-headers 2>/dev/null | grep -c "$NAMESPACE" || echo "0")
     if [ "$pv_count" -gt 0 ]; then
         echo -e "${YELLOW}[BLOCKING]${NC} $pv_count PV(s) bound to namespace:"
-        kubectl get pv --no-headers 2>/dev/null | grep "$NAMESPACE" | awk '{print "  - " $1 " [" $5 "]"}' || true
+        kubectl --kubeconfig="$KUBECONFIG" get pv --no-headers 2>/dev/null | grep "$NAMESPACE" | awk '{print "  - " $1 " [" $5 "]"}' || true
     fi
     
     # Check pods in Terminating state
-    local term_pods=$(kubectl get pods -n "$NAMESPACE" --no-headers 2>/dev/null | grep "Terminating" | awk '{print $1}' || echo "")
+    local term_pods=$(kubectl --kubeconfig="$KUBECONFIG" get pods -n "$NAMESPACE" --no-headers 2>/dev/null | grep "Terminating" | awk '{print $1}' || echo "")
     if [ -n "$term_pods" ]; then
         echo -e "${YELLOW}[BLOCKING]${NC} Pod(s) stuck in Terminating:"
         echo "$term_pods" | while read -r pod; do
@@ -496,7 +496,7 @@ diagnose_stuck_resources() {
     fi
     
     # Check for finalizers on namespace
-    local ns_finalizers=$(kubectl get namespace "$NAMESPACE" -o jsonpath='{.spec.finalizers}' 2>/dev/null || echo "")
+    local ns_finalizers=$(kubectl --kubeconfig="$KUBECONFIG" get namespace "$NAMESPACE" -o jsonpath='{.spec.finalizers}' 2>/dev/null || echo "")
     if [ -n "$ns_finalizers" ] && [ "$ns_finalizers" != "[]" ] && [ "$ns_finalizers" != "null" ]; then
         echo -e "${YELLOW}[BLOCKING]${NC} Namespace has finalizers: $ns_finalizers"
     fi
@@ -507,7 +507,7 @@ diagnose_stuck_resources() {
 # Check volumeattachments (informational only - not deleted for safety)
 cleanup_volumeattachments() {
     log_info "Checking for VolumeAttachments..."
-    local vas=$(kubectl get volumeattachments --no-headers 2>/dev/null | grep "$NAMESPACE" || echo "")
+    local vas=$(kubectl --kubeconfig="$KUBECONFIG" get volumeattachments --no-headers 2>/dev/null | grep "$NAMESPACE" || echo "")
     
     if [ -n "$vas" ]; then
         log_info "Found VolumeAttachments that may be related to this namespace:"
@@ -531,40 +531,40 @@ delete_remaining_resources() {
     
     # Force delete ALL pods immediately
     log_info "Force deleting all pods..."
-    timeout 60 kubectl delete pods --all -n "$NAMESPACE" --force --grace-period=0 2>/dev/null || true
+    timeout 60 kubectl --kubeconfig="$KUBECONFIG" delete pods --all -n "$NAMESPACE" --force --grace-period=0 2>/dev/null || true
     
     # Delete statefulsets
     log_info "Force deleting statefulsets..."
-    timeout 30 kubectl delete statefulsets --all -n "$NAMESPACE" --force --grace-period=0 2>/dev/null || true
+    timeout 30 kubectl --kubeconfig="$KUBECONFIG" delete statefulsets --all -n "$NAMESPACE" --force --grace-period=0 2>/dev/null || true
     
     # Delete deployments
     log_info "Force deleting deployments..."
-    timeout 30 kubectl delete deployments --all -n "$NAMESPACE" --force --grace-period=0 2>/dev/null || true
+    timeout 30 kubectl --kubeconfig="$KUBECONFIG" delete deployments --all -n "$NAMESPACE" --force --grace-period=0 2>/dev/null || true
     
     # Delete services
     log_info "Deleting services..."
-    timeout 30 kubectl delete services --all -n "$NAMESPACE" --force --grace-period=0 2>/dev/null || true
+    timeout 30 kubectl --kubeconfig="$KUBECONFIG" delete services --all -n "$NAMESPACE" --force --grace-period=0 2>/dev/null || true
     
     # Delete configmaps
     log_info "Deleting configmaps..."
-    timeout 30 kubectl delete configmaps --all -n "$NAMESPACE" --force --grace-period=0 2>/dev/null || true
+    timeout 30 kubectl --kubeconfig="$KUBECONFIG" delete configmaps --all -n "$NAMESPACE" --force --grace-period=0 2>/dev/null || true
     
     # Delete secrets
     log_info "Deleting secrets..."
-    timeout 30 kubectl delete secrets --all -n "$NAMESPACE" --force --grace-period=0 2>/dev/null || true
+    timeout 30 kubectl --kubeconfig="$KUBECONFIG" delete secrets --all -n "$NAMESPACE" --force --grace-period=0 2>/dev/null || true
     
     # Delete leases (leader election resources that can block namespace deletion)
     log_info "Deleting leases..."
-    timeout 30 kubectl delete leases --all -n "$NAMESPACE" --force --grace-period=0 2>/dev/null || true
+    timeout 30 kubectl --kubeconfig="$KUBECONFIG" delete leases --all -n "$NAMESPACE" --force --grace-period=0 2>/dev/null || true
     
     # Delete service accounts (except default, which will be auto-deleted)
     log_info "Deleting service accounts..."
-    timeout 30 kubectl delete serviceaccounts --all -n "$NAMESPACE" --force --grace-period=0 2>/dev/null || true
+    timeout 30 kubectl --kubeconfig="$KUBECONFIG" delete serviceaccounts --all -n "$NAMESPACE" --force --grace-period=0 2>/dev/null || true
     
     # Delete events (both v1 and events.k8s.io API versions)
     log_info "Deleting events..."
-    timeout 30 kubectl delete events --all -n "$NAMESPACE" --force --grace-period=0 2>/dev/null || true
-    timeout 30 kubectl delete events.events.k8s.io --all -n "$NAMESPACE" --force --grace-period=0 2>/dev/null || true
+    timeout 30 kubectl --kubeconfig="$KUBECONFIG" delete events --all -n "$NAMESPACE" --force --grace-period=0 2>/dev/null || true
+    timeout 30 kubectl --kubeconfig="$KUBECONFIG" delete events.events.k8s.io --all -n "$NAMESPACE" --force --grace-period=0 2>/dev/null || true
     
     log_success "Resources deleted"
 }
@@ -582,7 +582,7 @@ delete_storage() {
     log_header "Deleting Persistent Storage"
     
     # Get list of PVs before deleting PVCs
-    local pvs=$(kubectl get pvc -n "$NAMESPACE" --no-headers 2>/dev/null | awk '{print $3}' | grep -v "<none>" || echo "")
+    local pvs=$(kubectl --kubeconfig="$KUBECONFIG" get pvc -n "$NAMESPACE" --no-headers 2>/dev/null | awk '{print $3}' | grep -v "<none>" || echo "")
     
     # Delete PVCs
     log_warn "Deleting all PVCs in namespace $NAMESPACE..."
@@ -592,11 +592,11 @@ delete_storage() {
     
     # Remove PVC finalizers
     log_info "Removing PVC finalizers..."
-    timeout 60 bash -c 'kubectl get pvc -n "'"$NAMESPACE"'" -o name 2>/dev/null | xargs -r -I {} kubectl patch {} -n "'"$NAMESPACE"'" -p '"'"'{"metadata":{"finalizers":[]}}'"'"' --type=merge 2>/dev/null' || true
+    timeout 60 bash -c 'kubectl --kubeconfig="$KUBECONFIG" get pvc -n "'"$NAMESPACE"'" -o name 2>/dev/null | xargs -r -I {} kubectl --kubeconfig="$KUBECONFIG" patch {} -n "'"$NAMESPACE"'" -p '"'"'{"metadata":{"finalizers":[]}}'"'"' --type=merge 2>/dev/null' || true
     
     # Force delete PVCs
     log_info "Force deleting PVCs..."
-    timeout 60 kubectl delete pvc --all -n "$NAMESPACE" --force --grace-period=0 2>/dev/null || true
+    timeout 60 kubectl --kubeconfig="$KUBECONFIG" delete pvc --all -n "$NAMESPACE" --force --grace-period=0 2>/dev/null || true
     
     log_success "PVCs deleted"
 }
@@ -618,14 +618,14 @@ delete_namespace() {
     sleep 3
     
     # Check if namespace is already in Terminating state
-    local ns_phase=$(kubectl get namespace "$NAMESPACE" -o jsonpath='{.status.phase}' 2>/dev/null || echo "NotFound")
+    local ns_phase=$(kubectl --kubeconfig="$KUBECONFIG" get namespace "$NAMESPACE" -o jsonpath='{.status.phase}' 2>/dev/null || echo "NotFound")
     
     if [ "$ns_phase" = "Terminating" ]; then
         log_info "Namespace already in Terminating state - will force finalize"
     elif [ "$ns_phase" != "NotFound" ]; then
         # Initiate deletion if not already started
         log_info "Initiating namespace deletion..."
-        kubectl delete namespace "$NAMESPACE" --timeout=10s 2>/dev/null &
+        kubectl --kubeconfig="$KUBECONFIG" delete namespace "$NAMESPACE" --timeout=10s 2>/dev/null &
         local del_pid=$!
         sleep 5
         kill $del_pid 2>/dev/null || true
@@ -636,31 +636,31 @@ delete_namespace() {
     sleep 3
     
     # Check if it's still there
-    if kubectl get namespace "$NAMESPACE" &> /dev/null; then
+    if kubectl --kubeconfig="$KUBECONFIG" get namespace "$NAMESPACE" &> /dev/null; then
         log_info "Namespace still exists - forcing cleanup..."
         
         # Remove namespace finalizers
         log_info "Removing namespace finalizers..."
-        timeout 30 kubectl patch namespace "$NAMESPACE" -p '{"spec":{"finalizers":[]}}' --type=merge 2>/dev/null || true
-        timeout 30 kubectl patch namespace "$NAMESPACE" -p '{"metadata":{"finalizers":[]}}' --type=merge 2>/dev/null || true
+        timeout 30 kubectl --kubeconfig="$KUBECONFIG" patch namespace "$NAMESPACE" -p '{"spec":{"finalizers":[]}}' --type=merge 2>/dev/null || true
+        timeout 30 kubectl --kubeconfig="$KUBECONFIG" patch namespace "$NAMESPACE" -p '{"metadata":{"finalizers":[]}}' --type=merge 2>/dev/null || true
         
         sleep 2
         
         # Force finalize via API (this is the most effective method)
         log_info "Force finalizing namespace via API..."
-        timeout 30 bash -c 'kubectl get namespace "'"$NAMESPACE"'" -o json 2>/dev/null | jq '"'"'.spec.finalizers = []'"'"' | kubectl replace --raw "/api/v1/namespaces/'"$NAMESPACE"'/finalize" -f - 2>/dev/null' || true
+        timeout 30 bash -c 'kubectl --kubeconfig="$KUBECONFIG" get namespace "'"$NAMESPACE"'" -o json 2>/dev/null | jq '"'"'.spec.finalizers = []'"'"' | kubectl --kubeconfig="$KUBECONFIG" replace --raw "/api/v1/namespaces/'"$NAMESPACE"'/finalize" -f - 2>/dev/null' || true
         
         # Wait for finalization to complete
         local wait_time=0
         local max_wait=15
-        while kubectl get namespace "$NAMESPACE" &> /dev/null && [ $wait_time -lt $max_wait ]; do
+        while kubectl --kubeconfig="$KUBECONFIG" get namespace "$NAMESPACE" &> /dev/null && [ $wait_time -lt $max_wait ]; do
             sleep 1
             wait_time=$((wait_time + 1))
         done
     fi
     
     # Final check
-    if kubectl get namespace "$NAMESPACE" &> /dev/null; then
+    if kubectl --kubeconfig="$KUBECONFIG" get namespace "$NAMESPACE" &> /dev/null; then
         log_warn "Namespace may still be deleting in background"
         log_info "If stuck, manually finalize with:"
         log_info "  kubectl get namespace $NAMESPACE -o json | jq '.spec.finalizers = []' | kubectl replace --raw \"/api/v1/namespaces/$NAMESPACE/finalize\" -f -"
