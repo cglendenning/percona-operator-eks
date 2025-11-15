@@ -296,25 +296,25 @@ prompt_configuration() {
     MINIO_BUCKET="${minio_bucket:-percona-backups}"
     
     # Prompt for MinIO credentials secret source namespace
-    read -p "Enter namespace containing 'myminio-creds' secret [default: minio-operator]: " minio_secret_namespace
+    read -p "Enter namespace containing 'minio-creds' secret [default: minio-operator]: " minio_secret_namespace
     MINIO_SECRET_NAMESPACE="${minio_secret_namespace:-minio-operator}"
     
     # Verify the secret exists in the source namespace
-    if ! kubectl --kubeconfig="$KUBECONFIG" get secret myminio-creds -n "$MINIO_SECRET_NAMESPACE" &> /dev/null; then
-        log_error "Secret 'myminio-creds' not found in namespace '$MINIO_SECRET_NAMESPACE'"
+    if ! kubectl --kubeconfig="$KUBECONFIG" get secret minio-creds -n "$MINIO_SECRET_NAMESPACE" &> /dev/null; then
+        log_error "Secret 'minio-creds' not found in namespace '$MINIO_SECRET_NAMESPACE'"
         log_info "Available namespaces with secrets:"
-        kubectl --kubeconfig="$KUBECONFIG" get secrets --all-namespaces -o json 2>/dev/null | jq -r '.items[] | select(.metadata.name=="myminio-creds") | "  - \(.metadata.namespace)"' 2>/dev/null || echo "  (none found)"
+        kubectl --kubeconfig="$KUBECONFIG" get secrets --all-namespaces -o json 2>/dev/null | jq -r '.items[] | select(.metadata.name=="minio-creds") | "  - \(.metadata.namespace)"' 2>/dev/null || echo "  (none found)"
         echo ""
         read -p "Enter correct namespace: " minio_secret_namespace_retry
         MINIO_SECRET_NAMESPACE="${minio_secret_namespace_retry}"
         
-        if [ -z "$MINIO_SECRET_NAMESPACE" ] || ! kubectl --kubeconfig="$KUBECONFIG" get secret myminio-creds -n "$MINIO_SECRET_NAMESPACE" &> /dev/null; then
-            log_error "Secret 'myminio-creds' not found. Cannot proceed without MinIO credentials."
+        if [ -z "$MINIO_SECRET_NAMESPACE" ] || ! kubectl --kubeconfig="$KUBECONFIG" get secret minio-creds -n "$MINIO_SECRET_NAMESPACE" &> /dev/null; then
+            log_error "Secret 'minio-creds' not found. Cannot proceed without MinIO credentials."
             exit 1
         fi
     fi
     
-    log_success "Found 'myminio-creds' secret in namespace: $MINIO_SECRET_NAMESPACE"
+    log_success "Found 'minio-creds' secret in namespace: $MINIO_SECRET_NAMESPACE"
     echo ""
     
     # Prompt for PMM configuration
@@ -555,18 +555,18 @@ create_minio_secret() {
     log_header "Copying MinIO Credentials Secret"
     
     # Check if secret already exists in target namespace
-    if kubectl --kubeconfig="$KUBECONFIG" get secret myminio-creds -n "$NAMESPACE" &> /dev/null; then
-        log_warn "Secret 'myminio-creds' already exists in namespace '$NAMESPACE', skipping creation"
+    if kubectl --kubeconfig="$KUBECONFIG" get secret minio-creds -n "$NAMESPACE" &> /dev/null; then
+        log_warn "Secret 'minio-creds' already exists in namespace '$NAMESPACE', skipping creation"
         return
     fi
     
     # Get the secret from source namespace and copy to target namespace
-    log_info "Copying 'myminio-creds' from namespace '$MINIO_SECRET_NAMESPACE' to '$NAMESPACE'..."
+    log_info "Copying 'minio-creds' from namespace '$MINIO_SECRET_NAMESPACE' to '$NAMESPACE'..."
     
-    if kubectl --kubeconfig="$KUBECONFIG" get secret myminio-creds -n "$MINIO_SECRET_NAMESPACE" -o json | \
+    if kubectl --kubeconfig="$KUBECONFIG" get secret minio-creds -n "$MINIO_SECRET_NAMESPACE" -o json | \
        jq 'del(.metadata.namespace,.metadata.creationTimestamp,.metadata.resourceVersion,.metadata.selfLink,.metadata.uid)' | \
        kubectl --kubeconfig="$KUBECONFIG" apply -n "$NAMESPACE" -f - &> /dev/null; then
-        log_success "MinIO credentials secret 'myminio-creds' copied successfully"
+        log_success "MinIO credentials secret 'minio-creds' copied successfully"
     else
         log_error "Failed to copy MinIO credentials secret"
         exit 1
@@ -588,11 +588,11 @@ create_minio_bucket() {
     log_info "Extracting MinIO credentials from secret..."
     
     # Get credentials from the secret
-    local access_key=$(kubectl --kubeconfig="$KUBECONFIG" get secret myminio-creds -n "$MINIO_SECRET_NAMESPACE" -o jsonpath='{.data.accesskey}' 2>/dev/null | base64 -d 2>/dev/null || echo "")
-    local secret_key=$(kubectl --kubeconfig="$KUBECONFIG" get secret myminio-creds -n "$MINIO_SECRET_NAMESPACE" -o jsonpath='{.data.secretkey}' 2>/dev/null | base64 -d 2>/dev/null || echo "")
+    local access_key=$(kubectl --kubeconfig="$KUBECONFIG" get secret minio-creds -n "$MINIO_SECRET_NAMESPACE" -o jsonpath='{.data.accesskey}' 2>/dev/null | base64 -d 2>/dev/null || echo "")
+    local secret_key=$(kubectl --kubeconfig="$KUBECONFIG" get secret minio-creds -n "$MINIO_SECRET_NAMESPACE" -o jsonpath='{.data.secretkey}' 2>/dev/null | base64 -d 2>/dev/null || echo "")
     
     if [ -z "$access_key" ] || [ -z "$secret_key" ]; then
-        log_error "Failed to extract credentials from 'myminio-creds' secret"
+        log_error "Failed to extract credentials from 'minio-creds' secret"
         exit 1
     fi
     
@@ -613,7 +613,7 @@ create_minio_bucket() {
         "mc --insecure ls local | grep -w '$MINIO_BUCKET'" 2>/dev/null || echo "")
     
     if [ -n "$bucket_exists" ]; then
-        log_success "Bucket '$MINIO_BUCKET' already exists"
+        log_info "Bucket '$MINIO_BUCKET' already exists, using existing bucket"
     else
         # Create bucket
         log_info "Creating bucket '$MINIO_BUCKET'..."
@@ -746,7 +746,7 @@ backup:
         bucket: ${MINIO_BUCKET}
         region: us-east-1
         endpointUrl: https://myminio-hl.minio-operator.svc.cluster.local:9000
-        credentialsSecret: myminio-creds
+        credentialsSecret: minio-creds
         
   schedule:
     - name: "daily-full-backup"
