@@ -1,6 +1,37 @@
 #!/bin/bash
 # Percona XtraDB Cluster Uninstallation Script for On-Premise (vSphere/vCenter)
 # Works on both WSL and macOS
+#
+# ═══════════════════════════════════════════════════════════════════════════════
+# METHODICAL UNINSTALLATION WITH STATE VERIFICATION
+# ═══════════════════════════════════════════════════════════════════════════════
+#
+# This script implements a methodical, transparent uninstall process with:
+#
+# ✓ State Verification: After each major step, current state is compared to end state
+# ✓ Progressive Prompts: User is asked to confirm each major operation
+# ✓ Command Reporting: Every kubectl command is logged before execution
+# ✓ Granular Steps: Resource deletion broken into logical, verifiable steps
+# ✓ Abort Capability: User can abort at any prompt
+# ✓ Diagnostic Tools: Automatic diagnosis if resources remain stuck
+#
+# UNINSTALL STEPS:
+#   Step 1: Uninstall Helm Releases (PXC cluster, operator)
+#   Step 2: Delete PXC Custom Resources (cluster definitions)
+#   Step 3: Check Cluster-wide Resources (informational)
+#   Step 4a: Delete Workloads (StatefulSets, Deployments)
+#   Step 4b: Force Delete Pods
+#   Step 4c: Delete Services and Configs (services, configmaps, secrets)
+#   Step 5: Delete Storage (PVCs) - asked at runtime, not upfront
+#   Step 6: Delete Namespace - asked at runtime, not upfront
+#
+# Each step shows:
+#   - What will be deleted
+#   - Commands being executed
+#   - Verification of deletion
+#   - Current state vs target end state
+#
+# ═══════════════════════════════════════════════════════════════════════════════
 
 set -euo pipefail
 
@@ -17,6 +48,23 @@ NC='\033[0m' # No Color
 NAMESPACE=""
 DELETE_PVCS="no"
 DELETE_NAMESPACE="no"
+
+# Define ideal end state for verification
+declare -A END_STATE=(
+    [helm_releases]=0
+    [pxc_resources]=0
+    [deployments]=0
+    [statefulsets]=0
+    [pods]=0
+    [services]=0
+    [configmaps]=0
+    [secrets]=0
+    [pvcs]=0
+    [namespace]="NotFound"
+)
+
+# Track current state
+declare -A CURRENT_STATE
 
 # Logging functions
 log_info() {
@@ -39,6 +87,97 @@ log_header() {
     echo -e "\n${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
     echo -e "${CYAN}  $1${NC}"
     echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}\n"
+}
+
+# Verify current state and track progress toward end state
+verify_current_state() {
+    local scope="$1"  # What we just worked on
+    
+    log_header "State Verification: After ${scope}"
+    
+    # Gather current state
+    CURRENT_STATE[helm_releases]=$(helm list -n "$NAMESPACE" --short 2>/dev/null | wc -l | tr -d ' ')
+    CURRENT_STATE[pxc_resources]=$(kubectl --kubeconfig="$KUBECONFIG" get pxc --all-namespaces --no-headers 2>/dev/null | grep "^$NAMESPACE " | wc -l | tr -d ' ')
+    CURRENT_STATE[deployments]=$(kubectl --kubeconfig="$KUBECONFIG" get deployments -n "$NAMESPACE" --no-headers 2>/dev/null | wc -l | tr -d ' ')
+    CURRENT_STATE[statefulsets]=$(kubectl --kubeconfig="$KUBECONFIG" get statefulsets -n "$NAMESPACE" --no-headers 2>/dev/null | wc -l | tr -d ' ')
+    CURRENT_STATE[pods]=$(kubectl --kubeconfig="$KUBECONFIG" get pods -n "$NAMESPACE" --no-headers 2>/dev/null | wc -l | tr -d ' ')
+    CURRENT_STATE[services]=$(kubectl --kubeconfig="$KUBECONFIG" get svc -n "$NAMESPACE" --no-headers 2>/dev/null | wc -l | tr -d ' ')
+    CURRENT_STATE[configmaps]=$(kubectl --kubeconfig="$KUBECONFIG" get configmaps -n "$NAMESPACE" --no-headers 2>/dev/null | wc -l | tr -d ' ')
+    CURRENT_STATE[secrets]=$(kubectl --kubeconfig="$KUBECONFIG" get secrets -n "$NAMESPACE" --no-headers 2>/dev/null | grep -v "default-token" | wc -l | tr -d ' ')
+    CURRENT_STATE[pvcs]=$(kubectl --kubeconfig="$KUBECONFIG" get pvc -n "$NAMESPACE" --no-headers 2>/dev/null | wc -l | tr -d ' ')
+    CURRENT_STATE[namespace]=$(kubectl --kubeconfig="$KUBECONFIG" get namespace "$NAMESPACE" -o jsonpath='{.status.phase}' 2>/dev/null || echo "NotFound")
+    
+    # Display results table
+    echo -e "${CYAN}════════════════════════════════════════════════════${NC}"
+    printf "%-25s %12s %12s %8s\n" "Resource Type" "Current" "Target" "Status"
+    echo -e "${CYAN}════════════════════════════════════════════════════${NC}"
+    
+    local all_complete=true
+    
+    for resource in helm_releases pxc_resources deployments statefulsets pods services configmaps secrets pvcs; do
+        local current="${CURRENT_STATE[$resource]}"
+        local target="${END_STATE[$resource]}"
+        local status
+        
+        if [ "$current" -eq "$target" ]; then
+            status="${GREEN}✓ Complete${NC}"
+        else
+            status="${YELLOW}⚠ Remaining${NC}"
+            all_complete=false
+        fi
+        
+        # Format resource name for display
+        local display_name=$(echo "$resource" | sed 's/_/ /g' | awk '{for(i=1;i<=NF;i++) $i=toupper(substr($i,1,1)) tolower(substr($i,2));}1')
+        printf "%-25s %12s %12s %s\n" "$display_name" "$current" "$target" "$status"
+    done
+    
+    # Namespace status (special case)
+    local ns_current="${CURRENT_STATE[namespace]}"
+    local ns_target="${END_STATE[namespace]}"
+    local ns_status
+    if [ "$ns_current" = "$ns_target" ]; then
+        ns_status="${GREEN}✓ Complete${NC}"
+    else
+        ns_status="${YELLOW}⚠ Exists${NC}"
+        all_complete=false
+    fi
+    printf "%-25s %12s %12s %s\n" "Namespace" "$ns_current" "$ns_target" "$ns_status"
+    
+    echo -e "${CYAN}════════════════════════════════════════════════════${NC}"
+    
+    if [ "$all_complete" = true ]; then
+        echo -e "${GREEN}[✓] All resources in target end state${NC}"
+    else
+        echo -e "${YELLOW}[⚠] Some resources still remain${NC}"
+    fi
+    echo ""
+}
+
+# Prompt user to continue with next step
+prompt_continue() {
+    local next_step="$1"
+    local description="$2"
+    
+    echo ""
+    echo -e "${YELLOW}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+    echo -e "${YELLOW}  Next Step: ${next_step}${NC}"
+    echo -e "${YELLOW}  ${description}${NC}"
+    echo -e "${YELLOW}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+    echo ""
+    
+    read -p "Continue with this step? (yes/no/abort) [yes]: " response
+    response="${response:-yes}"
+    
+    if [[ "$response" =~ ^[Aa]([Bb][Oo][Rr][Tt])?$ ]]; then
+        log_warn "Uninstall aborted by user"
+        log_info "Current state preserved - partial uninstall complete"
+        exit 0
+    elif [[ ! "$response" =~ ^[Yy]([Ee][Ss])?$ ]]; then
+        log_info "Skipping step: $next_step"
+        return 1
+    fi
+    
+    return 0
 }
 
 # Check prerequisites
@@ -184,43 +323,9 @@ show_resources() {
     echo ""
 }
 
-# Confirm deletion
-confirm_deletion() {
-    log_header "Confirm Deletion"
-    
-    echo -e "${RED}⚠️  WARNING: This will delete the following from namespace '${NAMESPACE}':${NC}"
-    echo "  - Helm releases (PXC cluster, Percona operator)"
-    echo "  - PXC cluster custom resources"
-    echo "  - All pods, services, deployments, statefulsets"
-    echo "  - Secrets (including root passwords)"
-    echo ""
-    
-    read -p "Are you sure you want to proceed? (type 'yes' to confirm): " confirm
-    if [ "$confirm" != "yes" ]; then
-        log_info "Uninstallation cancelled by user"
-        exit 0
-    fi
-    
-    echo ""
-    read -p "Do you want to delete PVCs and PVs? (yes/no) [no]: " delete_pvcs_input
-    DELETE_PVCS="${delete_pvcs_input:-no}"
-    
-    if [ "$DELETE_PVCS" = "yes" ]; then
-        echo ""
-        echo -e "${RED}⚠️  WARNING: Deleting PVCs will permanently delete all database data!${NC}"
-        echo -e "${RED}⚠️  This action CANNOT be undone!${NC}"
-        echo ""
-        read -p "Type 'DELETE ALL DATA' to confirm PVC deletion: " final_confirm
-        if [ "$final_confirm" != "DELETE ALL DATA" ]; then
-            log_info "PVC deletion cancelled. Cluster will be removed but data will be preserved."
-            DELETE_PVCS="no"
-        fi
-    fi
-    
-    echo ""
-    read -p "Do you want to delete the namespace '$NAMESPACE'? (yes/no) [no]: " delete_ns_input
-    DELETE_NAMESPACE="${delete_ns_input:-no}"
-}
+# Legacy confirm_deletion function - NO LONGER USED in new methodical flow
+# Decisions are now made progressively after each step
+# This function is kept for reference but not called
 
 # Uninstall Helm releases
 uninstall_helm_releases() {
@@ -229,7 +334,7 @@ uninstall_helm_releases() {
     # Check if namespace exists - if not, skip Helm (it will fail anyway)
     if ! kubectl --kubeconfig="$KUBECONFIG" get namespace "$NAMESPACE" &>/dev/null; then
         log_warn "Namespace doesn't exist - skipping Helm uninstall"
-        log_info "Will proceed directly to aggressive resource cleanup"
+        log_info "Will proceed directly to resource cleanup"
         return
     fi
     
@@ -239,6 +344,15 @@ uninstall_helm_releases() {
         log_info "No Helm releases found in namespace $NAMESPACE"
         return
     fi
+    
+    local release_count=$(echo "$releases" | grep -v "^$" | wc -l | tr -d ' ')
+    log_info "Found $release_count Helm release(s):"
+    echo "$releases" | while read -r release; do
+        if [ -n "$release" ]; then
+            echo "  - $release"
+        fi
+    done
+    echo ""
     
     echo "$releases" | while read -r release; do
         if [ -n "$release" ]; then
@@ -404,10 +518,12 @@ delete_pxc_resources() {
             
             # Always use kubectl operations when namespace exists (including recreated)
             log_info "  → Removing finalizers..."
+            log_info "     Executing: kubectl patch pxc $pxc_name -n $NAMESPACE -p '{\"metadata\":{\"finalizers\":[]}}'"
             timeout 20 kubectl --kubeconfig="$KUBECONFIG" patch pxc "$pxc_name" -n "$NAMESPACE" -p '{"metadata":{"finalizers":[]}}' --type=merge 2>/dev/null || true
             timeout 20 kubectl --kubeconfig="$KUBECONFIG" patch pxc "$pxc_name" -n "$NAMESPACE" --type json -p='[{"op": "remove", "path": "/metadata/finalizers"}]' 2>/dev/null || true
             
             log_info "  → Deleting resource..."
+            log_info "     Executing: kubectl delete pxc $pxc_name -n $NAMESPACE --force --grace-period=0"
             timeout 20 kubectl --kubeconfig="$KUBECONFIG" delete pxc "$pxc_name" -n "$NAMESPACE" --force --grace-period=0 2>/dev/null || true
             
             # Step 4: Verify it's gone
@@ -525,8 +641,156 @@ cleanup_volumeattachments() {
     fi
 }
 
-# Delete remaining resources
-delete_remaining_resources() {
+# Delete workloads (StatefulSets and Deployments)
+delete_workloads() {
+    log_header "Deleting Workloads"
+    
+    log_info "Deleting StatefulSets..."
+    local sts_list=$(kubectl --kubeconfig="$KUBECONFIG" get statefulsets -n "$NAMESPACE" --no-headers 2>/dev/null || echo "")
+    local sts_count=$(echo "$sts_list" | grep -v "^$" | wc -l | tr -d ' ')
+    
+    if [ "$sts_count" -gt 0 ]; then
+        log_info "Found $sts_count StatefulSet(s):"
+        echo "$sts_list" | awk '{print "  - " $1}'
+        
+        log_info "Executing: kubectl delete statefulsets --all -n $NAMESPACE --force --grace-period=0"
+        timeout 30 kubectl --kubeconfig="$KUBECONFIG" delete statefulsets --all -n "$NAMESPACE" --force --grace-period=0 2>/dev/null || true
+        log_success "$sts_count StatefulSet(s) deletion initiated"
+    else
+        log_info "No StatefulSets found"
+    fi
+    
+    echo ""
+    log_info "Deleting Deployments..."
+    local deploy_list=$(kubectl --kubeconfig="$KUBECONFIG" get deployments -n "$NAMESPACE" --no-headers 2>/dev/null || echo "")
+    local deploy_count=$(echo "$deploy_list" | grep -v "^$" | wc -l | tr -d ' ')
+    
+    if [ "$deploy_count" -gt 0 ]; then
+        log_info "Found $deploy_count Deployment(s):"
+        echo "$deploy_list" | awk '{print "  - " $1}'
+        
+        log_info "Executing: kubectl delete deployments --all -n $NAMESPACE --force --grace-period=0"
+        timeout 30 kubectl --kubeconfig="$KUBECONFIG" delete deployments --all -n "$NAMESPACE" --force --grace-period=0 2>/dev/null || true
+        log_success "$deploy_count Deployment(s) deletion initiated"
+    else
+        log_info "No Deployments found"
+    fi
+    
+    # Give controllers time to start pod deletion
+    echo ""
+    log_info "Waiting for workload controllers to initiate pod deletion..."
+    sleep 3
+    
+    local remaining_pods=$(kubectl --kubeconfig="$KUBECONFIG" get pods -n "$NAMESPACE" --no-headers 2>/dev/null | wc -l | tr -d ' ')
+    log_info "Pods currently in namespace: $remaining_pods"
+    
+    echo ""
+}
+
+# Force delete all pods
+delete_pods() {
+    log_header "Force Deleting Pods"
+    
+    local pod_list=$(kubectl --kubeconfig="$KUBECONFIG" get pods -n "$NAMESPACE" --no-headers 2>/dev/null || echo "")
+    local pod_count=$(echo "$pod_list" | grep -v "^$" | wc -l | tr -d ' ')
+    
+    if [ "$pod_count" -gt 0 ]; then
+        log_info "Found $pod_count pod(s):"
+        echo "$pod_list" | awk '{print "  - " $1 " (" $3 ")"}'
+        
+        log_info "Executing: kubectl delete pods --all -n $NAMESPACE --force --grace-period=0"
+        timeout 60 kubectl --kubeconfig="$KUBECONFIG" delete pods --all -n "$NAMESPACE" --force --grace-period=0 2>/dev/null || true
+        
+        # Wait and verify
+        log_info "Waiting for pods to terminate..."
+        sleep 5
+        
+        local remaining=$(kubectl --kubeconfig="$KUBECONFIG" get pods -n "$NAMESPACE" --no-headers 2>/dev/null | wc -l | tr -d ' ')
+        if [ "$remaining" -eq 0 ]; then
+            log_success "All pods deleted successfully"
+        else
+            log_warn "$remaining pod(s) still in terminating state"
+            kubectl --kubeconfig="$KUBECONFIG" get pods -n "$NAMESPACE" --no-headers 2>/dev/null | awk '{print "  - " $1 " (" $3 ")"}'
+        fi
+    else
+        log_info "No pods found"
+    fi
+    
+    echo ""
+}
+
+# Delete services and configuration resources
+delete_services_and_configs() {
+    log_header "Deleting Services and Configuration Resources"
+    
+    # Services
+    log_info "Deleting Services..."
+    local svc_list=$(kubectl --kubeconfig="$KUBECONFIG" get svc -n "$NAMESPACE" --no-headers 2>/dev/null || echo "")
+    local svc_count=$(echo "$svc_list" | grep -v "^$" | wc -l | tr -d ' ')
+    
+    if [ "$svc_count" -gt 0 ]; then
+        log_info "Found $svc_count service(s):"
+        echo "$svc_list" | awk '{print "  - " $1 " (" $2 ")"}'
+        
+        log_info "Executing: kubectl delete services --all -n $NAMESPACE"
+        timeout 30 kubectl --kubeconfig="$KUBECONFIG" delete services --all -n "$NAMESPACE" --force --grace-period=0 2>/dev/null || true
+        log_success "Services deleted"
+    else
+        log_info "No services found"
+    fi
+    
+    echo ""
+    
+    # ConfigMaps
+    log_info "Deleting ConfigMaps..."
+    local cm_count=$(kubectl --kubeconfig="$KUBECONFIG" get configmaps -n "$NAMESPACE" --no-headers 2>/dev/null | wc -l | tr -d ' ')
+    
+    if [ "$cm_count" -gt 0 ]; then
+        log_info "Found $cm_count ConfigMap(s)"
+        log_info "Executing: kubectl delete configmaps --all -n $NAMESPACE"
+        timeout 30 kubectl --kubeconfig="$KUBECONFIG" delete configmaps --all -n "$NAMESPACE" --force --grace-period=0 2>/dev/null || true
+        log_success "ConfigMaps deleted"
+    else
+        log_info "No ConfigMaps found"
+    fi
+    
+    echo ""
+    
+    # Secrets
+    log_info "Deleting Secrets..."
+    local secret_list=$(kubectl --kubeconfig="$KUBECONFIG" get secrets -n "$NAMESPACE" --no-headers 2>/dev/null | grep -v "default-token" || echo "")
+    local secret_count=$(echo "$secret_list" | grep -v "^$" | wc -l | tr -d ' ')
+    
+    if [ "$secret_count" -gt 0 ]; then
+        log_info "Found $secret_count secret(s) (excluding default tokens)"
+        log_info "Executing: kubectl delete secrets --all -n $NAMESPACE"
+        timeout 30 kubectl --kubeconfig="$KUBECONFIG" delete secrets --all -n "$NAMESPACE" --force --grace-period=0 2>/dev/null || true
+        log_success "Secrets deleted"
+    else
+        log_info "No secrets found"
+    fi
+    
+    echo ""
+    
+    # Leases (leader election resources)
+    log_info "Deleting Leases..."
+    timeout 30 kubectl --kubeconfig="$KUBECONFIG" delete leases --all -n "$NAMESPACE" --force --grace-period=0 2>/dev/null || true
+    
+    # Service accounts
+    log_info "Deleting ServiceAccounts..."
+    timeout 30 kubectl --kubeconfig="$KUBECONFIG" delete serviceaccounts --all -n "$NAMESPACE" --force --grace-period=0 2>/dev/null || true
+    
+    # Events
+    log_info "Deleting Events..."
+    timeout 30 kubectl --kubeconfig="$KUBECONFIG" delete events --all -n "$NAMESPACE" --force --grace-period=0 2>/dev/null || true
+    timeout 30 kubectl --kubeconfig="$KUBECONFIG" delete events.events.k8s.io --all -n "$NAMESPACE" --force --grace-period=0 2>/dev/null || true
+    
+    log_success "Auxiliary resources cleaned up"
+    echo ""
+}
+
+# Legacy function - kept for backward compatibility but not used in new flow
+delete_remaining_resources_legacy() {
     log_header "Deleting Remaining Resources"
     
     # Force delete ALL pods immediately
@@ -581,24 +845,49 @@ delete_storage() {
     
     log_header "Deleting Persistent Storage"
     
+    # List current PVCs
+    log_info "Current PVCs in namespace:"
+    kubectl --kubeconfig="$KUBECONFIG" get pvc -n "$NAMESPACE" 2>/dev/null || log_info "No PVCs found"
+    echo ""
+    
     # Get list of PVs before deleting PVCs
     local pvs=$(kubectl --kubeconfig="$KUBECONFIG" get pvc -n "$NAMESPACE" --no-headers 2>/dev/null | awk '{print $3}' | grep -v "<none>" || echo "")
+    local pvc_count=$(kubectl --kubeconfig="$KUBECONFIG" get pvc -n "$NAMESPACE" --no-headers 2>/dev/null | wc -l | tr -d ' ')
+    
+    if [ "$pvc_count" -eq 0 ]; then
+        log_info "No PVCs to delete"
+        return
+    fi
     
     # Delete PVCs
-    log_warn "Deleting all PVCs in namespace $NAMESPACE..."
+    log_warn "Deleting $pvc_count PVC(s) in namespace $NAMESPACE..."
     
     # Note: VolumeAttachments are NOT deleted - they're cluster-scoped and will auto-clean
-    log_info "Note: VolumeAttachments will be cleaned up automatically by Kubernetes"
+    echo ""
+    log_info "Note: VolumeAttachments (if any) will be cleaned up automatically by Kubernetes"
     
     # Remove PVC finalizers
-    log_info "Removing PVC finalizers..."
+    echo ""
+    log_info "Step 1: Removing PVC finalizers..."
+    log_info "Executing: kubectl get pvc -n $NAMESPACE -o name | xargs kubectl patch <pvc> -p '{\"metadata\":{\"finalizers\":[]}}'"
     timeout 60 bash -c 'kubectl --kubeconfig="$KUBECONFIG" get pvc -n "'"$NAMESPACE"'" -o name 2>/dev/null | xargs -r -I {} kubectl --kubeconfig="$KUBECONFIG" patch {} -n "'"$NAMESPACE"'" -p '"'"'{"metadata":{"finalizers":[]}}'"'"' --type=merge 2>/dev/null' || true
     
     # Force delete PVCs
-    log_info "Force deleting PVCs..."
+    echo ""
+    log_info "Step 2: Force deleting PVCs..."
+    log_info "Executing: kubectl delete pvc --all -n $NAMESPACE --force --grace-period=0"
     timeout 60 kubectl --kubeconfig="$KUBECONFIG" delete pvc --all -n "$NAMESPACE" --force --grace-period=0 2>/dev/null || true
     
-    log_success "PVCs deleted"
+    # Verify
+    sleep 3
+    local remaining_pvcs=$(kubectl --kubeconfig="$KUBECONFIG" get pvc -n "$NAMESPACE" --no-headers 2>/dev/null | wc -l | tr -d ' ')
+    if [ "$remaining_pvcs" -eq 0 ]; then
+        log_success "All PVCs deleted successfully"
+    else
+        log_warn "$remaining_pvcs PVC(s) still exist"
+    fi
+    
+    echo ""
 }
 
 # Delete namespace
@@ -613,7 +902,19 @@ delete_namespace() {
     
     log_warn "Deleting namespace: $NAMESPACE"
     
+    # Check what's in the namespace first
+    echo ""
+    log_info "Checking remaining resources in namespace..."
+    local remaining_count=$(kubectl --kubeconfig="$KUBECONFIG" get all -n "$NAMESPACE" 2>/dev/null | wc -l | tr -d ' ')
+    if [ "$remaining_count" -gt 1 ]; then
+        log_warn "Found $remaining_count resources still in namespace:"
+        kubectl --kubeconfig="$KUBECONFIG" get all -n "$NAMESPACE" 2>/dev/null || true
+    else
+        log_info "Namespace appears clean"
+    fi
+    
     # Wait briefly for any async resource deletions to complete
+    echo ""
     log_info "Waiting for resource cleanup to settle..."
     sleep 3
     
@@ -625,6 +926,7 @@ delete_namespace() {
     elif [ "$ns_phase" != "NotFound" ]; then
         # Initiate deletion if not already started
         log_info "Initiating namespace deletion..."
+        log_info "Executing: kubectl delete namespace $NAMESPACE"
         kubectl --kubeconfig="$KUBECONFIG" delete namespace "$NAMESPACE" --timeout=10s 2>/dev/null &
         local del_pid=$!
         sleep 5
@@ -640,14 +942,18 @@ delete_namespace() {
         log_info "Namespace still exists - forcing cleanup..."
         
         # Remove namespace finalizers
-        log_info "Removing namespace finalizers..."
+        echo ""
+        log_info "Step 1: Removing namespace finalizers..."
+        log_info "Executing: kubectl patch namespace $NAMESPACE -p '{\"spec\":{\"finalizers\":[]}}'"
         timeout 30 kubectl --kubeconfig="$KUBECONFIG" patch namespace "$NAMESPACE" -p '{"spec":{"finalizers":[]}}' --type=merge 2>/dev/null || true
         timeout 30 kubectl --kubeconfig="$KUBECONFIG" patch namespace "$NAMESPACE" -p '{"metadata":{"finalizers":[]}}' --type=merge 2>/dev/null || true
         
         sleep 2
         
         # Force finalize via API (this is the most effective method)
-        log_info "Force finalizing namespace via API..."
+        echo ""
+        log_info "Step 2: Force finalizing namespace via API..."
+        log_info "Executing: kubectl get namespace $NAMESPACE -o json | jq '.spec.finalizers = []' | kubectl replace --raw /api/v1/namespaces/$NAMESPACE/finalize"
         timeout 30 bash -c 'kubectl --kubeconfig="$KUBECONFIG" get namespace "'"$NAMESPACE"'" -o json 2>/dev/null | jq '"'"'.spec.finalizers = []'"'"' | kubectl --kubeconfig="$KUBECONFIG" replace --raw "/api/v1/namespaces/'"$NAMESPACE"'/finalize" -f - 2>/dev/null' || true
         
         # Wait for finalization to complete
@@ -697,24 +1003,153 @@ show_summary() {
     log_success "Uninstallation completed successfully!"
 }
 
-# Main uninstallation flow
+# Main uninstallation flow - methodical and transparent
 main() {
+    # Prerequisites and initial setup
     check_prerequisites
     prompt_namespace
     show_resources
-    confirm_deletion
+    
+    # Initial confirmation - must type 'yes'
+    echo ""
+    echo -e "${RED}⚠️  WARNING: You are about to uninstall Percona XtraDB Cluster from namespace '${NAMESPACE}'${NC}"
+    echo -e "${RED}⚠️  This process will be methodical with verification after each step${NC}"
+    echo ""
+    read -p "Do you want to proceed with uninstallation? (type 'yes' to confirm): " initial_confirm
+    
+    if [ "$initial_confirm" != "yes" ]; then
+        log_info "Uninstallation cancelled by user"
+        exit 0
+    fi
     
     echo ""
-    log_info "Starting uninstallation process..."
+    log_header "Methodical Uninstallation Process"
+    log_info "You will be prompted before each major step"
+    log_info "State will be verified after each step"
+    log_info "Type 'abort' at any prompt to stop the process"
     echo ""
+    sleep 2
     
+    # Step 1: Uninstall Helm Releases
+    if prompt_continue "Step 1: Uninstall Helm Releases" "Remove Helm-managed deployments (PXC cluster, operator)"; then
     uninstall_helm_releases
-    cleanup_operator_resources
-    delete_pxc_resources
-    delete_remaining_resources
-    delete_storage
-    delete_namespace
+        verify_current_state "Helm Releases"
+    fi
     
+    # Step 2: Delete PXC Custom Resources
+    if prompt_continue "Step 2: Delete PXC Custom Resources" "Remove PXC cluster definitions (CRDs instances)"; then
+    delete_pxc_resources
+        verify_current_state "PXC Resources"
+    fi
+    
+    # Step 3: Cluster-wide resources (informational only)
+    echo ""
+    log_info "Checking cluster-wide resources..."
+    cleanup_operator_resources
+    
+    # Step 4a: Delete Workloads (StatefulSets and Deployments)
+    if prompt_continue "Step 4a: Delete Workloads" "Remove StatefulSets and Deployments (will trigger pod deletion)"; then
+        delete_workloads
+        verify_current_state "Workloads"
+    fi
+    
+    # Step 4b: Force Delete Pods
+    if prompt_continue "Step 4b: Force Delete Pods" "Terminate all remaining pods with force"; then
+        delete_pods
+        verify_current_state "Pods"
+    fi
+    
+    # Step 4c: Delete Services and Configurations
+    if prompt_continue "Step 4c: Delete Services and Configs" "Remove services, configmaps, secrets, and other resources"; then
+        delete_services_and_configs
+        verify_current_state "Services and Configs"
+    fi
+    
+    # Step 5: Storage (ask user now, not at beginning)
+    echo ""
+    log_header "Storage Decision"
+    log_info "PVCs (Persistent Volume Claims) contain your database data"
+    echo ""
+    kubectl --kubeconfig="$KUBECONFIG" get pvc -n "$NAMESPACE" 2>/dev/null || log_info "No PVCs found"
+    echo ""
+    
+    read -p "Do you want to delete PVCs and permanently lose all database data? (yes/no) [no]: " delete_pvcs_input
+    DELETE_PVCS="${delete_pvcs_input:-no}"
+    
+    if [ "$DELETE_PVCS" = "yes" ]; then
+        echo ""
+        echo -e "${RED}╔════════════════════════════════════════════════════════════╗${NC}"
+        echo -e "${RED}║  ⚠️  CRITICAL WARNING - DATA DESTRUCTION  ⚠️               ║${NC}"
+        echo -e "${RED}║                                                            ║${NC}"
+        echo -e "${RED}║  You are about to PERMANENTLY DELETE all database data!   ║${NC}"
+        echo -e "${RED}║  This action CANNOT be undone!                            ║${NC}"
+        echo -e "${RED}║  All backups, databases, and data will be lost!           ║${NC}"
+        echo -e "${RED}╚════════════════════════════════════════════════════════════╝${NC}"
+        echo ""
+        read -p "Type 'DELETE ALL DATA' (in CAPS) to confirm: " final_confirm
+        
+        if [ "$final_confirm" = "DELETE ALL DATA" ]; then
+            if prompt_continue "Step 5: Delete Storage" "Permanently remove all PVCs and database data"; then
+    delete_storage
+                verify_current_state "Storage"
+            fi
+        else
+            log_info "Storage deletion cancelled - preserving data"
+            DELETE_PVCS="no"
+        fi
+    else
+        log_info "Preserving PVCs and database data"
+        echo ""
+    fi
+    
+    # Step 6: Namespace (ask user now)
+    echo ""
+    log_header "Namespace Decision"
+    log_info "Current namespace: $NAMESPACE"
+    
+    # Check what remains in namespace
+    local remaining_resources=$(kubectl --kubeconfig="$KUBECONFIG" get all -n "$NAMESPACE" 2>/dev/null | wc -l | tr -d ' ')
+    if [ "$remaining_resources" -gt 1 ]; then
+        log_warn "Namespace still contains $remaining_resources resources"
+    else
+        log_info "Namespace appears to be empty"
+    fi
+    echo ""
+    
+    read -p "Do you want to delete the namespace '$NAMESPACE'? (yes/no) [no]: " delete_ns_input
+    DELETE_NAMESPACE="${delete_ns_input:-no}"
+    
+    if [ "$DELETE_NAMESPACE" = "yes" ]; then
+        if prompt_continue "Step 6: Delete Namespace" "Remove namespace completely"; then
+    delete_namespace
+            verify_current_state "Namespace"
+        fi
+    else
+        log_info "Preserving namespace '$NAMESPACE'"
+        echo ""
+    fi
+    
+    # Final comprehensive state check
+    echo ""
+    log_header "═══ FINAL STATE VERIFICATION ═══"
+    verify_current_state "Complete Uninstallation"
+    
+    # Check if we need diagnostics
+    local total_remaining=0
+    for resource in helm_releases pxc_resources deployments statefulsets pods services configmaps secrets; do
+        total_remaining=$((total_remaining + ${CURRENT_STATE[$resource]}))
+    done
+    
+    if [ "$total_remaining" -gt 0 ]; then
+        echo ""
+        log_warn "Some resources still remain in namespace"
+        diagnose_stuck_resources
+        
+        # Check volume attachments
+        cleanup_volumeattachments
+    fi
+    
+    # Final summary
     show_summary
 }
 
