@@ -296,11 +296,11 @@ prompt_configuration() {
     MINIO_BUCKET="${minio_bucket:-percona-backups}"
     
     # Prompt for MinIO credentials source namespace
-    read -p "Enter the namespace to copy MinIO credentials from [default: minio-operator]: " minio_secret_namespace
+    read -p "Enter namespace that contains the minio credentials [default: minio-operator]: " minio_secret_namespace
     MINIO_SECRET_NAMESPACE="${minio_secret_namespace:-minio-operator}"
     
     # Prompt for the secret name in the source namespace
-    read -p "Enter the name of the secret in namespace '$MINIO_SECRET_NAMESPACE' to pull secrets from [default: minio-creds]: " minio_secret_name
+    read -p "Enter the k8s secret in namespace '$MINIO_SECRET_NAMESPACE' that contains the minio credentials [default: minio-creds]: " minio_secret_name
     MINIO_SOURCE_SECRET_NAME="${minio_secret_name:-minio-creds}"
     
     # Verify the secret exists in the source namespace
