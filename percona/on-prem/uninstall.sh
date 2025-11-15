@@ -59,6 +59,8 @@ declare -A END_STATE=(
     [services]=0
     [configmaps]=0
     [secrets]=0
+    [leases]=0
+    [events]=0
     [pvcs]=0
     [namespace]="NotFound"
 )
@@ -112,6 +114,8 @@ verify_current_state() {
         CURRENT_STATE[services]=0
         CURRENT_STATE[configmaps]=0
         CURRENT_STATE[secrets]=0
+        CURRENT_STATE[leases]=0
+        CURRENT_STATE[events]=0
         CURRENT_STATE[pvcs]=0
         
         # Can still check cluster-scoped PXC resources
@@ -132,6 +136,8 @@ verify_current_state() {
         CURRENT_STATE[services]=0
         CURRENT_STATE[configmaps]=0
         CURRENT_STATE[secrets]=0
+        CURRENT_STATE[leases]=0
+        CURRENT_STATE[events]=0
         CURRENT_STATE[pvcs]=0
         CURRENT_STATE[pxc_resources]=$(kubectl --kubeconfig="$KUBECONFIG" get pxc --all-namespaces --no-headers 2>/dev/null | grep "^$NAMESPACE " | wc -l | tr -d ' ' || echo "0")
         
@@ -146,6 +152,8 @@ verify_current_state() {
         CURRENT_STATE[services]=$(kubectl --kubeconfig="$KUBECONFIG" get svc -n "$NAMESPACE" --no-headers 2>/dev/null | wc -l | tr -d ' ' || echo "0")
         CURRENT_STATE[configmaps]=$(kubectl --kubeconfig="$KUBECONFIG" get configmaps -n "$NAMESPACE" --no-headers 2>/dev/null | wc -l | tr -d ' ' || echo "0")
         CURRENT_STATE[secrets]=$(kubectl --kubeconfig="$KUBECONFIG" get secrets -n "$NAMESPACE" --no-headers 2>/dev/null | grep -v "default-token" | wc -l | tr -d ' ' || echo "0")
+        CURRENT_STATE[leases]=$(kubectl --kubeconfig="$KUBECONFIG" get leases -n "$NAMESPACE" --no-headers 2>/dev/null | wc -l | tr -d ' ' || echo "0")
+        CURRENT_STATE[events]=$(kubectl --kubeconfig="$KUBECONFIG" get events -n "$NAMESPACE" --no-headers 2>/dev/null | wc -l | tr -d ' ' || echo "0")
         CURRENT_STATE[pvcs]=$(kubectl --kubeconfig="$KUBECONFIG" get pvc -n "$NAMESPACE" --no-headers 2>/dev/null | wc -l | tr -d ' ' || echo "0")
     fi
     
@@ -156,7 +164,7 @@ verify_current_state() {
     
     local all_complete=true
     
-    for resource in helm_releases pxc_resources deployments statefulsets pods services configmaps secrets pvcs; do
+    for resource in helm_releases pxc_resources deployments statefulsets pods services configmaps secrets leases events pvcs; do
         local current="${CURRENT_STATE[$resource]}"
         local target="${END_STATE[$resource]}"
         local status
@@ -430,6 +438,35 @@ show_resources() {
         fi
     fi
     echo ""
+    
+    echo -e "${MAGENTA}═══ Leases (Coordination) ═══${NC}"
+    if [ "$ns_phase" = "Terminating" ]; then
+        echo "  (cannot query - namespace Terminating)"
+    else
+        local lease_count=$(kubectl --kubeconfig="$KUBECONFIG" get leases -n "$NAMESPACE" --no-headers 2>/dev/null | wc -l | tr -d ' ' || echo "0")
+        if [ "$lease_count" -gt 0 ]; then
+            kubectl --kubeconfig="$KUBECONFIG" get leases -n "$NAMESPACE" --no-headers 2>/dev/null | awk '{print "  - " $1 " (Holder: " $2 ")"}'
+            echo ""
+            log_warn "Leases can block namespace deletion - common cause of Terminating state"
+        else
+            echo "  (none found)"
+        fi
+    fi
+    echo ""
+    
+    echo -e "${MAGENTA}═══ Events ═══${NC}"
+    if [ "$ns_phase" = "Terminating" ]; then
+        echo "  (cannot query - namespace Terminating)"
+    else
+        local event_count=$(kubectl --kubeconfig="$KUBECONFIG" get events -n "$NAMESPACE" --no-headers 2>/dev/null | wc -l | tr -d ' ' || echo "0")
+        if [ "$event_count" -gt 0 ]; then
+            echo "  Found $event_count event(s) in namespace"
+            log_warn "Events can sometimes block namespace deletion"
+        else
+            echo "  (none found)"
+        fi
+    fi
+    echo ""
 }
 
 # Legacy confirm_deletion function - NO LONGER USED in new methodical flow
@@ -683,32 +720,126 @@ delete_pxc_resources() {
     fi
 }
 
+# Check namespace finalizers using YAML output - most direct way to see what's blocking
+check_namespace_finalizers() {
+    log_header "Checking Namespace Finalizers"
+    
+    local ns_yaml=$(kubectl --kubeconfig="$KUBECONFIG" get namespace "$NAMESPACE" -o yaml 2>/dev/null)
+    
+    if [ -z "$ns_yaml" ]; then
+        log_info "Namespace not found or cannot be queried"
+        return 1
+    fi
+    
+    # Extract finalizers section
+    local finalizers=$(echo "$ns_yaml" | grep -A 10 "^  finalizers:" | grep "  - " | sed 's/^  - //' || echo "")
+    
+    if [ -z "$finalizers" ]; then
+        log_info "Namespace has no finalizers - deletion should proceed normally"
+        return 0
+    fi
+    
+    echo ""
+    log_warn "Namespace has the following finalizers blocking deletion:"
+    echo ""
+    echo "$finalizers" | while read -r finalizer; do
+        [ -n "$finalizer" ] && echo "  - $finalizer"
+    done
+    echo ""
+    
+    # Check for specific problematic finalizers
+    if echo "$finalizers" | grep -q "percona.com/delete-pxc-pods-in-order"; then
+        log_warn "Found Percona finalizer: percona.com/delete-pxc-pods-in-order"
+        log_info "This finalizer ensures orderly pod deletion but can block if operator is gone"
+        echo ""
+    fi
+    
+    if echo "$finalizers" | grep -q "kubernetes"; then
+        log_warn "Found Kubernetes core finalizer(s)"
+        log_info "These are typically removed automatically by Kubernetes controllers"
+        echo ""
+    fi
+    
+    return 0
+}
+
+# Remove problematic finalizers from namespace
+remove_namespace_finalizers() {
+    log_header "Removing Namespace Finalizers"
+    
+    # Check current finalizers first
+    local current_finalizers=$(kubectl --kubeconfig="$KUBECONFIG" get namespace "$NAMESPACE" -o jsonpath='{.spec.finalizers[*]}' 2>/dev/null || echo "")
+    
+    if [ -z "$current_finalizers" ]; then
+        log_info "No finalizers found on namespace"
+        return 0
+    fi
+    
+    log_info "Current finalizers: $current_finalizers"
+    echo ""
+    
+    # Show what we're about to remove
+    log_warn "Removing all finalizers from namespace to allow deletion..."
+    log_info "Executing: kubectl patch namespace $NAMESPACE -p '{\"spec\":{\"finalizers\":[]}}'"
+    echo ""
+    
+    # Remove all finalizers from spec.finalizers
+    if timeout 30 kubectl --kubeconfig="$KUBECONFIG" patch namespace "$NAMESPACE" \
+        -p '{"spec":{"finalizers":[]}}' \
+        --type=merge 2>/dev/null; then
+        log_success "Successfully removed spec.finalizers"
+    else
+        log_warn "Failed to patch spec.finalizers (may not exist or already removed)"
+    fi
+    
+    # Also try metadata.finalizers in case they're there
+    if timeout 30 kubectl --kubeconfig="$KUBECONFIG" patch namespace "$NAMESPACE" \
+        -p '{"metadata":{"finalizers":[]}}' \
+        --type=merge 2>/dev/null; then
+        log_success "Successfully removed metadata.finalizers"
+    else
+        log_warn "Failed to patch metadata.finalizers (may not exist or already removed)"
+    fi
+    
+    sleep 2
+    
+    # Verify removal
+    local remaining_finalizers=$(kubectl --kubeconfig="$KUBECONFIG" get namespace "$NAMESPACE" -o jsonpath='{.spec.finalizers[*]}' 2>/dev/null || echo "")
+    
+    if [ -z "$remaining_finalizers" ]; then
+        log_success "All finalizers successfully removed from namespace"
+    else
+        log_warn "Some finalizers may still remain: $remaining_finalizers"
+    fi
+    
+    echo ""
+}
+
 # Diagnose what's blocking deletion
 diagnose_stuck_resources() {
     echo ""
-    log_warn "Diagnosing what's blocking deletion..."
+    log_warn "Diagnosing what's blocking namespace deletion..."
     echo ""
     
-    # Check volumeattachments (informational - these are cluster-scoped and safe to leave)
-    local va_count=$(kubectl --kubeconfig="$KUBECONFIG" get volumeattachments --no-headers 2>/dev/null | grep -c "$NAMESPACE" || echo "0")
-    if [ "$va_count" -gt 0 ]; then
-        echo -e "${BLUE}[INFO]${NC} $va_count VolumeAttachment(s) exist - will auto-clean:"
-        kubectl --kubeconfig="$KUBECONFIG" get volumeattachments --no-headers 2>/dev/null | grep "$NAMESPACE" | awk '{print "  - " $1}' || true
-        echo "  (These are cluster-scoped and will be cleaned up automatically by Kubernetes)"
+    # Check namespace YAML for finalizers first - most direct way to see what's blocking
+    check_namespace_finalizers
+    echo ""
+    
+    # Check leases (coordination.k8s.io) - common cause of stuck namespaces
+    local lease_count=$(kubectl --kubeconfig="$KUBECONFIG" get leases -n "$NAMESPACE" --no-headers 2>/dev/null | wc -l | tr -d ' ')
+    if [ "$lease_count" -gt 0 ]; then
+        echo -e "${YELLOW}[BLOCKING]${NC} $lease_count Lease(s) in namespace (common blocker):"
+        kubectl --kubeconfig="$KUBECONFIG" get leases -n "$NAMESPACE" --no-headers 2>/dev/null | awk '{print "  - " $1}' || true
+        log_info "Leases are used by operators and controllers for leader election"
+        echo ""
     fi
     
-    # Check PVCs
-    local pvc_count=$(kubectl --kubeconfig="$KUBECONFIG" get pvc -n "$NAMESPACE" --no-headers 2>/dev/null | wc -l | tr -d ' ')
-    if [ "$pvc_count" -gt 0 ]; then
-        echo -e "${YELLOW}[BLOCKING]${NC} $pvc_count PVC(s) in namespace:"
-        kubectl --kubeconfig="$KUBECONFIG" get pvc -n "$NAMESPACE" --no-headers 2>/dev/null | awk '{print "  - " $1 " [" $2 "]"}' || true
-    fi
-    
-    # Check PVs
-    local pv_count=$(kubectl --kubeconfig="$KUBECONFIG" get pv --no-headers 2>/dev/null | grep -c "$NAMESPACE" || echo "0")
-    if [ "$pv_count" -gt 0 ]; then
-        echo -e "${YELLOW}[BLOCKING]${NC} $pv_count PV(s) bound to namespace:"
-        kubectl --kubeconfig="$KUBECONFIG" get pv --no-headers 2>/dev/null | grep "$NAMESPACE" | awk '{print "  - " $1 " [" $5 "]"}' || true
+    # Check events - these can prevent namespace deletion
+    local event_count=$(kubectl --kubeconfig="$KUBECONFIG" get events -n "$NAMESPACE" --no-headers 2>/dev/null | wc -l | tr -d ' ')
+    if [ "$event_count" -gt 0 ]; then
+        echo -e "${YELLOW}[BLOCKING]${NC} $event_count Event(s) in namespace (common blocker):"
+        log_info "Too many to list individually, but events can block deletion"
+        echo ""
     fi
     
     # Check pods in Terminating state
@@ -717,15 +848,77 @@ diagnose_stuck_resources() {
         echo -e "${YELLOW}[BLOCKING]${NC} Pod(s) stuck in Terminating:"
         echo "$term_pods" | while read -r pod; do
             [ -n "$pod" ] && echo "  - $pod"
+            # Check for finalizers on stuck pods
+            local pod_finalizers=$(kubectl --kubeconfig="$KUBECONFIG" get pod "$pod" -n "$NAMESPACE" -o jsonpath='{.metadata.finalizers}' 2>/dev/null || echo "")
+            if [ -n "$pod_finalizers" ] && [ "$pod_finalizers" != "[]" ] && [ "$pod_finalizers" != "null" ]; then
+                echo "    (has finalizers: $pod_finalizers)"
+            fi
         done
+        echo ""
     fi
     
-    # Check for finalizers on namespace
-    local ns_finalizers=$(kubectl --kubeconfig="$KUBECONFIG" get namespace "$NAMESPACE" -o jsonpath='{.spec.finalizers}' 2>/dev/null || echo "")
-    if [ -n "$ns_finalizers" ] && [ "$ns_finalizers" != "[]" ] && [ "$ns_finalizers" != "null" ]; then
-        echo -e "${YELLOW}[BLOCKING]${NC} Namespace has finalizers: $ns_finalizers"
+    # Check PVCs
+    local pvc_count=$(kubectl --kubeconfig="$KUBECONFIG" get pvc -n "$NAMESPACE" --no-headers 2>/dev/null | wc -l | tr -d ' ')
+    if [ "$pvc_count" -gt 0 ]; then
+        echo -e "${YELLOW}[BLOCKING]${NC} $pvc_count PVC(s) in namespace:"
+        kubectl --kubeconfig="$KUBECONFIG" get pvc -n "$NAMESPACE" --no-headers 2>/dev/null | awk '{print "  - " $1 " (Status: " $2 ", Volume: " $3 ")"}' || true
+        echo ""
     fi
     
+    # Check PVs bound to this namespace
+    local pv_count=$(kubectl --kubeconfig="$KUBECONFIG" get pv --no-headers 2>/dev/null | grep -c "$NAMESPACE" || echo "0")
+    if [ "$pv_count" -gt 0 ]; then
+        echo -e "${YELLOW}[BLOCKING]${NC} $pv_count PV(s) bound to namespace:"
+        kubectl --kubeconfig="$KUBECONFIG" get pv --no-headers 2>/dev/null | grep "$NAMESPACE" | awk '{print "  - " $1 " (Status: " $2 ", Claim: " $6 ")"}' || true
+        echo ""
+    fi
+    
+    # Check ServiceAccounts with finalizers
+    local sa_with_finalizers=$(kubectl --kubeconfig="$KUBECONFIG" get serviceaccounts -n "$NAMESPACE" -o json 2>/dev/null | jq -r '.items[] | select(.metadata.finalizers != null) | .metadata.name' 2>/dev/null || echo "")
+    if [ -n "$sa_with_finalizers" ]; then
+        echo -e "${YELLOW}[BLOCKING]${NC} ServiceAccount(s) with finalizers:"
+        echo "$sa_with_finalizers" | while read -r sa; do
+            [ -n "$sa" ] && echo "  - $sa"
+        done
+        echo ""
+    fi
+    
+    # Check ConfigMaps with finalizers
+    local cm_with_finalizers=$(kubectl --kubeconfig="$KUBECONFIG" get configmaps -n "$NAMESPACE" -o json 2>/dev/null | jq -r '.items[] | select(.metadata.finalizers != null) | .metadata.name' 2>/dev/null || echo "")
+    if [ -n "$cm_with_finalizers" ]; then
+        echo -e "${YELLOW}[BLOCKING]${NC} ConfigMap(s) with finalizers:"
+        echo "$cm_with_finalizers" | while read -r cm; do
+            [ -n "$cm" ] && echo "  - $cm"
+        done
+        echo ""
+    fi
+    
+    # Check Secrets with finalizers
+    local secret_with_finalizers=$(kubectl --kubeconfig="$KUBECONFIG" get secrets -n "$NAMESPACE" -o json 2>/dev/null | jq -r '.items[] | select(.metadata.finalizers != null) | .metadata.name' 2>/dev/null || echo "")
+    if [ -n "$secret_with_finalizers" ]; then
+        echo -e "${YELLOW}[BLOCKING]${NC} Secret(s) with finalizers:"
+        echo "$secret_with_finalizers" | while read -r secret; do
+            [ -n "$secret" ] && echo "  - $secret"
+        done
+        echo ""
+    fi
+    
+    # Check for volumeattachments (informational - these are cluster-scoped)
+    local va_count=$(kubectl --kubeconfig="$KUBECONFIG" get volumeattachments --no-headers 2>/dev/null | grep -c "$NAMESPACE" || echo "0")
+    if [ "$va_count" -gt 0 ]; then
+        echo -e "${BLUE}[INFO]${NC} $va_count VolumeAttachment(s) reference this namespace:"
+        kubectl --kubeconfig="$KUBECONFIG" get volumeattachments --no-headers 2>/dev/null | grep "$NAMESPACE" | awk '{print "  - " $1}' || true
+        log_info "These are cluster-scoped and will be cleaned up automatically by Kubernetes"
+        echo ""
+    fi
+    
+    # Summary and recommendations
+    log_info "Common causes of stuck Terminating namespaces:"
+    echo "  1. Leases: Used by operators/controllers - must be deleted manually"
+    echo "  2. Events: Accumulate over time - can be bulk deleted"
+    echo "  3. Pods with finalizers: Must have finalizers removed or deleted forcefully"
+    echo "  4. PVCs/PVs: Must be deleted if DELETE_PVCS=yes"
+    echo "  5. Resources with custom finalizers: Operator-managed, may need operator cleanup"
     echo ""
 }
 
@@ -748,6 +941,56 @@ cleanup_volumeattachments() {
     else
         log_info "No VolumeAttachments found matching this namespace"
     fi
+}
+
+# Clean up leases - common cause of stuck Terminating namespaces
+cleanup_leases() {
+    log_header "Cleaning Up Leases"
+    
+    local lease_count=$(kubectl --kubeconfig="$KUBECONFIG" get leases -n "$NAMESPACE" --no-headers 2>/dev/null | wc -l | tr -d ' ')
+    
+    if [ "$lease_count" -gt 0 ]; then
+        log_info "Found $lease_count Lease(s) in namespace (common blocker for Terminating namespaces):"
+        kubectl --kubeconfig="$KUBECONFIG" get leases -n "$NAMESPACE" --no-headers 2>/dev/null | awk '{print "  - " $1}' || true
+        echo ""
+        
+        log_info "Leases are used by operators/controllers for leader election"
+        log_info "Executing: kubectl delete leases --all -n $NAMESPACE"
+        
+        if timeout 30 kubectl --kubeconfig="$KUBECONFIG" delete leases --all -n "$NAMESPACE" 2>/dev/null; then
+            log_success "All leases deleted"
+        else
+            log_warn "Some leases may still exist - attempting force delete..."
+            local leases=$(kubectl --kubeconfig="$KUBECONFIG" get leases -n "$NAMESPACE" --no-headers 2>/dev/null | awk '{print $1}' || echo "")
+            for lease in $leases; do
+                [ -n "$lease" ] && kubectl --kubeconfig="$KUBECONFIG" delete lease "$lease" -n "$NAMESPACE" --force --grace-period=0 2>/dev/null || true
+            done
+        fi
+    else
+        log_info "No leases found in namespace"
+    fi
+    echo ""
+}
+
+# Clean up events - can prevent namespace deletion
+cleanup_events() {
+    log_header "Cleaning Up Events"
+    
+    local event_count=$(kubectl --kubeconfig="$KUBECONFIG" get events -n "$NAMESPACE" --no-headers 2>/dev/null | wc -l | tr -d ' ')
+    
+    if [ "$event_count" -gt 0 ]; then
+        log_info "Found $event_count Event(s) in namespace (can block Terminating namespaces)"
+        log_info "Executing: kubectl delete events --all -n $NAMESPACE"
+        
+        if timeout 30 kubectl --kubeconfig="$KUBECONFIG" delete events --all -n "$NAMESPACE" 2>/dev/null; then
+            log_success "All events deleted"
+        else
+            log_warn "Some events may remain, but this is usually not critical"
+        fi
+    else
+        log_info "No events found in namespace"
+    fi
+    echo ""
 }
 
 # Delete workloads (StatefulSets and Deployments)
@@ -1050,14 +1293,13 @@ delete_namespace() {
     if kubectl --kubeconfig="$KUBECONFIG" get namespace "$NAMESPACE" &> /dev/null; then
         log_info "Namespace still exists - forcing cleanup..."
         
+        # Check what finalizers are blocking
+        echo ""
+        check_namespace_finalizers
+        
         # Remove namespace finalizers
         echo ""
-        log_info "Step 1: Removing namespace finalizers..."
-        log_info "Executing: kubectl patch namespace $NAMESPACE -p '{\"spec\":{\"finalizers\":[]}}'"
-        timeout 30 kubectl --kubeconfig="$KUBECONFIG" patch namespace "$NAMESPACE" -p '{"spec":{"finalizers":[]}}' --type=merge 2>/dev/null || true
-        timeout 30 kubectl --kubeconfig="$KUBECONFIG" patch namespace "$NAMESPACE" -p '{"metadata":{"finalizers":[]}}' --type=merge 2>/dev/null || true
-        
-        sleep 2
+        remove_namespace_finalizers
         
         # Force finalize via API (this is the most effective method)
         echo ""
@@ -1116,6 +1358,28 @@ show_summary() {
             echo -e "${YELLOW}[WARNING]${NC} Namespace is still in Terminating state"
             echo -e "${YELLOW}[WARNING]${NC} This usually indicates resources with finalizers are blocking deletion"
             echo ""
+            
+            # Show what finalizers are blocking
+            echo -e "${RED}⚠️  CHECKING WHAT'S BLOCKING DELETION${NC}"
+            echo ""
+            local ns_yaml=$(kubectl --kubeconfig="$KUBECONFIG" get namespace "$NAMESPACE" -o yaml 2>/dev/null)
+            local finalizers=$(echo "$ns_yaml" | grep -A 10 "^  finalizers:" | grep "  - " | sed 's/^  - //' || echo "")
+            
+            if [ -n "$finalizers" ]; then
+                log_warn "Namespace has the following finalizers:"
+                echo ""
+                echo "$finalizers" | while read -r finalizer; do
+                    [ -n "$finalizer" ] && echo "  - $finalizer"
+                done
+                echo ""
+                
+                if echo "$finalizers" | grep -q "percona.com/delete-pxc-pods-in-order"; then
+                    log_warn "Found: percona.com/delete-pxc-pods-in-order"
+                    log_info "This is a Percona operator finalizer that blocks if the operator is gone"
+                    echo ""
+                fi
+            fi
+            
             echo -e "${RED}⚠️  MANUAL ACTION REQUIRED${NC}"
             echo ""
             log_info "The namespace could not be fully deleted. Try these steps:"
@@ -1130,6 +1394,7 @@ show_summary() {
             echo "  3. If still stuck, check for these common blockers:"
             echo "     - PVCs with finalizers"
             echo "     - PXC custom resources"
+            echo "     - Leases and Events"
             echo "     - ValidatingWebhookConfiguration or MutatingWebhookConfiguration"
             echo ""
         else
@@ -1195,6 +1460,25 @@ main() {
         if [ "$terminating_option" = "1" ]; then
             echo ""
             log_info "Option 1: Attempting immediate force-finalization..."
+            
+            # First check what's blocking
+            echo ""
+            check_namespace_finalizers
+            
+            # Clean up common blockers
+            echo ""
+            log_info "Cleaning up common blockers (leases and events)..."
+            echo ""
+            cleanup_leases
+            cleanup_events
+            
+            # Remove namespace finalizers
+            echo ""
+            remove_namespace_finalizers
+            
+            # Now try force finalize
+            echo ""
+            log_info "Now attempting force finalization of namespace..."
             DELETE_NAMESPACE="yes"
             delete_namespace
             verify_current_state "Force Finalize"
@@ -1275,6 +1559,18 @@ main() {
         verify_current_state "Services and Configs"
     fi
     
+    # Step 4d: Clean up Leases (common blocker for Terminating namespaces)
+    if prompt_continue "Step 4d: Delete Leases" "Remove coordination leases (common cause of stuck Terminating state)"; then
+        cleanup_leases
+        verify_current_state "Leases"
+    fi
+    
+    # Step 4e: Clean up Events (can prevent namespace deletion)
+    if prompt_continue "Step 4e: Delete Events" "Remove event history (can block namespace deletion)"; then
+        cleanup_events
+        verify_current_state "Events"
+    fi
+    
     # Step 5: Storage (ask user now, not at beginning)
     echo ""
     log_header "Storage Decision"
@@ -1283,32 +1579,45 @@ main() {
     kubectl --kubeconfig="$KUBECONFIG" get pvc -n "$NAMESPACE" 2>/dev/null || log_info "No PVCs found"
     echo ""
     
-    read -p "Do you want to delete PVCs and permanently lose all database data? (yes/no) [no]: " delete_pvcs_input
-    DELETE_PVCS="${delete_pvcs_input:-no}"
+    # Check for existing PVCs before prompting
+    local existing_pvcs=$(kubectl --kubeconfig="$KUBECONFIG" get pvc -n "$NAMESPACE" --no-headers 2>/dev/null || echo "")
+    local pvc_count=$(echo "$existing_pvcs" | grep -v "^$" | wc -l | tr -d ' ')
     
-    if [ "$DELETE_PVCS" = "yes" ]; then
+    if [ "$pvc_count" -gt 0 ]; then
+        log_info "Found $pvc_count PVC(s) in namespace '$NAMESPACE':"
         echo ""
-        echo -e "${RED}╔════════════════════════════════════════════════════════════╗${NC}"
-        echo -e "${RED}║  ⚠️  CRITICAL WARNING - DATA DESTRUCTION  ⚠️               ║${NC}"
-        echo -e "${RED}║                                                            ║${NC}"
-        echo -e "${RED}║  You are about to PERMANENTLY DELETE all database data!   ║${NC}"
-        echo -e "${RED}║  This action CANNOT be undone!                            ║${NC}"
-        echo -e "${RED}║  All backups, databases, and data will be lost!           ║${NC}"
-        echo -e "${RED}╚════════════════════════════════════════════════════════════╝${NC}"
+        kubectl --kubeconfig="$KUBECONFIG" get pvc -n "$NAMESPACE" -o custom-columns="NAME:.metadata.name,STATUS:.status.phase,VOLUME:.spec.volumeName,CAPACITY:.status.capacity.storage,STORAGECLASS:.spec.storageClassName" 2>/dev/null || true
         echo ""
-        read -p "Type 'DELETE ALL DATA' (in CAPS) to confirm: " final_confirm
         
-        if [ "$final_confirm" = "DELETE ALL DATA" ]; then
-            if prompt_continue "Step 5: Delete Storage" "Permanently remove all PVCs and database data"; then
-    delete_storage
-                verify_current_state "Storage"
+        read -p "Do you want to delete these PVCs and permanently lose all database data? (yes/no) [no]: " delete_pvcs_input
+        DELETE_PVCS="${delete_pvcs_input:-no}"
+        
+        if [ "$DELETE_PVCS" = "yes" ]; then
+            echo ""
+            echo -e "${YELLOW}⚠️  You are about to PERMANENTLY DELETE the following PVCs in namespace '$NAMESPACE':${NC}"
+            echo ""
+            kubectl --kubeconfig="$KUBECONFIG" get pvc -n "$NAMESPACE" --no-headers 2>/dev/null | awk '{print "  - " $1 " (" $3 ", " $4 ")"}' || true
+            echo ""
+            log_warn "This action CANNOT be undone!"
+            echo ""
+            read -p "Type 'DELETE' (in CAPS) to confirm: " final_confirm
+            
+            if [ "$final_confirm" = "DELETE" ]; then
+                if prompt_continue "Step 5: Delete Storage" "Permanently remove all PVCs and database data"; then
+        delete_storage
+                    verify_current_state "Storage"
+                fi
+            else
+                log_info "Storage deletion cancelled - preserving data"
+                DELETE_PVCS="no"
             fi
         else
-            log_info "Storage deletion cancelled - preserving data"
-            DELETE_PVCS="no"
+            log_info "Preserving PVCs and database data"
+            echo ""
         fi
     else
-        log_info "Preserving PVCs and database data"
+        log_info "No PVCs found in namespace - skipping storage deletion"
+        DELETE_PVCS="no"
         echo ""
     fi
     
@@ -1346,7 +1655,7 @@ main() {
     
     # Check if we need diagnostics
     local total_remaining=0
-    for resource in helm_releases pxc_resources deployments statefulsets pods services configmaps secrets; do
+    for resource in helm_releases pxc_resources deployments statefulsets pods services configmaps secrets leases events; do
         total_remaining=$((total_remaining + ${CURRENT_STATE[$resource]}))
     done
     
