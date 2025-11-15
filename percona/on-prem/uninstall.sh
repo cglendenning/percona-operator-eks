@@ -95,17 +95,59 @@ verify_current_state() {
     
     log_header "State Verification: After ${scope}"
     
-    # Gather current state
-    CURRENT_STATE[helm_releases]=$(helm list -n "$NAMESPACE" --short 2>/dev/null | wc -l | tr -d ' ')
-    CURRENT_STATE[pxc_resources]=$(kubectl --kubeconfig="$KUBECONFIG" get pxc --all-namespaces --no-headers 2>/dev/null | grep "^$NAMESPACE " | wc -l | tr -d ' ')
-    CURRENT_STATE[deployments]=$(kubectl --kubeconfig="$KUBECONFIG" get deployments -n "$NAMESPACE" --no-headers 2>/dev/null | wc -l | tr -d ' ')
-    CURRENT_STATE[statefulsets]=$(kubectl --kubeconfig="$KUBECONFIG" get statefulsets -n "$NAMESPACE" --no-headers 2>/dev/null | wc -l | tr -d ' ')
-    CURRENT_STATE[pods]=$(kubectl --kubeconfig="$KUBECONFIG" get pods -n "$NAMESPACE" --no-headers 2>/dev/null | wc -l | tr -d ' ')
-    CURRENT_STATE[services]=$(kubectl --kubeconfig="$KUBECONFIG" get svc -n "$NAMESPACE" --no-headers 2>/dev/null | wc -l | tr -d ' ')
-    CURRENT_STATE[configmaps]=$(kubectl --kubeconfig="$KUBECONFIG" get configmaps -n "$NAMESPACE" --no-headers 2>/dev/null | wc -l | tr -d ' ')
-    CURRENT_STATE[secrets]=$(kubectl --kubeconfig="$KUBECONFIG" get secrets -n "$NAMESPACE" --no-headers 2>/dev/null | grep -v "default-token" | wc -l | tr -d ' ')
-    CURRENT_STATE[pvcs]=$(kubectl --kubeconfig="$KUBECONFIG" get pvc -n "$NAMESPACE" --no-headers 2>/dev/null | wc -l | tr -d ' ')
+    # Check namespace state first - critical for determining if we can query resources
     CURRENT_STATE[namespace]=$(kubectl --kubeconfig="$KUBECONFIG" get namespace "$NAMESPACE" -o jsonpath='{.status.phase}' 2>/dev/null || echo "NotFound")
+    local ns_state="${CURRENT_STATE[namespace]}"
+    
+    # If namespace is Terminating or NotFound, we can't reliably query namespace-scoped resources
+    if [ "$ns_state" = "Terminating" ]; then
+        log_warn "Namespace is in Terminating state - some queries may fail"
+        echo ""
+        
+        # Set defaults for namespace-scoped resources (can't query them reliably)
+        CURRENT_STATE[helm_releases]=0
+        CURRENT_STATE[deployments]=0
+        CURRENT_STATE[statefulsets]=0
+        CURRENT_STATE[pods]=0
+        CURRENT_STATE[services]=0
+        CURRENT_STATE[configmaps]=0
+        CURRENT_STATE[secrets]=0
+        CURRENT_STATE[pvcs]=0
+        
+        # Can still check cluster-scoped PXC resources
+        CURRENT_STATE[pxc_resources]=$(kubectl --kubeconfig="$KUBECONFIG" get pxc --all-namespaces --no-headers 2>/dev/null | grep "^$NAMESPACE " | wc -l | tr -d ' ' || echo "0")
+        
+        log_info "Cannot query namespace-scoped resources while namespace is Terminating"
+        log_info "Will attempt to force-finalize namespace to complete uninstall"
+        echo ""
+        
+    elif [ "$ns_state" = "NotFound" ]; then
+        log_info "Namespace not found - setting all resource counts to 0"
+        
+        # Namespace doesn't exist - set everything to 0 except check for orphaned PXC resources
+        CURRENT_STATE[helm_releases]=0
+        CURRENT_STATE[deployments]=0
+        CURRENT_STATE[statefulsets]=0
+        CURRENT_STATE[pods]=0
+        CURRENT_STATE[services]=0
+        CURRENT_STATE[configmaps]=0
+        CURRENT_STATE[secrets]=0
+        CURRENT_STATE[pvcs]=0
+        CURRENT_STATE[pxc_resources]=$(kubectl --kubeconfig="$KUBECONFIG" get pxc --all-namespaces --no-headers 2>/dev/null | grep "^$NAMESPACE " | wc -l | tr -d ' ' || echo "0")
+        
+    else
+        # Namespace exists and is Active - query all resources normally
+        # Use || echo "0" to prevent failures from causing script exit
+        CURRENT_STATE[helm_releases]=$(helm list -n "$NAMESPACE" --short 2>/dev/null | wc -l | tr -d ' ' || echo "0")
+        CURRENT_STATE[pxc_resources]=$(kubectl --kubeconfig="$KUBECONFIG" get pxc --all-namespaces --no-headers 2>/dev/null | grep "^$NAMESPACE " | wc -l | tr -d ' ' || echo "0")
+        CURRENT_STATE[deployments]=$(kubectl --kubeconfig="$KUBECONFIG" get deployments -n "$NAMESPACE" --no-headers 2>/dev/null | wc -l | tr -d ' ' || echo "0")
+        CURRENT_STATE[statefulsets]=$(kubectl --kubeconfig="$KUBECONFIG" get statefulsets -n "$NAMESPACE" --no-headers 2>/dev/null | wc -l | tr -d ' ' || echo "0")
+        CURRENT_STATE[pods]=$(kubectl --kubeconfig="$KUBECONFIG" get pods -n "$NAMESPACE" --no-headers 2>/dev/null | wc -l | tr -d ' ' || echo "0")
+        CURRENT_STATE[services]=$(kubectl --kubeconfig="$KUBECONFIG" get svc -n "$NAMESPACE" --no-headers 2>/dev/null | wc -l | tr -d ' ' || echo "0")
+        CURRENT_STATE[configmaps]=$(kubectl --kubeconfig="$KUBECONFIG" get configmaps -n "$NAMESPACE" --no-headers 2>/dev/null | wc -l | tr -d ' ' || echo "0")
+        CURRENT_STATE[secrets]=$(kubectl --kubeconfig="$KUBECONFIG" get secrets -n "$NAMESPACE" --no-headers 2>/dev/null | grep -v "default-token" | wc -l | tr -d ' ' || echo "0")
+        CURRENT_STATE[pvcs]=$(kubectl --kubeconfig="$KUBECONFIG" get pvc -n "$NAMESPACE" --no-headers 2>/dev/null | wc -l | tr -d ' ' || echo "0")
+    fi
     
     # Display results table
     echo -e "${CYAN}════════════════════════════════════════════════════${NC}"
@@ -131,12 +173,15 @@ verify_current_state() {
         printf "%-25s %12s %12s %s\n" "$display_name" "$current" "$target" "$status"
     done
     
-    # Namespace status (special case)
+    # Namespace status (special case with Terminating handling)
     local ns_current="${CURRENT_STATE[namespace]}"
     local ns_target="${END_STATE[namespace]}"
     local ns_status
     if [ "$ns_current" = "$ns_target" ]; then
         ns_status="${GREEN}✓ Complete${NC}"
+    elif [ "$ns_current" = "Terminating" ]; then
+        ns_status="${YELLOW}⚠ Terminating${NC}"
+        all_complete=false
     else
         ns_status="${YELLOW}⚠ Exists${NC}"
         all_complete=false
@@ -151,6 +196,41 @@ verify_current_state() {
         echo -e "${YELLOW}[⚠] Some resources still remain${NC}"
     fi
     echo ""
+    
+    # If namespace became Terminating during the process, offer to skip to finalization
+    if [ "$ns_state" = "Terminating" ] && [ "$scope" != "Force Finalize" ] && [ "$scope" != "Namespace" ] && [ "$scope" != "Complete Uninstallation" ]; then
+        echo ""
+        echo -e "${YELLOW}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+        echo -e "${YELLOW}  NAMESPACE IS NOW TERMINATING${NC}"
+        echo -e "${YELLOW}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+        echo ""
+        log_warn "Namespace entered Terminating state - resource queries will fail"
+        log_info "You can skip remaining steps and force-finalize the namespace now"
+        echo ""
+        read -p "Skip to namespace finalization? (yes/no) [no]: " skip_to_finalize
+        
+        if [[ "$skip_to_finalize" =~ ^[Yy]([Ee][Ss])?$ ]]; then
+            log_info "Skipping to namespace finalization..."
+            DELETE_NAMESPACE="yes"
+            delete_namespace
+            verify_current_state "Force Finalize"
+            
+            # Check if we need diagnostics
+            local total_remaining=0
+            for resource in helm_releases pxc_resources deployments statefulsets pods services configmaps secrets; do
+                total_remaining=$((total_remaining + ${CURRENT_STATE[$resource]}))
+            done
+            
+            if [ "$total_remaining" -gt 0 ] && [ "${CURRENT_STATE[namespace]}" != "NotFound" ]; then
+                diagnose_stuck_resources
+                cleanup_volumeattachments
+            fi
+            
+            show_summary
+            exit 0
+        fi
+        echo ""
+    fi
 }
 
 # Prompt user to continue with next step
@@ -250,14 +330,27 @@ prompt_namespace() {
 show_resources() {
     log_header "Resources in Namespace: $NAMESPACE"
     
+    # Check if namespace is in Terminating state - if so, warn user
+    local ns_phase=$(kubectl --kubeconfig="$KUBECONFIG" get namespace "$NAMESPACE" -o jsonpath='{.status.phase}' 2>/dev/null || echo "NotFound")
+    
+    if [ "$ns_phase" = "Terminating" ]; then
+        echo -e "${YELLOW}⚠️  Note: Namespace is in Terminating state${NC}"
+        echo -e "${YELLOW}⚠️  Some resource queries may fail or show incomplete results${NC}"
+        echo ""
+    fi
+    
     echo -e "${MAGENTA}═══ Helm Releases ═══${NC}"
-    local releases=$(helm list -n "$NAMESPACE" --short 2>/dev/null || echo "")
-    if [ -n "$releases" ]; then
-        echo "$releases" | while read -r release; do
-            echo "  - $release"
-        done
+    if [ "$ns_phase" = "Terminating" ]; then
+        echo "  (cannot query - namespace Terminating)"
     else
-        echo "  (none found)"
+        local releases=$(helm list -n "$NAMESPACE" --short 2>/dev/null || echo "")
+        if [ -n "$releases" ]; then
+            echo "$releases" | while read -r release; do
+                echo "  - $release"
+            done
+        else
+            echo "  (none found)"
+        fi
     fi
     echo ""
     
@@ -272,53 +365,69 @@ show_resources() {
     echo ""
     
     echo -e "${MAGENTA}═══ Pods ═══${NC}"
-    local pod_count=$(kubectl --kubeconfig="$KUBECONFIG" get pods -n "$NAMESPACE" --no-headers 2>/dev/null | wc -l | tr -d ' ')
-    if [ "$pod_count" -gt 0 ]; then
-        kubectl --kubeconfig="$KUBECONFIG" get pods -n "$NAMESPACE" --no-headers 2>/dev/null | awk '{print "  - " $1 " (" $3 ")"}'
+    if [ "$ns_phase" = "Terminating" ]; then
+        echo "  (cannot query - namespace Terminating)"
     else
-        echo "  (none found)"
+        local pod_count=$(kubectl --kubeconfig="$KUBECONFIG" get pods -n "$NAMESPACE" --no-headers 2>/dev/null | wc -l | tr -d ' ' || echo "0")
+        if [ "$pod_count" -gt 0 ]; then
+            kubectl --kubeconfig="$KUBECONFIG" get pods -n "$NAMESPACE" --no-headers 2>/dev/null | awk '{print "  - " $1 " (" $3 ")"}'
+        else
+            echo "  (none found)"
+        fi
     fi
     echo ""
     
     echo -e "${MAGENTA}═══ Services ═══${NC}"
-    local svc_count=$(kubectl --kubeconfig="$KUBECONFIG" get svc -n "$NAMESPACE" --no-headers 2>/dev/null | wc -l | tr -d ' ')
-    if [ "$svc_count" -gt 0 ]; then
-        kubectl --kubeconfig="$KUBECONFIG" get svc -n "$NAMESPACE" --no-headers 2>/dev/null | awk '{print "  - " $1 " (" $2 ")"}'
+    if [ "$ns_phase" = "Terminating" ]; then
+        echo "  (cannot query - namespace Terminating)"
     else
-        echo "  (none found)"
+        local svc_count=$(kubectl --kubeconfig="$KUBECONFIG" get svc -n "$NAMESPACE" --no-headers 2>/dev/null | wc -l | tr -d ' ' || echo "0")
+        if [ "$svc_count" -gt 0 ]; then
+            kubectl --kubeconfig="$KUBECONFIG" get svc -n "$NAMESPACE" --no-headers 2>/dev/null | awk '{print "  - " $1 " (" $2 ")"}'
+        else
+            echo "  (none found)"
+        fi
     fi
     echo ""
     
     echo -e "${MAGENTA}═══ Persistent Volume Claims ═══${NC}"
-    local pvc_count=$(kubectl --kubeconfig="$KUBECONFIG" get pvc -n "$NAMESPACE" --no-headers 2>/dev/null | wc -l | tr -d ' ')
-    if [ "$pvc_count" -gt 0 ]; then
-        kubectl --kubeconfig="$KUBECONFIG" get pvc -n "$NAMESPACE" --no-headers 2>/dev/null | awk '{print "  - " $1 " (" $2 ", " $3 ")"}'
-        echo ""
-        
-        # Calculate total storage (column 4 is CAPACITY)
-        local total_storage=$(kubectl --kubeconfig="$KUBECONFIG" get pvc -n "$NAMESPACE" --no-headers 2>/dev/null | awk '{print $4}' | sed 's/Gi//' | awk '{sum+=$1} END {print sum}')
-        log_warn "Total storage: ${total_storage}Gi"
-        
-        # Show associated Persistent Volumes
-        echo ""
-        echo -e "${MAGENTA}═══ Associated Persistent Volumes ═══${NC}"
-        kubectl --kubeconfig="$KUBECONFIG" get pvc -n "$NAMESPACE" --no-headers 2>/dev/null | awk '{print $3}' | while read -r pv; do
-            if [ -n "$pv" ] && [ "$pv" != "<none>" ]; then
-                local pv_info=$(kubectl --kubeconfig="$KUBECONFIG" get pv "$pv" --no-headers 2>/dev/null | awk '{print $1 " (" $2 ", " $5 ", " $6 ")"}' || echo "$pv (details unavailable)")
-                echo "  - $pv_info"
-            fi
-        done
+    if [ "$ns_phase" = "Terminating" ]; then
+        echo "  (cannot query - namespace Terminating)"
     else
-        echo "  (none found)"
+        local pvc_count=$(kubectl --kubeconfig="$KUBECONFIG" get pvc -n "$NAMESPACE" --no-headers 2>/dev/null | wc -l | tr -d ' ' || echo "0")
+        if [ "$pvc_count" -gt 0 ]; then
+            kubectl --kubeconfig="$KUBECONFIG" get pvc -n "$NAMESPACE" --no-headers 2>/dev/null | awk '{print "  - " $1 " (" $2 ", " $3 ")"}'
+            echo ""
+            
+            # Calculate total storage (column 4 is CAPACITY)
+            local total_storage=$(kubectl --kubeconfig="$KUBECONFIG" get pvc -n "$NAMESPACE" --no-headers 2>/dev/null | awk '{print $4}' | sed 's/Gi//' | awk '{sum+=$1} END {print sum}')
+            log_warn "Total storage: ${total_storage}Gi"
+            
+            # Show associated Persistent Volumes
+            echo ""
+            echo -e "${MAGENTA}═══ Associated Persistent Volumes ═══${NC}"
+            kubectl --kubeconfig="$KUBECONFIG" get pvc -n "$NAMESPACE" --no-headers 2>/dev/null | awk '{print $3}' | while read -r pv; do
+                if [ -n "$pv" ] && [ "$pv" != "<none>" ]; then
+                    local pv_info=$(kubectl --kubeconfig="$KUBECONFIG" get pv "$pv" --no-headers 2>/dev/null | awk '{print $1 " (" $2 ", " $5 ", " $6 ")"}' || echo "$pv (details unavailable)")
+                    echo "  - $pv_info"
+                fi
+            done
+        else
+            echo "  (none found)"
+        fi
     fi
     echo ""
     
     echo -e "${MAGENTA}═══ Secrets ═══${NC}"
-    local secret_count=$(kubectl --kubeconfig="$KUBECONFIG" get secrets -n "$NAMESPACE" --no-headers 2>/dev/null | grep -v "default-token" | wc -l | tr -d ' ')
-    if [ "$secret_count" -gt 0 ]; then
-        kubectl --kubeconfig="$KUBECONFIG" get secrets -n "$NAMESPACE" --no-headers 2>/dev/null | grep -v "default-token" | awk '{print "  - " $1 " (" $2 ")"}'
+    if [ "$ns_phase" = "Terminating" ]; then
+        echo "  (cannot query - namespace Terminating)"
     else
-        echo "  (none found)"
+        local secret_count=$(kubectl --kubeconfig="$KUBECONFIG" get secrets -n "$NAMESPACE" --no-headers 2>/dev/null | grep -v "default-token" | wc -l | tr -d ' ' || echo "0")
+        if [ "$secret_count" -gt 0 ]; then
+            kubectl --kubeconfig="$KUBECONFIG" get secrets -n "$NAMESPACE" --no-headers 2>/dev/null | grep -v "default-token" | awk '{print "  - " $1 " (" $2 ")"}'
+        else
+            echo "  (none found)"
+        fi
     fi
     echo ""
 }
@@ -1008,6 +1117,44 @@ main() {
     # Prerequisites and initial setup
     check_prerequisites
     prompt_namespace
+    
+    # Check if namespace is stuck in Terminating state before proceeding
+    local initial_ns_state=$(kubectl --kubeconfig="$KUBECONFIG" get namespace "$NAMESPACE" -o jsonpath='{.status.phase}' 2>/dev/null || echo "NotFound")
+    
+    if [ "$initial_ns_state" = "Terminating" ]; then
+        log_header "Namespace Already Terminating"
+        echo -e "${YELLOW}⚠️  WARNING: Namespace '$NAMESPACE' is stuck in Terminating state${NC}"
+        echo ""
+        log_info "This usually happens when resources have finalizers that prevent deletion."
+        log_info "The uninstall script can attempt to force-finalize the namespace."
+        echo ""
+        log_info "Options:"
+        echo "  1. Force-finalize namespace now (skip to cleanup)"
+        echo "  2. Run full uninstall process (may help clear blocking resources)"
+        echo "  3. Abort"
+        echo ""
+        read -p "Choose option (1/2/3) [2]: " terminating_option
+        terminating_option="${terminating_option:-2}"
+        
+        if [ "$terminating_option" = "1" ]; then
+            log_info "Attempting to force-finalize namespace..."
+            DELETE_NAMESPACE="yes"
+            delete_namespace
+            verify_current_state "Force Finalize"
+            show_summary
+            exit 0
+        elif [ "$terminating_option" = "3" ]; then
+            log_info "Uninstallation cancelled by user"
+            exit 0
+        fi
+        # Option 2 falls through to normal process
+        echo ""
+        log_info "Proceeding with full uninstall process..."
+        log_warn "Some resource queries may fail due to Terminating state"
+        echo ""
+        sleep 2
+    fi
+    
     show_resources
     
     # Initial confirmation - must type 'yes'
