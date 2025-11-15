@@ -571,12 +571,12 @@ create_minio_secret() {
     # Extract credentials from source secret
     log_info "Extracting credentials from secret '$MINIO_SOURCE_SECRET_NAME' in namespace '$MINIO_SECRET_NAMESPACE'..."
     
-    local access_key=$(kubectl --kubeconfig="$KUBECONFIG" get secret "$MINIO_SOURCE_SECRET_NAME" -n "$MINIO_SECRET_NAMESPACE" -o jsonpath='{.data.accesskey}' 2>/dev/null || echo "")
-    local secret_key=$(kubectl --kubeconfig="$KUBECONFIG" get secret "$MINIO_SOURCE_SECRET_NAME" -n "$MINIO_SECRET_NAMESPACE" -o jsonpath='{.data.secretkey}' 2>/dev/null || echo "")
+    local root_user=$(kubectl --kubeconfig="$KUBECONFIG" get secret "$MINIO_SOURCE_SECRET_NAME" -n "$MINIO_SECRET_NAMESPACE" -o jsonpath='{.data.rootUser}' 2>/dev/null || echo "")
+    local root_password=$(kubectl --kubeconfig="$KUBECONFIG" get secret "$MINIO_SOURCE_SECRET_NAME" -n "$MINIO_SECRET_NAMESPACE" -o jsonpath='{.data.rootPassword}' 2>/dev/null || echo "")
     
-    if [ -z "$access_key" ] || [ -z "$secret_key" ]; then
+    if [ -z "$root_user" ] || [ -z "$root_password" ]; then
         log_error "Failed to extract credentials from secret '$MINIO_SOURCE_SECRET_NAME'"
-        log_error "Secret must contain 'accesskey' and 'secretkey' fields"
+        log_error "Secret must contain 'rootUser' and 'rootPassword' fields"
         exit 1
     fi
     
@@ -585,8 +585,8 @@ create_minio_secret() {
     
     kubectl --kubeconfig="$KUBECONFIG" create secret generic minio-creds \
         -n "$NAMESPACE" \
-        --from-literal=AWS_ACCESS_KEY_ID=$(echo "$access_key" | base64 -d) \
-        --from-literal=AWS_SECRET_ACCESS_KEY=$(echo "$secret_key" | base64 -d) \
+        --from-literal=AWS_ACCESS_KEY_ID=$(echo "$root_user" | base64 -d) \
+        --from-literal=AWS_SECRET_ACCESS_KEY=$(echo "$root_password" | base64 -d) \
         --dry-run=client -o yaml | kubectl --kubeconfig="$KUBECONFIG" apply -f - &> /dev/null
     
     if [ $? -eq 0 ]; then
@@ -612,12 +612,13 @@ create_minio_bucket() {
     
     log_info "Extracting MinIO credentials from secret..."
     
-    # Get credentials from the source secret
-    local access_key=$(kubectl --kubeconfig="$KUBECONFIG" get secret "$MINIO_SOURCE_SECRET_NAME" -n "$MINIO_SECRET_NAMESPACE" -o jsonpath='{.data.accesskey}' 2>/dev/null | base64 -d 2>/dev/null || echo "")
-    local secret_key=$(kubectl --kubeconfig="$KUBECONFIG" get secret "$MINIO_SOURCE_SECRET_NAME" -n "$MINIO_SECRET_NAMESPACE" -o jsonpath='{.data.secretkey}' 2>/dev/null | base64 -d 2>/dev/null || echo "")
+    # Get credentials from the source secret (rootUser and rootPassword)
+    local access_key=$(kubectl --kubeconfig="$KUBECONFIG" get secret "$MINIO_SOURCE_SECRET_NAME" -n "$MINIO_SECRET_NAMESPACE" -o jsonpath='{.data.rootUser}' 2>/dev/null | base64 -d 2>/dev/null || echo "")
+    local secret_key=$(kubectl --kubeconfig="$KUBECONFIG" get secret "$MINIO_SOURCE_SECRET_NAME" -n "$MINIO_SECRET_NAMESPACE" -o jsonpath='{.data.rootPassword}' 2>/dev/null | base64 -d 2>/dev/null || echo "")
     
     if [ -z "$access_key" ] || [ -z "$secret_key" ]; then
         log_error "Failed to extract credentials from secret '$MINIO_SOURCE_SECRET_NAME'"
+        log_error "Secret must contain 'rootUser' and 'rootPassword' fields"
         exit 1
     fi
     
