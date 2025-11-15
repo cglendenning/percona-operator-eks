@@ -308,8 +308,8 @@ prompt_configuration() {
     MINIO_POD_NAME="${minio_pod_name:-minio-pool-0-0}"
     
     # Prompt for MinIO endpoint URL
-    read -p "Enter MinIO endpoint URL [default: https://minio-hl.minio-operator.svc.cluster.local:9000]: " minio_endpoint
-    MINIO_ENDPOINT="${minio_endpoint:-https://minio-hl.minio-operator.svc.cluster.local:9000}"
+    read -p "Enter MinIO endpoint URL [default: http://minio.minio.svc.cluster.local:9000]: " minio_endpoint
+    MINIO_ENDPOINT="${minio_endpoint:-http://minio.minio.svc.cluster.local:9000}"
     
     # Verify the secret exists in the source namespace
     if ! kubectl --kubeconfig="$KUBECONFIG" get secret "$MINIO_SOURCE_SECRET_NAME" -n "$MINIO_SECRET_NAMESPACE" &> /dev/null; then
@@ -624,10 +624,14 @@ create_minio_bucket() {
     
     log_info "Setting up MinIO client alias in pod '$minio_pod'..."
     
-    # Set up mc alias
-    if ! kubectl --kubeconfig="$KUBECONFIG" -n "$MINIO_SECRET_NAMESPACE" exec -it "$minio_pod" -- bash -c \
-        "mc --insecure alias set local https://localhost:9000 $access_key $secret_key" 2>/dev/null; then
+    # Set up mc alias (remove -it flag for non-interactive script execution)
+    if ! kubectl --kubeconfig="$KUBECONFIG" -n "$MINIO_SECRET_NAMESPACE" exec "$minio_pod" -- bash -c \
+        "mc alias set local http://localhost:9000 '$access_key' '$secret_key'"; then
         log_error "Failed to set up MinIO client alias"
+        log_error "This could be due to:"
+        log_error "  - MinIO pod '$minio_pod' not having 'mc' command available"
+        log_error "  - MinIO service not accessible on localhost:9000 in the pod"
+        log_error "  - Invalid credentials extracted from secret"
         exit 1
     fi
     
@@ -635,16 +639,16 @@ create_minio_bucket() {
     
     # Check if bucket already exists
     log_info "Checking if bucket '$MINIO_BUCKET' already exists..."
-    local bucket_exists=$(kubectl --kubeconfig="$KUBECONFIG" -n "$MINIO_SECRET_NAMESPACE" exec -it "$minio_pod" -- bash -c \
-        "mc --insecure ls local | grep -w '$MINIO_BUCKET'" 2>/dev/null || echo "")
+    local bucket_exists=$(kubectl --kubeconfig="$KUBECONFIG" -n "$MINIO_SECRET_NAMESPACE" exec "$minio_pod" -- bash -c \
+        "mc ls local | grep -w '$MINIO_BUCKET'" 2>/dev/null || echo "")
     
     if [ -n "$bucket_exists" ]; then
         log_info "Bucket '$MINIO_BUCKET' already exists, using existing bucket"
     else
         # Create bucket
         log_info "Creating bucket '$MINIO_BUCKET'..."
-        if kubectl --kubeconfig="$KUBECONFIG" -n "$MINIO_SECRET_NAMESPACE" exec -it "$minio_pod" -- bash -c \
-            "mc --insecure mb -p local/$MINIO_BUCKET" 2>/dev/null; then
+        if kubectl --kubeconfig="$KUBECONFIG" -n "$MINIO_SECRET_NAMESPACE" exec "$minio_pod" -- bash -c \
+            "mc mb -p local/$MINIO_BUCKET"; then
             log_success "Bucket '$MINIO_BUCKET' created successfully"
         else
             log_error "Failed to create bucket '$MINIO_BUCKET'"
@@ -654,8 +658,8 @@ create_minio_bucket() {
     
     # List buckets to verify
     log_info "Current MinIO buckets:"
-    kubectl --kubeconfig="$KUBECONFIG" -n "$MINIO_SECRET_NAMESPACE" exec -it "$minio_pod" -- bash -c \
-        "mc --insecure ls local" 2>/dev/null | sed 's/^/  /' || log_warn "Could not list buckets"
+    kubectl --kubeconfig="$KUBECONFIG" -n "$MINIO_SECRET_NAMESPACE" exec "$minio_pod" -- bash -c \
+        "mc ls local" 2>/dev/null | sed 's/^/  /' || log_warn "Could not list buckets"
     
     echo ""
 }
