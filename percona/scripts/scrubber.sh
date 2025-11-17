@@ -26,6 +26,7 @@ NC='\033[0m' # No Color
 # Script configuration
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REDACTED_JSON="redacted.json"
+KEYWORDS_JSON="keywords.json"
 BACKUP_DIR=".scrubber_backup"
 DRY_RUN=false
 DEBUG=false
@@ -196,30 +197,129 @@ add_to_redaction_map() {
     } | .metadata.total_redactions += 1" "$json_file" > "${json_file}.tmp" && mv "${json_file}.tmp" "$json_file"
 }
 
-# Get product keywords from user
-get_product_keywords() {
-    log_header "Product Keywords Configuration"
+# Load keywords from JSON file
+load_keywords_from_json() {
+    local keywords_file="$1"
     
-    echo "Enter product-specific keywords to redact (comma-separated)."
-    echo "Example: CompanyName,ProjectX,SecretProduct,InternalCodename"
-    echo ""
-    read -p "Keywords: " keywords_input
-    
-    if [ -z "$keywords_input" ]; then
-        log_warn "No keywords provided, skipping product keyword redaction"
-        echo ""
-        return
+    if [ ! -f "$keywords_file" ]; then
+        return 1
     fi
     
-    # Convert comma-separated to array
-    IFS=',' read -ra PRODUCT_KEYWORDS <<< "$keywords_input"
+    # Read keywords array from JSON
+    local keywords_json=$(jq -r '.keywords[]' "$keywords_file" 2>/dev/null | tr '\n' ',' | sed 's/,$//')
+    
+    if [ -z "$keywords_json" ]; then
+        return 1
+    fi
+    
+    # Convert to array
+    IFS=',' read -ra PRODUCT_KEYWORDS <<< "$keywords_json"
     
     # Trim whitespace from each keyword
     for i in "${!PRODUCT_KEYWORDS[@]}"; do
         PRODUCT_KEYWORDS[$i]=$(echo "${PRODUCT_KEYWORDS[$i]}" | xargs)
     done
     
-    log_success "Will redact ${#PRODUCT_KEYWORDS[@]} product keywords"
+    return 0
+}
+
+# Save keywords to JSON file
+save_keywords_to_json() {
+    local keywords_file="$1"
+    shift
+    local keywords=("$@")
+    
+    # Create JSON array
+    local json_keywords=$(printf '%s\n' "${keywords[@]}" | jq -R . | jq -s .)
+    
+    # Create JSON structure
+    cat > "$keywords_file" << EOF
+{
+  "keywords": $json_keywords,
+  "updated": "$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
+}
+EOF
+}
+
+# Get product keywords from user
+get_product_keywords() {
+    local target_dir="$1"
+    local keywords_file="${target_dir}/${KEYWORDS_JSON}"
+    
+    log_header "Product Keywords Configuration"
+    
+    # Check if keywords.json exists
+    if [ -f "$keywords_file" ]; then
+        log_info "Found existing keywords file: $keywords_file"
+        
+        if load_keywords_from_json "$keywords_file"; then
+            echo ""
+            log_success "Loaded ${#PRODUCT_KEYWORDS[@]} keywords from file:"
+            for keyword in "${PRODUCT_KEYWORDS[@]}"; do
+                echo "  - $keyword"
+            done
+            echo ""
+            
+            read -p "Add additional keywords? (yes/no) [no]: " add_more
+            
+            if [ "$add_more" = "yes" ]; then
+                echo ""
+                echo "Enter additional keywords to add (comma-separated):"
+                read -p "Additional keywords: " keywords_input
+                
+                if [ -n "$keywords_input" ]; then
+                    # Convert comma-separated to array
+                    IFS=',' read -ra NEW_KEYWORDS <<< "$keywords_input"
+                    
+                    # Trim whitespace and add to existing keywords
+                    for keyword in "${NEW_KEYWORDS[@]}"; do
+                        keyword=$(echo "$keyword" | xargs)
+                        if [ -n "$keyword" ]; then
+                            PRODUCT_KEYWORDS+=("$keyword")
+                        fi
+                    done
+                    
+                    # Save updated keywords
+                    save_keywords_to_json "$keywords_file" "${PRODUCT_KEYWORDS[@]}"
+                    
+                    log_success "Added ${#NEW_KEYWORDS[@]} new keywords (total: ${#PRODUCT_KEYWORDS[@]})"
+                    log_success "Updated $keywords_file"
+                fi
+            fi
+        else
+            log_warn "Failed to load keywords from file, starting fresh"
+            PRODUCT_KEYWORDS=()
+        fi
+    else
+        log_info "No keywords file found at: $keywords_file"
+        echo ""
+        echo "Enter product-specific keywords to redact (comma-separated)."
+        echo "Example: CompanyName,ProjectX,SecretProduct,InternalCodename"
+        echo ""
+        read -p "Keywords: " keywords_input
+        
+        if [ -z "$keywords_input" ]; then
+            log_warn "No keywords provided, skipping product keyword redaction"
+            echo ""
+            return
+        fi
+        
+        # Convert comma-separated to array
+        IFS=',' read -ra PRODUCT_KEYWORDS <<< "$keywords_input"
+        
+        # Trim whitespace from each keyword
+        for i in "${!PRODUCT_KEYWORDS[@]}"; do
+            PRODUCT_KEYWORDS[$i]=$(echo "${PRODUCT_KEYWORDS[$i]}" | xargs)
+        done
+        
+        # Save keywords to file
+        save_keywords_to_json "$keywords_file" "${PRODUCT_KEYWORDS[@]}"
+        log_success "Saved keywords to $keywords_file"
+    fi
+    
+    if [ ${#PRODUCT_KEYWORDS[@]} -gt 0 ]; then
+        log_success "Will redact ${#PRODUCT_KEYWORDS[@]} product keywords"
+    fi
     echo ""
 }
 
@@ -303,6 +403,12 @@ should_process_file() {
         return 1
     fi
     
+    # Skip keywords.json itself
+    if [[ "$file" == *"${KEYWORDS_JSON}" ]]; then
+        set -e
+        return 1
+    fi
+    
     # Skip .git directory
     if [[ "$file" == *"/.git/"* ]]; then
         set -e
@@ -356,37 +462,42 @@ redact_file() {
         cp "$file" "$temp_file"
     fi
     
-    # Redact product keywords (case-insensitive)
+    # Redact product keywords (case-insensitive, matches anywhere including adjacent to other chars)
     if [ ${#PRODUCT_KEYWORDS[@]} -gt 0 ]; then
         for keyword in "${PRODUCT_KEYWORDS[@]}"; do
             if [ -z "$keyword" ]; then
                 continue
             fi
             
-            # Check if keyword exists in file (case-insensitive)
-            # Use || true to prevent grep from causing script exit on no match
-            if grep -qiE "$(escape_for_grep "$keyword")" "$temp_file" 2>/dev/null; then
-                local redaction_id=$(generate_redaction_id)
+            # Check if keyword exists in file (case-insensitive, simple substring match)
+            # Use grep -i without word boundaries to match keyword anywhere
+            if grep -qi "$keyword" "$temp_file" 2>/dev/null; then
+                # Find all case variations of the keyword in the file
+                # Use grep -io to extract the keyword as it appears (preserving case)
+                local matches=$(grep -io "$keyword" "$temp_file" 2>/dev/null | sort -u || true)
                 
-                # Get actual matches for mapping
-                local matches=$(grep -oiE "$(escape_for_grep "$keyword")" "$temp_file" 2>/dev/null | sort -u || true)
-                
-                while IFS= read -r match; do
-                    if [ -n "$match" ]; then
-                        if [ "$DRY_RUN" = true ]; then
-                            log_dry_run "  Would redact (product_keyword): '$match' -> [${redaction_id}_${match}]"
-                        else
-                            add_to_redaction_map "$json_file" "${redaction_id}_${match}" "$match" "product_keyword"
+                if [ -n "$matches" ]; then
+                    while IFS= read -r match; do
+                        if [ -n "$match" ]; then
+                            local redaction_id=$(generate_redaction_id)
                             
-                            # Perform replacement (case-insensitive)
-                            local escaped_match=$(escape_for_sed "$match")
-                            sed -i "s/${escaped_match}/[${redaction_id}_${match}]/gI" "$temp_file" 2>/dev/null || \
-                                sed -i "" "s/${escaped_match}/[${redaction_id}_${match}]/gI" "$temp_file"
+                            if [ "$DRY_RUN" = true ]; then
+                                # Count occurrences for dry-run display
+                                local count=$(grep -o "$match" "$temp_file" 2>/dev/null | wc -l | xargs)
+                                log_dry_run "  Would redact (product_keyword): '$match' ($count occurrence(s)) -> [${redaction_id}]"
+                            else
+                                add_to_redaction_map "$json_file" "${redaction_id}" "$match" "product_keyword"
+                                
+                                # Perform replacement (case-sensitive for exact match)
+                                local escaped_match=$(escape_for_sed "$match")
+                                sed -i "s/${escaped_match}/[${redaction_id}]/g" "$temp_file" 2>/dev/null || \
+                                    sed -i "" "s/${escaped_match}/[${redaction_id}]/g" "$temp_file"
+                            fi
+                            
+                            ((redaction_count++))
                         fi
-                        
-                        ((redaction_count++))
-                    fi
-                done <<< "$matches"
+                    done <<< "$matches"
+                fi
             fi
         done
     fi
@@ -462,7 +573,7 @@ redact_directory() {
     log_info "Target directory: $target_dir"
     
     # Get product keywords
-    get_product_keywords
+    get_product_keywords "$target_dir"
     
     # Initialize redaction map
     local json_file="${target_dir}/${REDACTED_JSON}"
