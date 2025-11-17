@@ -13,6 +13,7 @@
 # - Reversible with redacted.json mapping file
 # - Creates backups before modification
 
+# Use set -euo pipefail globally, but disable in specific functions that need to handle errors
 set -euo pipefail
 
 # Colors for output
@@ -30,6 +31,9 @@ KEYWORDS_JSON="keywords.json"
 BACKUP_DIR=".scrubber_backup"
 DRY_RUN=false
 DEBUG=false
+
+# Global variables (declared here to avoid scoping issues)
+declare -a PRODUCT_KEYWORDS=()
 
 # Logging functions
 log_info() {
@@ -103,23 +107,43 @@ EOF
 # Check prerequisites
 check_prerequisites() {
     local missing=()
-    
+
+    # jq is required for JSON operations
     if ! command -v jq &> /dev/null; then
         missing+=("jq")
     fi
-    
+
+    # sed is required for string manipulation
     if ! command -v sed &> /dev/null; then
         missing+=("sed")
     fi
-    
+
+    # grep is required for pattern matching
     if ! command -v grep &> /dev/null; then
         missing+=("grep")
     fi
-    
+
     if [ ${#missing[@]} -gt 0 ]; then
         log_error "Missing required tools: ${missing[*]}"
         log_error "Install with: sudo apt-get install ${missing[*]}"
         exit 1
+    fi
+
+    # Optional tools warnings
+    local optional_missing=()
+    if ! command -v file &> /dev/null; then
+        optional_missing+=("file (for better binary detection)")
+    fi
+    if ! command -v mktemp &> /dev/null; then
+        optional_missing+=("mktemp (for safer temp files)")
+    fi
+    if ! command -v timeout &> /dev/null; then
+        optional_missing+=("timeout (for preventing hangs)")
+    fi
+
+    if [ ${#optional_missing[@]} -gt 0 ]; then
+        log_warn "Optional tools not found: ${optional_missing[*]}"
+        log_warn "Script will work with reduced functionality"
     fi
 }
 
@@ -135,7 +159,10 @@ escape_for_grep() {
 
 # Generate unique redaction ID
 generate_redaction_id() {
-    echo "REDACTED_ID_$(date +%s)_${RANDOM}"
+    # Use nanoseconds and random for better uniqueness
+    local timestamp=$(date +%s%N 2>/dev/null || date +%s)
+    local random_part=$(od -An -tx8 -N8 /dev/urandom 2>/dev/null | tr -d ' ' || echo "${RANDOM}${RANDOM}")
+    echo "REDACTED_ID_${timestamp}_${random_part}"
 }
 
 # Initialize redaction map
@@ -150,7 +177,8 @@ init_redaction_map() {
     
     if [ -f "$json_file" ]; then
         log_warn "Redaction map already exists: $json_file"
-        read -p "Overwrite existing map? (yes/no): " confirm
+        echo -n "Overwrite existing map? (yes/no): "
+        read confirm
         if [ "$confirm" != "yes" ]; then
             log_error "Aborted by user"
             exit 1
@@ -200,26 +228,33 @@ add_to_redaction_map() {
 # Load keywords from JSON file
 load_keywords_from_json() {
     local keywords_file="$1"
-    
+
     if [ ! -f "$keywords_file" ]; then
         return 1
     fi
-    
+
+    # Check if jq is available
+    if ! command -v jq &> /dev/null; then
+        log_error "jq is required to load keywords from JSON file"
+        return 1
+    fi
+
     # Read keywords array from JSON
-    local keywords_json=$(jq -r '.keywords[]' "$keywords_file" 2>/dev/null | tr '\n' ',' | sed 's/,$//')
-    
+    local keywords_json=""
+    keywords_json=$(jq -r '.keywords[]' "$keywords_file" 2>/dev/null | tr '\n' ',' | sed 's/,$//' || echo "")
+
     if [ -z "$keywords_json" ]; then
         return 1
     fi
-    
+
     # Convert to array
     IFS=',' read -ra PRODUCT_KEYWORDS <<< "$keywords_json"
-    
+
     # Trim whitespace from each keyword
     for i in "${!PRODUCT_KEYWORDS[@]}"; do
         PRODUCT_KEYWORDS[$i]=$(echo "${PRODUCT_KEYWORDS[$i]}" | xargs)
     done
-    
+
     return 0
 }
 
@@ -228,10 +263,17 @@ save_keywords_to_json() {
     local keywords_file="$1"
     shift
     local keywords=("$@")
-    
+
+    # Check if jq is available
+    if ! command -v jq &> /dev/null; then
+        log_error "Cannot save keywords: jq is required"
+        return 1
+    fi
+
     # Create JSON array
-    local json_keywords=$(printf '%s\n' "${keywords[@]}" | jq -R . | jq -s .)
-    
+    local json_keywords=""
+    json_keywords=$(printf '%s\n' "${keywords[@]}" | jq -R . | jq -s . 2>/dev/null || echo "[]")
+
     # Create JSON structure
     cat > "$keywords_file" << EOF
 {
@@ -260,30 +302,47 @@ get_product_keywords() {
             done
             echo ""
             
-            read -p "Add additional keywords? (yes/no) [no]: " add_more
+            echo -n "Add additional keywords? (yes/no) [no]: "
+            read add_more
             
             if [ "$add_more" = "yes" ]; then
                 echo ""
                 echo "Enter additional keywords to add (comma-separated):"
-                read -p "Additional keywords: " keywords_input
+                echo -n "Additional keywords: "
+                read keywords_input
                 
                 if [ -n "$keywords_input" ]; then
                     # Convert comma-separated to array
                     IFS=',' read -ra NEW_KEYWORDS <<< "$keywords_input"
-                    
-                    # Trim whitespace and add to existing keywords
+
+                    # Validate and add to existing keywords
+                    local added_count=0
                     for keyword in "${NEW_KEYWORDS[@]}"; do
                         keyword=$(echo "$keyword" | xargs)
                         if [ -n "$keyword" ]; then
-                            PRODUCT_KEYWORDS+=("$keyword")
+                            # Validate keyword (no dangerous characters)
+                            if [[ "$keyword" =~ ^[a-zA-Z0-9_-]+$ ]]; then
+                                # Check if keyword already exists
+                                if [[ ! " ${PRODUCT_KEYWORDS[*]} " =~ " $keyword " ]]; then
+                                    PRODUCT_KEYWORDS+=("$keyword")
+                                    ((added_count++))
+                                else
+                                    log_warn "Keyword already exists: '$keyword'"
+                                fi
+                            else
+                                log_warn "Skipping invalid keyword (only alphanumeric, underscore, hyphen allowed): '$keyword'"
+                            fi
                         fi
                     done
-                    
-                    # Save updated keywords
-                    save_keywords_to_json "$keywords_file" "${PRODUCT_KEYWORDS[@]}"
-                    
-                    log_success "Added ${#NEW_KEYWORDS[@]} new keywords (total: ${#PRODUCT_KEYWORDS[@]})"
-                    log_success "Updated $keywords_file"
+
+                    if [ $added_count -gt 0 ]; then
+                        # Save updated keywords
+                        save_keywords_to_json "$keywords_file" "${PRODUCT_KEYWORDS[@]}"
+                        log_success "Added $added_count new keywords (total: ${#PRODUCT_KEYWORDS[@]})"
+                        log_success "Updated $keywords_file"
+                    else
+                        log_info "No new valid keywords added"
+                    fi
                 fi
             fi
         else
@@ -296,7 +355,8 @@ get_product_keywords() {
         echo "Enter product-specific keywords to redact (comma-separated)."
         echo "Example: CompanyName,ProjectX,SecretProduct,InternalCodename"
         echo ""
-        read -p "Keywords: " keywords_input
+        echo -n "Keywords: "
+        read keywords_input
         
         if [ -z "$keywords_input" ]; then
             log_warn "No keywords provided, skipping product keyword redaction"
@@ -306,11 +366,27 @@ get_product_keywords() {
         
         # Convert comma-separated to array
         IFS=',' read -ra PRODUCT_KEYWORDS <<< "$keywords_input"
-        
-        # Trim whitespace from each keyword
-        for i in "${!PRODUCT_KEYWORDS[@]}"; do
-            PRODUCT_KEYWORDS[$i]=$(echo "${PRODUCT_KEYWORDS[$i]}" | xargs)
+
+        # Validate and trim whitespace from each keyword
+        local validated_keywords=()
+        for keyword in "${PRODUCT_KEYWORDS[@]}"; do
+            keyword=$(echo "$keyword" | xargs)
+            if [ -n "$keyword" ]; then
+                # Validate keyword (no dangerous characters)
+                if [[ "$keyword" =~ ^[a-zA-Z0-9_-]+$ ]]; then
+                    validated_keywords+=("$keyword")
+                else
+                    log_warn "Skipping invalid keyword (only alphanumeric, underscore, hyphen allowed): '$keyword'"
+                fi
+            fi
         done
+
+        PRODUCT_KEYWORDS=("${validated_keywords[@]}")
+
+        if [ ${#PRODUCT_KEYWORDS[@]} -eq 0 ]; then
+            log_error "No valid keywords provided"
+            return
+        fi
         
         # Save keywords to file
         save_keywords_to_json "$keywords_file" "${PRODUCT_KEYWORDS[@]}"
@@ -325,7 +401,7 @@ get_product_keywords() {
 
 # Define sensitive data patterns
 declare -A PATTERNS=(
-    # IP addresses (IPv4)
+    # IP addresses (IPv4) - exclude private ranges that might be legitimate
     ["ipv4"]='([0-9]{1,3}\.){3}[0-9]{1,3}'
     
     # Email addresses
@@ -340,8 +416,8 @@ declare -A PATTERNS=(
     # Generic API Keys
     ["api_key"]='api[_-]?key[[:space:]]*[:=][[:space:]]*["\047]?[A-Za-z0-9_\-]{20,}["\047]?'
     
-    # Passwords in configs
-    ["password"]='password[[:space:]]*[:=][[:space:]]*["\047]?[^"\047[:space:]]{6,}["\047]?'
+    # Passwords in configs (avoid common false positives)
+    ["password"]='(password|passwd|pwd)[[:space:]]*[:=][[:space:]]*["\047]?[^"\047[:space:]]{6,}["\047]?'
     
     # JWT tokens (simplified)
     ["jwt"]='eyJ[A-Za-z0-9_-]*\.eyJ[A-Za-z0-9_-]*\.[A-Za-z0-9_-]*'
@@ -358,8 +434,8 @@ declare -A PATTERNS=(
     # URLs with credentials
     ["url_with_creds"]='https?://[^:]+:[^@]+@[^[:space:]"'\'']*'
     
-    # Common hostname patterns (internal networks)
-    ["hostname"]='[a-z0-9-]+\.(internal|local|corp|lan|private)'
+    # Common hostname patterns (only suspicious ones)
+    ["hostname"]='[a-z0-9-]+\.(internal|local|corp|lan|private|company\.local|dev\.local)'
 )
 
 # Create backup of original file
@@ -423,19 +499,46 @@ should_process_file() {
     
     # Skip binary files (but be more lenient - only skip obvious binaries)
     if command -v file &> /dev/null; then
-        local file_type=$(file "$file" 2>/dev/null || echo "text")
-        # Only skip truly binary files, not text files
-        if echo "$file_type" | grep -qE 'executable.*binary|compiled|ELF|PE32|Mach-O|Java class|image data|audio|video|ISO|tar archive|gzip|bzip2|zip archive|RPM|deb package' 2>/dev/null; then
-            set -e
-            return 1
+        local file_type=""
+        file_type=$(file "$file" 2>/dev/null || echo "")
+        if [ -n "$file_type" ]; then
+            # Only skip truly binary files, not text files
+            if echo "$file_type" | grep -qE 'executable.*binary|compiled|ELF|PE32|Mach-O|Java class|image data|audio|video|ISO|tar archive|gzip|bzip2|zip archive|RPM|deb package|PDF document|Microsoft.*document|SQLite|database' 2>/dev/null; then
+                return 1
+            fi
         fi
+    else
+        # Fallback: check file extension for common binary types
+        local filename="${file##*/}"
+        local extension="${filename##*.}"
+        case "${extension,,}" in
+            exe|dll|so|dylib|bin|deb|rpm|msi|dmg|pkg|app|jar|war|ear|pdf|doc|docx|xls|xlsx|ppt|pptx|zip|tar|gz|bz2|tgz|tbz2|7z|rar|iso|img|sqlite|db)
+                return 1
+                ;;
+        esac
     fi
     
     # Skip very large files (> 10MB)
-    local size=$(stat -f%z "$file" 2>/dev/null || stat -c%s "$file" 2>/dev/null || echo 0)
+    local size=0
+    if command -v stat &> /dev/null; then
+        # Try macOS format first
+        size=$(stat -f%z "$file" 2>/dev/null || echo "")
+        if [ -z "$size" ]; then
+            # Try Linux format
+            size=$(stat -c%s "$file" 2>/dev/null || echo "0")
+        fi
+    else
+        # Fallback: use wc -c (slower but more portable)
+        size=$(wc -c < "$file" 2>/dev/null || echo "0")
+    fi
+
+    # Ensure size is numeric
+    if ! [[ "$size" =~ ^[0-9]+$ ]]; then
+        size=0
+    fi
+
     if [ "$size" -gt 10485760 ]; then
         log_warn "Skipping large file (>10MB): $file"
-        set -e
         return 1
     fi
     
@@ -457,9 +560,18 @@ redact_file() {
     if [ "$DRY_RUN" = true ]; then
         local temp_file="$file"
     else
-        # Create temporary file for modifications
-        local temp_file="${file}.scrubber.tmp"
+        # Create temporary file for modifications (safer than hardcoded name)
+        local temp_file=""
+        if command -v mktemp &> /dev/null; then
+            temp_file=$(mktemp "${file}.scrubber.XXXXXX")
+        else
+            # Fallback: use timestamp-based name
+            temp_file="${file}.scrubber.${timestamp:-$$}.tmp"
+        fi
         cp "$file" "$temp_file"
+
+        # Ensure cleanup on exit
+        trap "rm -f '$temp_file'" EXIT
     fi
     
     # Redact product keywords (case-insensitive, matches anywhere including adjacent to other chars)
@@ -469,16 +581,9 @@ redact_file() {
                 continue
             fi
             
-            if [ "$DEBUG" = true ] && [ "$DRY_RUN" = true ]; then
-                log_info "DEBUG: Checking keyword '$keyword' in file"
-            fi
-            
             # Check if keyword exists in file (case-insensitive, simple substring match)
             # Use grep -i without word boundaries to match keyword anywhere
             if grep -qi "$keyword" "$temp_file" 2>/dev/null; then
-                if [ "$DEBUG" = true ] && [ "$DRY_RUN" = true ]; then
-                    log_info "DEBUG: Keyword '$keyword' found in file!"
-                fi
                 # Find all case variations of the keyword in the file
                 # Use grep -io to extract the keyword as it appears (preserving case)
                 local matches=$(grep -io "$keyword" "$temp_file" 2>/dev/null | sort -u || true)
@@ -505,17 +610,9 @@ redact_file() {
                                     sed -i "" "s/${escaped_match}/[${redaction_id}]/g" "$temp_file"
                             fi
                             
-                            redaction_count=$((redaction_count + 1))
-                            
-                            if [ "$DEBUG" = true ] && [ "$DRY_RUN" = true ]; then
-                                log_info "DEBUG: Incremented redaction_count to $redaction_count"
-                            fi
+                            ((redaction_count++))
                         fi
                     done <<< "$matches"
-                fi
-            else
-                if [ "$DEBUG" = true ] && [ "$DRY_RUN" = true ]; then
-                    log_info "DEBUG: Keyword '$keyword' not found in file"
                 fi
             fi
         done
@@ -551,39 +648,27 @@ redact_file() {
                             sed -i "" "s/${escaped_match}/[${redaction_id}]/g" "$temp_file"
                     fi
                     
-                    redaction_count=$((redaction_count + 1))
+                    ((redaction_count++))
                 fi
             done <<< "$matches"
         fi
     done
     
-    # Re-enable exit on error before final operations
-    set -e
-    
-    if [ "$DEBUG" = true ] && [ "$DRY_RUN" = true ]; then
-        log_info "DEBUG: Final redaction_count = $redaction_count"
-    fi
-    
     # If redactions were made, replace original file (unless dry-run)
-    if [ $redaction_count -gt 0 ] 2>/dev/null; then
+    if [ $redaction_count -gt 0 ]; then
         if [ "$DRY_RUN" = false ]; then
-            mv "$temp_file" "$file" 2>/dev/null || true
-        fi
-        if [ "$DEBUG" = true ] && [ "$DRY_RUN" = true ]; then
-            log_info "DEBUG: Returning redaction_count: $redaction_count"
+            mv "$temp_file" "$file"
         fi
         echo "$redaction_count"
-        return 0
     else
         if [ "$DRY_RUN" = false ]; then
-            rm -f "$temp_file" 2>/dev/null || true
-        fi
-        if [ "$DEBUG" = true ] && [ "$DRY_RUN" = true ]; then
-            log_info "DEBUG: Returning 0 (no redactions)"
+            rm "$temp_file"
         fi
         echo "0"
-        return 0
     fi
+    
+    # Re-enable exit on error
+    set -e
 }
 
 # Redact directory
@@ -663,18 +748,15 @@ redact_directory() {
             fi
         fi
         
-        total_files=$((total_files + 1))
+        ((total_files++))
         
         if [ "$DEBUG" = true ]; then
             log_info "DEBUG: File #$total_files: ${file#$target_dir/}"
         fi
         
         # Debug output to see we're actually processing
-        if [ "$DRY_RUN" = true ]; then
-            local mod_result=$((total_files % 5))
-            if [ $mod_result -eq 0 ] 2>/dev/null; then
-                echo -n "."  # Progress indicator every 5 files
-            fi
+        if [ "$DRY_RUN" = true ] && [ $((total_files % 5)) -eq 0 ]; then
+            echo -n "."  # Progress indicator every 5 files
         fi
         
         if [ "$DEBUG" = true ]; then
@@ -712,41 +794,23 @@ redact_directory() {
         
         # Redact file
         local count=$(redact_file "$file" "$json_file")
-        local exit_code=$?
         
-        if [ "$DEBUG" = true ]; then
-            log_info "DEBUG: Redact function exit code: $exit_code"
-            log_info "DEBUG: Redact raw output: '$count'"
-        fi
-        
-        # Ensure count is numeric
-        if ! [[ "$count" =~ ^[0-9]+$ ]]; then
-            if [ "$DEBUG" = true ]; then
-                log_warn "DEBUG: Count was not numeric, setting to 0"
-            fi
-            count=0
-        fi
-        
-        if [ "$DEBUG" = true ]; then
-            log_info "DEBUG: Redact returned count: $count"
-        fi
-        
-        if [ "$count" -gt 0 ] 2>/dev/null; then
+        if [ "$count" -gt 0 ]; then
             if [ "$DRY_RUN" = true ]; then
                 log_success "  Found $count items to redact"
             else
                 log_success "  Redacted $count items"
             fi
-            processed_files=$((processed_files + 1))
-            total_redactions=$((total_redactions + count))
+            ((processed_files++))
+            ((total_redactions += count))
         else
             if [ "$DRY_RUN" = true ]; then
                 log_info "  No sensitive data found"
             fi
         fi
         
-    done < <(find "$target_dir" -type f -print0 2>&1)
-    
+    done < <(if command -v timeout &> /dev/null; then timeout 300 find "$target_dir" -type f -print0 2>/dev/null; else find "$target_dir" -type f -print0 2>/dev/null; fi)
+
     # Re-enable exit on error
     set -e
     
@@ -832,29 +896,27 @@ unredact_file() {
                         sed -i "" "s/${escaped_marker}/${escaped_original}/g" "$temp_file"
             fi
             
-            unredaction_count=$((unredaction_count + 1))
+            ((unredaction_count++))
         else
             log_warn "  No mapping found for: $redaction_id"
         fi
     done <<< "$redaction_ids"
     
-    # Re-enable exit on error before final operations
-    set -e
-    
     # If unredactions were made, replace file (unless dry-run)
-    if [ $unredaction_count -gt 0 ] 2>/dev/null; then
+    if [ $unredaction_count -gt 0 ]; then
         if [ "$DRY_RUN" = false ]; then
-            mv "$temp_file" "$file" 2>/dev/null || true
+            mv "$temp_file" "$file"
         fi
         echo "$unredaction_count"
-        return 0
     else
         if [ "$DRY_RUN" = false ]; then
-            rm -f "$temp_file" 2>/dev/null || true
+            rm "$temp_file"
         fi
         echo "0"
-        return 0
     fi
+    
+    # Re-enable exit on error
+    set -e
 }
 
 # Unredact directory
@@ -919,26 +981,21 @@ unredact_directory() {
         
         # Check if file contains redaction markers
         if grep -q '\[REDACTED_ID_' "$file" 2>/dev/null; then
-            total_files=$((total_files + 1))
+            ((total_files++))
             
             log_info "Processing: ${file#$target_dir/}"
             
             # Unredact file
-            local count=$(unredact_file "$file" "$redactions" || echo "0")
+            local count=$(unredact_file "$file" "$redactions")
             
-            # Ensure count is numeric
-            if ! [[ "$count" =~ ^[0-9]+$ ]]; then
-                count=0
-            fi
-            
-            if [ "$count" -gt 0 ] 2>/dev/null; then
+            if [ "$count" -gt 0 ]; then
                 if [ "$DRY_RUN" = true ]; then
                     log_success "  Found $count items to restore"
                 else
                     log_success "  Restored $count items"
                 fi
-                processed_files=$((processed_files + 1))
-                total_unredactions=$((total_unredactions + count))
+                ((processed_files++))
+                ((total_unredactions += count))
             else
                 if [ "$DRY_RUN" = true ]; then
                     log_info "  No redaction markers found"
@@ -946,7 +1003,7 @@ unredact_directory() {
             fi
         fi
         
-    done < <(find "$target_dir" -type f -print0)
+    done < <(if command -v timeout &> /dev/null; then timeout 300 find "$target_dir" -type f -print0 2>/dev/null; else find "$target_dir" -type f -print0 2>/dev/null; fi)
     
     if [ "$DRY_RUN" = true ]; then
         log_header "Dry-Run Summary"
@@ -993,9 +1050,19 @@ main() {
         esac
     done
     
-    # Convert to absolute path
+    # Validate and convert to absolute path
+    if [ ! -d "$target_dir" ]; then
+        log_error "Directory does not exist: $target_dir"
+        exit 1
+    fi
+
+    if [ ! -r "$target_dir" ]; then
+        log_error "Directory is not readable: $target_dir"
+        exit 1
+    fi
+
     target_dir=$(cd "$target_dir" && pwd)
-    
+
     check_prerequisites
     
     case "$command" in
