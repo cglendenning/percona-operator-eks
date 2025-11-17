@@ -483,8 +483,12 @@ redact_file() {
                             
                             if [ "$DRY_RUN" = true ]; then
                                 # Count occurrences for dry-run display
-                                local count=$(grep -o "$match" "$temp_file" 2>/dev/null | wc -l | xargs)
-                                log_dry_run "  Would redact (product_keyword): '$match' ($count occurrence(s)) -> [${redaction_id}]"
+                                local occurrences=$(grep -o "$match" "$temp_file" 2>/dev/null | wc -l | xargs || echo "0")
+                                # Ensure it's numeric
+                                if ! [[ "$occurrences" =~ ^[0-9]+$ ]]; then
+                                    occurrences=1
+                                fi
+                                log_dry_run "  Would redact (product_keyword): '$match' ($occurrences occurrence(s)) -> [${redaction_id}]"
                             else
                                 add_to_redaction_map "$json_file" "${redaction_id}" "$match" "product_keyword"
                                 
@@ -494,7 +498,7 @@ redact_file() {
                                     sed -i "" "s/${escaped_match}/[${redaction_id}]/g" "$temp_file"
                             fi
                             
-                            ((redaction_count++))
+                            redaction_count=$((redaction_count + 1))
                         fi
                     done <<< "$matches"
                 fi
@@ -532,7 +536,7 @@ redact_file() {
                             sed -i "" "s/${escaped_match}/[${redaction_id}]/g" "$temp_file"
                     fi
                     
-                    ((redaction_count++))
+                    redaction_count=$((redaction_count + 1))
                 fi
             done <<< "$matches"
         fi
@@ -632,15 +636,18 @@ redact_directory() {
             fi
         fi
         
-        ((total_files++))
+        total_files=$((total_files + 1))
         
         if [ "$DEBUG" = true ]; then
             log_info "DEBUG: File #$total_files: ${file#$target_dir/}"
         fi
         
         # Debug output to see we're actually processing
-        if [ "$DRY_RUN" = true ] && [ $((total_files % 5)) -eq 0 ]; then
-            echo -n "."  # Progress indicator every 5 files
+        if [ "$DRY_RUN" = true ]; then
+            local mod_result=$((total_files % 5))
+            if [ $mod_result -eq 0 ] 2>/dev/null; then
+                echo -n "."  # Progress indicator every 5 files
+            fi
         fi
         
         if [ "$DEBUG" = true ]; then
@@ -679,18 +686,23 @@ redact_directory() {
         # Redact file
         local count=$(redact_file "$file" "$json_file" || echo "0")
         
+        # Ensure count is numeric
+        if ! [[ "$count" =~ ^[0-9]+$ ]]; then
+            count=0
+        fi
+        
         if [ "$DEBUG" = true ]; then
             log_info "DEBUG: Redact returned count: $count"
         fi
         
-        if [ "$count" -gt 0 ]; then
+        if [ "$count" -gt 0 ] 2>/dev/null; then
             if [ "$DRY_RUN" = true ]; then
                 log_success "  Found $count items to redact"
             else
                 log_success "  Redacted $count items"
             fi
-            ((processed_files++))
-            ((total_redactions += count))
+            processed_files=$((processed_files + 1))
+            total_redactions=$((total_redactions + count))
         else
             if [ "$DRY_RUN" = true ]; then
                 log_info "  No sensitive data found"
@@ -780,11 +792,11 @@ unredact_file() {
                 local escaped_marker=$(escape_for_sed "$redacted_marker")
                 local escaped_original=$(escape_for_sed "$original_value")
                 
-                sed -i "s/${escaped_marker}/${escaped_original}/g" "$temp_file" 2>/dev/null || \
-                    sed -i "" "s/${escaped_marker}/${escaped_original}/g" "$temp_file"
+                    sed -i "s/${escaped_marker}/${escaped_original}/g" "$temp_file" 2>/dev/null || \
+                        sed -i "" "s/${escaped_marker}/${escaped_original}/g" "$temp_file"
             fi
             
-            ((unredaction_count++))
+            unredaction_count=$((unredaction_count + 1))
         else
             log_warn "  No mapping found for: $redaction_id"
         fi
@@ -869,21 +881,26 @@ unredact_directory() {
         
         # Check if file contains redaction markers
         if grep -q '\[REDACTED_ID_' "$file" 2>/dev/null; then
-            ((total_files++))
+            total_files=$((total_files + 1))
             
             log_info "Processing: ${file#$target_dir/}"
             
             # Unredact file
-            local count=$(unredact_file "$file" "$redactions")
+            local count=$(unredact_file "$file" "$redactions" || echo "0")
             
-            if [ "$count" -gt 0 ]; then
+            # Ensure count is numeric
+            if ! [[ "$count" =~ ^[0-9]+$ ]]; then
+                count=0
+            fi
+            
+            if [ "$count" -gt 0 ] 2>/dev/null; then
                 if [ "$DRY_RUN" = true ]; then
                     log_success "  Found $count items to restore"
                 else
                     log_success "  Restored $count items"
                 fi
-                ((processed_files++))
-                ((total_unredactions += count))
+                processed_files=$((processed_files + 1))
+                total_unredactions=$((total_unredactions + count))
             else
                 if [ "$DRY_RUN" = true ]; then
                     log_info "  No redaction markers found"
