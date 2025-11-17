@@ -290,9 +290,21 @@ should_process_file() {
         return 1
     fi
     
-    # Skip binary files
+    # Skip .git directory
+    if [[ "$file" == *"/.git/"* ]]; then
+        return 1
+    fi
+    
+    # Skip node_modules
+    if [[ "$file" == *"/node_modules/"* ]]; then
+        return 1
+    fi
+    
+    # Skip binary files (but be more lenient - only skip obvious binaries)
     if command -v file &> /dev/null; then
-        if file "$file" 2>/dev/null | grep -qE 'executable|binary|archive|compressed'; then
+        local file_type=$(file "$file" 2>/dev/null)
+        # Only skip truly binary files, not text files
+        if echo "$file_type" | grep -qE 'executable.*binary|compiled|ELF|PE32|Mach-O|Java class|image data|audio|video|ISO|tar archive|gzip|bzip2|zip archive|RPM|deb package'; then
             return 1
         fi
     fi
@@ -446,6 +458,12 @@ redact_directory() {
     # Count total files first
     local file_count=$(find "$target_dir" -type f 2>/dev/null | wc -l | xargs)
     log_info "Found $file_count files in directory"
+    
+    if [ "$file_count" -eq 0 ]; then
+        log_error "No files found in directory!"
+        exit 1
+    fi
+    
     echo ""
     
     local total_files=0
@@ -453,8 +471,30 @@ redact_directory() {
     local total_redactions=0
     
     # Find all files
+    log_info "Starting file scan..."
+    
+    if [ "$DRY_RUN" = true ]; then
+        log_info "NOTE: Showing all files being checked..."
+    fi
+    
+    echo ""
+    
+    # Use a safer approach that works on both macOS and Linux
+    local loop_started=false
+    
     while IFS= read -r -d '' file; do
+        if [ "$loop_started" = false ]; then
+            loop_started=true
+            if [ "$DRY_RUN" = true ]; then
+                log_info "Loop started - processing files..."
+            fi
+        fi
         ((total_files++))
+        
+        # Debug output to see we're actually processing
+        if [ "$DRY_RUN" = true ] && [ $((total_files % 5)) -eq 0 ]; then
+            echo -n "."  # Progress indicator every 5 files
+        fi
         
         if ! should_process_file "$file"; then
             if [ "$DRY_RUN" = true ]; then
@@ -485,7 +525,18 @@ redact_directory() {
             fi
         fi
         
-    done < <(find "$target_dir" -type f -print0)
+    done < <(find "$target_dir" -type f -print0 2>&1)
+    
+    echo ""  # Newline after progress dots
+    
+    # Check if loop actually ran
+    if [ "$loop_started" = false ]; then
+        log_error "File processing loop never started!"
+        log_error "This may indicate an issue with the find command or file permissions"
+        log_info "Attempting direct file listing..."
+        find "$target_dir" -type f | head -10
+        exit 1
+    fi
     
     if [ "$DRY_RUN" = true ]; then
         log_header "Dry-Run Summary"
@@ -524,7 +575,8 @@ unredact_file() {
     fi
     
     # Iterate through all redaction IDs in the file
-    local redaction_ids=$(grep -oE '\[REDACTED_ID_[0-9]+_[0-9]+[^]]*\]' "$temp_file" | sort -u)
+    # Only match our specific format: [REDACTED_ID_timestamp_random...]
+    local redaction_ids=$(grep -oE '\[REDACTED_ID_[0-9]{10}_[0-9]+[^]]*\]' "$temp_file" | sort -u)
     
     while IFS= read -r redacted_marker; do
         if [ -z "$redacted_marker" ]; then
