@@ -325,6 +325,9 @@ redact_file() {
     local json_file="$2"
     local redaction_count=0
     
+    # Disable exit on error for this function
+    set +e
+    
     # In dry-run mode, work with original file directly
     if [ "$DRY_RUN" = true ]; then
         local temp_file="$file"
@@ -342,11 +345,12 @@ redact_file() {
             fi
             
             # Check if keyword exists in file (case-insensitive)
-            if grep -qiE "$(escape_for_grep "$keyword")" "$temp_file"; then
+            # Use || true to prevent grep from causing script exit on no match
+            if grep -qiE "$(escape_for_grep "$keyword")" "$temp_file" 2>/dev/null; then
                 local redaction_id=$(generate_redaction_id)
                 
                 # Get actual matches for mapping
-                local matches=$(grep -oiE "$(escape_for_grep "$keyword")" "$temp_file" | sort -u)
+                local matches=$(grep -oiE "$(escape_for_grep "$keyword")" "$temp_file" 2>/dev/null | sort -u || true)
                 
                 while IFS= read -r match; do
                     if [ -n "$match" ]; then
@@ -373,9 +377,10 @@ redact_file() {
         local pattern="${PATTERNS[$pattern_name]}"
         
         # Check if pattern exists in file
-        if grep -qE "$pattern" "$temp_file"; then
+        # Use || true to prevent grep from causing script exit on no match
+        if grep -qE "$pattern" "$temp_file" 2>/dev/null; then
             # Extract all matches
-            local matches=$(grep -oE "$pattern" "$temp_file" | sort -u)
+            local matches=$(grep -oE "$pattern" "$temp_file" 2>/dev/null | sort -u || true)
             
             while IFS= read -r match; do
                 if [ -n "$match" ]; then
@@ -415,6 +420,9 @@ redact_file() {
         fi
         echo "0"
     fi
+    
+    # Re-enable exit on error
+    set -e
 }
 
 # Redact directory
@@ -509,7 +517,7 @@ redact_directory() {
         backup_file "$file" "$target_dir"
         
         # Redact file
-        local count=$(redact_file "$file" "$json_file")
+        local count=$(redact_file "$file" "$json_file" || echo "0")
         
         if [ "$count" -gt 0 ]; then
             if [ "$DRY_RUN" = true ]; then
@@ -565,6 +573,9 @@ unredact_file() {
     local redactions="$2"
     local unredaction_count=0
     
+    # Disable exit on error for this function
+    set +e
+    
     # In dry-run mode, work with original file directly
     if [ "$DRY_RUN" = true ]; then
         local temp_file="$file"
@@ -576,7 +587,7 @@ unredact_file() {
     
     # Iterate through all redaction IDs in the file
     # Only match our specific format: [REDACTED_ID_timestamp_random...]
-    local redaction_ids=$(grep -oE '\[REDACTED_ID_[0-9]{10}_[0-9]+[^]]*\]' "$temp_file" | sort -u)
+    local redaction_ids=$(grep -oE '\[REDACTED_ID_[0-9]{10}_[0-9]+[^]]*\]' "$temp_file" 2>/dev/null | sort -u || true)
     
     while IFS= read -r redacted_marker; do
         if [ -z "$redacted_marker" ]; then
@@ -624,6 +635,9 @@ unredact_file() {
         fi
         echo "0"
     fi
+    
+    # Re-enable exit on error
+    set -e
 }
 
 # Unredact directory
@@ -687,7 +701,7 @@ unredact_directory() {
         fi
         
         # Check if file contains redaction markers
-        if grep -q '\[REDACTED_ID_' "$file"; then
+        if grep -q '\[REDACTED_ID_' "$file" 2>/dev/null; then
             ((total_files++))
             
             log_info "Processing: ${file#$target_dir/}"
