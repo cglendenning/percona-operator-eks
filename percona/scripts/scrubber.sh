@@ -280,31 +280,39 @@ backup_file() {
 should_process_file() {
     local file="$1"
     
+    # Disable exit on error for this function
+    set +e
+    
     # Skip if in backup directory
     if [[ "$file" == *"${BACKUP_DIR}"* ]]; then
+        set -e
         return 1
     fi
     
     # Skip redacted.json itself
     if [[ "$file" == *"${REDACTED_JSON}" ]]; then
+        set -e
         return 1
     fi
     
     # Skip .git directory
     if [[ "$file" == *"/.git/"* ]]; then
+        set -e
         return 1
     fi
     
     # Skip node_modules
     if [[ "$file" == *"/node_modules/"* ]]; then
+        set -e
         return 1
     fi
     
     # Skip binary files (but be more lenient - only skip obvious binaries)
     if command -v file &> /dev/null; then
-        local file_type=$(file "$file" 2>/dev/null)
+        local file_type=$(file "$file" 2>/dev/null || echo "text")
         # Only skip truly binary files, not text files
-        if echo "$file_type" | grep -qE 'executable.*binary|compiled|ELF|PE32|Mach-O|Java class|image data|audio|video|ISO|tar archive|gzip|bzip2|zip archive|RPM|deb package'; then
+        if echo "$file_type" | grep -qE 'executable.*binary|compiled|ELF|PE32|Mach-O|Java class|image data|audio|video|ISO|tar archive|gzip|bzip2|zip archive|RPM|deb package' 2>/dev/null; then
+            set -e
             return 1
         fi
     fi
@@ -313,9 +321,12 @@ should_process_file() {
     local size=$(stat -f%z "$file" 2>/dev/null || stat -c%s "$file" 2>/dev/null || echo 0)
     if [ "$size" -gt 10485760 ]; then
         log_warn "Skipping large file (>10MB): $file"
+        set -e
         return 1
     fi
     
+    # Re-enable exit on error
+    set -e
     return 0
 }
 
@@ -490,21 +501,43 @@ redact_directory() {
     # Use a safer approach that works on both macOS and Linux
     local loop_started=false
     
+    # Disable exit on error for the main processing loop
+    set +e
+    
     while IFS= read -r -d '' file; do
         if [ "$loop_started" = false ]; then
             loop_started=true
             if [ "$DRY_RUN" = true ]; then
                 log_info "Loop started - processing files..."
+                log_info "DEBUG: First file is: $file"
             fi
         fi
+        
         ((total_files++))
+        
+        if [ "$DRY_RUN" = true ]; then
+            log_info "DEBUG: File #$total_files: ${file#$target_dir/}"
+        fi
         
         # Debug output to see we're actually processing
         if [ "$DRY_RUN" = true ] && [ $((total_files % 5)) -eq 0 ]; then
             echo -n "."  # Progress indicator every 5 files
         fi
         
-        if ! should_process_file "$file"; then
+        if [ "$DRY_RUN" = true ]; then
+            log_info "DEBUG: About to check should_process_file..."
+        fi
+        
+        local should_process=0
+        if should_process_file "$file"; then
+            should_process=1
+        fi
+        
+        if [ "$DRY_RUN" = true ]; then
+            log_info "DEBUG: should_process_file returned: $should_process"
+        fi
+        
+        if [ $should_process -eq 0 ]; then
             if [ "$DRY_RUN" = true ]; then
                 log_info "Skipping: ${file#$target_dir/} (binary, backup, or excluded)"
             fi
@@ -513,11 +546,23 @@ redact_directory() {
         
         log_info "Processing: ${file#$target_dir/}"
         
+        if [ "$DRY_RUN" = true ]; then
+            log_info "DEBUG: About to backup file..."
+        fi
+        
         # Backup original
         backup_file "$file" "$target_dir"
         
+        if [ "$DRY_RUN" = true ]; then
+            log_info "DEBUG: About to redact file..."
+        fi
+        
         # Redact file
         local count=$(redact_file "$file" "$json_file" || echo "0")
+        
+        if [ "$DRY_RUN" = true ]; then
+            log_info "DEBUG: Redact returned count: $count"
+        fi
         
         if [ "$count" -gt 0 ]; then
             if [ "$DRY_RUN" = true ]; then
@@ -534,6 +579,9 @@ redact_directory() {
         fi
         
     done < <(find "$target_dir" -type f -print0 2>&1)
+    
+    # Re-enable exit on error
+    set -e
     
     echo ""  # Newline after progress dots
     
