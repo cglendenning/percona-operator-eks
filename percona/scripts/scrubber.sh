@@ -580,19 +580,19 @@ redact_file() {
             if [ -z "$keyword" ]; then
                 continue
             fi
-            
+
             # Check if keyword exists in file (case-insensitive, simple substring match)
             # Use grep -i without word boundaries to match keyword anywhere
             if grep -qi "$keyword" "$temp_file" 2>/dev/null; then
                 # Find all case variations of the keyword in the file
                 # Use grep -io to extract the keyword as it appears (preserving case)
                 local matches=$(grep -io "$keyword" "$temp_file" 2>/dev/null | sort -u || true)
-                
+
                 if [ -n "$matches" ]; then
                     while IFS= read -r match; do
                         if [ -n "$match" ]; then
                             local redaction_id=$(generate_redaction_id)
-                            
+
                             if [ "$DRY_RUN" = true ]; then
                                 # Count occurrences for dry-run display
                                 local occurrences=$(grep -o "$match" "$temp_file" 2>/dev/null | wc -l | xargs || echo "0")
@@ -603,13 +603,13 @@ redact_file() {
                                 log_dry_run "  Would redact (product_keyword): '$match' ($occurrences occurrence(s)) -> [${redaction_id}]"
                             else
                                 add_to_redaction_map "$json_file" "${redaction_id}" "$match" "product_keyword"
-                                
+
                                 # Perform replacement (case-sensitive for exact match)
                                 local escaped_match=$(escape_for_sed "$match")
                                 sed -i "s/${escaped_match}/[${redaction_id}]/g" "$temp_file" 2>/dev/null || \
                                     sed -i "" "s/${escaped_match}/[${redaction_id}]/g" "$temp_file"
                             fi
-                            
+
                             ((redaction_count++))
                         fi
                     done <<< "$matches"
@@ -617,11 +617,11 @@ redact_file() {
             fi
         done
     fi
-    
-    # Redact standard patterns
+
+    # Redact standard patterns (ALWAYS processed, regardless of keywords)
     for pattern_name in "${!PATTERNS[@]}"; do
         local pattern="${PATTERNS[$pattern_name]}"
-        
+
         # Check if pattern exists in file
         # Use || true to prevent grep from causing script exit on no match
         if grep -qE "$pattern" "$temp_file" 2>/dev/null; then
