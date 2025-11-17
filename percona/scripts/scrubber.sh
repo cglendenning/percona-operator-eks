@@ -469,9 +469,16 @@ redact_file() {
                 continue
             fi
             
+            if [ "$DEBUG" = true ] && [ "$DRY_RUN" = true ]; then
+                log_info "DEBUG: Checking keyword '$keyword' in file"
+            fi
+            
             # Check if keyword exists in file (case-insensitive, simple substring match)
             # Use grep -i without word boundaries to match keyword anywhere
             if grep -qi "$keyword" "$temp_file" 2>/dev/null; then
+                if [ "$DEBUG" = true ] && [ "$DRY_RUN" = true ]; then
+                    log_info "DEBUG: Keyword '$keyword' found in file!"
+                fi
                 # Find all case variations of the keyword in the file
                 # Use grep -io to extract the keyword as it appears (preserving case)
                 local matches=$(grep -io "$keyword" "$temp_file" 2>/dev/null | sort -u || true)
@@ -499,8 +506,16 @@ redact_file() {
                             fi
                             
                             redaction_count=$((redaction_count + 1))
+                            
+                            if [ "$DEBUG" = true ] && [ "$DRY_RUN" = true ]; then
+                                log_info "DEBUG: Incremented redaction_count to $redaction_count"
+                            fi
                         fi
                     done <<< "$matches"
+                fi
+            else
+                if [ "$DEBUG" = true ] && [ "$DRY_RUN" = true ]; then
+                    log_info "DEBUG: Keyword '$keyword' not found in file"
                 fi
             fi
         done
@@ -542,21 +557,33 @@ redact_file() {
         fi
     done
     
-    # If redactions were made, replace original file (unless dry-run)
-    if [ $redaction_count -gt 0 ]; then
-        if [ "$DRY_RUN" = false ]; then
-            mv "$temp_file" "$file"
-        fi
-        echo "$redaction_count"
-    else
-        if [ "$DRY_RUN" = false ]; then
-            rm "$temp_file"
-        fi
-        echo "0"
+    # Re-enable exit on error before final operations
+    set -e
+    
+    if [ "$DEBUG" = true ] && [ "$DRY_RUN" = true ]; then
+        log_info "DEBUG: Final redaction_count = $redaction_count"
     fi
     
-    # Re-enable exit on error
-    set -e
+    # If redactions were made, replace original file (unless dry-run)
+    if [ $redaction_count -gt 0 ] 2>/dev/null; then
+        if [ "$DRY_RUN" = false ]; then
+            mv "$temp_file" "$file" 2>/dev/null || true
+        fi
+        if [ "$DEBUG" = true ] && [ "$DRY_RUN" = true ]; then
+            log_info "DEBUG: Returning redaction_count: $redaction_count"
+        fi
+        echo "$redaction_count"
+        return 0
+    else
+        if [ "$DRY_RUN" = false ]; then
+            rm -f "$temp_file" 2>/dev/null || true
+        fi
+        if [ "$DEBUG" = true ] && [ "$DRY_RUN" = true ]; then
+            log_info "DEBUG: Returning 0 (no redactions)"
+        fi
+        echo "0"
+        return 0
+    fi
 }
 
 # Redact directory
@@ -684,10 +711,19 @@ redact_directory() {
         fi
         
         # Redact file
-        local count=$(redact_file "$file" "$json_file" || echo "0")
+        local count=$(redact_file "$file" "$json_file")
+        local exit_code=$?
+        
+        if [ "$DEBUG" = true ]; then
+            log_info "DEBUG: Redact function exit code: $exit_code"
+            log_info "DEBUG: Redact raw output: '$count'"
+        fi
         
         # Ensure count is numeric
         if ! [[ "$count" =~ ^[0-9]+$ ]]; then
+            if [ "$DEBUG" = true ]; then
+                log_warn "DEBUG: Count was not numeric, setting to 0"
+            fi
             count=0
         fi
         
@@ -802,21 +838,23 @@ unredact_file() {
         fi
     done <<< "$redaction_ids"
     
+    # Re-enable exit on error before final operations
+    set -e
+    
     # If unredactions were made, replace file (unless dry-run)
-    if [ $unredaction_count -gt 0 ]; then
+    if [ $unredaction_count -gt 0 ] 2>/dev/null; then
         if [ "$DRY_RUN" = false ]; then
-            mv "$temp_file" "$file"
+            mv "$temp_file" "$file" 2>/dev/null || true
         fi
         echo "$unredaction_count"
+        return 0
     else
         if [ "$DRY_RUN" = false ]; then
-            rm "$temp_file"
+            rm -f "$temp_file" 2>/dev/null || true
         fi
         echo "0"
+        return 0
     fi
-    
-    # Re-enable exit on error
-    set -e
 }
 
 # Unredact directory
