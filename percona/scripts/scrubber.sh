@@ -291,8 +291,10 @@ should_process_file() {
     fi
     
     # Skip binary files
-    if file "$file" | grep -qE 'executable|binary|archive|compressed'; then
-        return 1
+    if command -v file &> /dev/null; then
+        if file "$file" 2>/dev/null | grep -qE 'executable|binary|archive|compressed'; then
+            return 1
+        fi
     fi
     
     # Skip very large files (> 10MB)
@@ -441,6 +443,11 @@ redact_directory() {
         log_header "Scanning and Redacting Files"
     fi
     
+    # Count total files first
+    local file_count=$(find "$target_dir" -type f 2>/dev/null | wc -l | xargs)
+    log_info "Found $file_count files in directory"
+    echo ""
+    
     local total_files=0
     local processed_files=0
     local total_redactions=0
@@ -450,6 +457,9 @@ redact_directory() {
         ((total_files++))
         
         if ! should_process_file "$file"; then
+            if [ "$DRY_RUN" = true ]; then
+                log_info "Skipping: ${file#$target_dir/} (binary, backup, or excluded)"
+            fi
             continue
         fi
         
@@ -462,9 +472,17 @@ redact_directory() {
         local count=$(redact_file "$file" "$json_file")
         
         if [ "$count" -gt 0 ]; then
-            log_success "  Redacted $count items"
+            if [ "$DRY_RUN" = true ]; then
+                log_success "  Found $count items to redact"
+            else
+                log_success "  Redacted $count items"
+            fi
             ((processed_files++))
             ((total_redactions += count))
+        else
+            if [ "$DRY_RUN" = true ]; then
+                log_info "  No sensitive data found"
+            fi
         fi
         
     done < <(find "$target_dir" -type f -print0)
@@ -596,6 +614,11 @@ unredact_directory() {
         log_header "Restoring Files"
     fi
     
+    # Count total files first
+    local file_count=$(find "$target_dir" -type f 2>/dev/null | wc -l | xargs)
+    log_info "Found $file_count files in directory"
+    echo ""
+    
     local total_files=0
     local processed_files=0
     local total_unredactions=0
@@ -603,6 +626,11 @@ unredact_directory() {
     # Find all files with redaction markers
     while IFS= read -r -d '' file; do
         if ! should_process_file "$file"; then
+            if [ "$DRY_RUN" = true ]; then
+                if grep -q '\[REDACTED_ID_' "$file" 2>/dev/null; then
+                    log_info "Skipping: ${file#$target_dir/} (binary, backup, or excluded)"
+                fi
+            fi
             continue
         fi
         
@@ -616,9 +644,17 @@ unredact_directory() {
             local count=$(unredact_file "$file" "$redactions")
             
             if [ "$count" -gt 0 ]; then
-                log_success "  Restored $count items"
+                if [ "$DRY_RUN" = true ]; then
+                    log_success "  Found $count items to restore"
+                else
+                    log_success "  Restored $count items"
+                fi
                 ((processed_files++))
                 ((total_unredactions += count))
+            else
+                if [ "$DRY_RUN" = true ]; then
+                    log_info "  No redaction markers found"
+                fi
             fi
         fi
         
