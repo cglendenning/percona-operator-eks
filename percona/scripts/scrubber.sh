@@ -28,6 +28,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REDACTED_JSON="redacted.json"
 BACKUP_DIR=".scrubber_backup"
 DRY_RUN=false
+DEBUG=false
 
 # Logging functions
 log_info() {
@@ -67,10 +68,12 @@ Commands:
 
 Options:
   --dry-run              Preview what would be changed without modifying files
+  --debug                Enable verbose debug output for troubleshooting
 
 Examples:
   $0 redact /path/to/project
   $0 redact /path/to/project --dry-run
+  $0 redact /path/to/project --dry-run --debug
   $0 unredact /path/to/project
   $0 unredact /path/to/project --dry-run
 
@@ -86,6 +89,11 @@ Dry-run mode:
   - Does not modify any files
   - Does not create backups or redacted.json
   - Useful for previewing impact before making changes
+
+Debug mode:
+  - Shows detailed processing information for each file
+  - Useful for troubleshooting issues
+  - Can be combined with --dry-run
 
 EOF
     exit 1
@@ -507,7 +515,7 @@ redact_directory() {
     while IFS= read -r -d '' file; do
         if [ "$loop_started" = false ]; then
             loop_started=true
-            if [ "$DRY_RUN" = true ]; then
+            if [ "$DEBUG" = true ]; then
                 log_info "Loop started - processing files..."
                 log_info "DEBUG: First file is: $file"
             fi
@@ -515,7 +523,7 @@ redact_directory() {
         
         ((total_files++))
         
-        if [ "$DRY_RUN" = true ]; then
+        if [ "$DEBUG" = true ]; then
             log_info "DEBUG: File #$total_files: ${file#$target_dir/}"
         fi
         
@@ -524,7 +532,7 @@ redact_directory() {
             echo -n "."  # Progress indicator every 5 files
         fi
         
-        if [ "$DRY_RUN" = true ]; then
+        if [ "$DEBUG" = true ]; then
             log_info "DEBUG: About to check should_process_file..."
         fi
         
@@ -533,7 +541,7 @@ redact_directory() {
             should_process=1
         fi
         
-        if [ "$DRY_RUN" = true ]; then
+        if [ "$DEBUG" = true ]; then
             log_info "DEBUG: should_process_file returned: $should_process"
         fi
         
@@ -546,21 +554,21 @@ redact_directory() {
         
         log_info "Processing: ${file#$target_dir/}"
         
-        if [ "$DRY_RUN" = true ]; then
+        if [ "$DEBUG" = true ]; then
             log_info "DEBUG: About to backup file..."
         fi
         
         # Backup original
         backup_file "$file" "$target_dir"
         
-        if [ "$DRY_RUN" = true ]; then
+        if [ "$DEBUG" = true ]; then
             log_info "DEBUG: About to redact file..."
         fi
         
         # Redact file
         local count=$(redact_file "$file" "$json_file" || echo "0")
         
-        if [ "$DRY_RUN" = true ]; then
+        if [ "$DEBUG" = true ]; then
             log_info "DEBUG: Redact returned count: $count"
         fi
         
@@ -806,6 +814,10 @@ main() {
         case "$1" in
             --dry-run)
                 DRY_RUN=true
+                shift
+                ;;
+            --debug)
+                DEBUG=true
                 shift
                 ;;
             *)
