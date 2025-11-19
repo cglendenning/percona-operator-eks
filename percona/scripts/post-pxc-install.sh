@@ -200,11 +200,12 @@ get_minio_credentials() {
     
     # Get rootUser from minio secret (base64 encoded)
     log_debug "Extracting rootUser from secret..." >&2
-    local root_user=$(kctl get secret "$MINIO_SECRET_NAME" -n "$MINIO_NAMESPACE" \
-        -o jsonpath='{.data.rootUser}' 2>/dev/null || echo "")
+    local root_user=""
+    root_user=$(kctl get secret "$MINIO_SECRET_NAME" -n "$MINIO_NAMESPACE" \
+        -o jsonpath='{.data.rootUser}' 2>/dev/null)
     
-    # Clean the value (remove whitespace, newlines, carriage returns)
-    root_user=$(echo "$root_user" | tr -d '\n\r\t ' || echo "")
+    # Clean whitespace/newlines (but preserve the base64 string itself)
+    root_user=$(printf '%s' "$root_user" | tr -d '\n\r\t ')
     
     if [ -z "$root_user" ]; then
         log_error "Could not retrieve rootUser from $MINIO_NAMESPACE/$MINIO_SECRET_NAME" >&2
@@ -215,11 +216,12 @@ get_minio_credentials() {
     
     # Get rootPassword from minio secret (base64 encoded)
     log_debug "Extracting rootPassword from secret..." >&2
-    local root_password=$(kctl get secret "$MINIO_SECRET_NAME" -n "$MINIO_NAMESPACE" \
-        -o jsonpath='{.data.rootPassword}' 2>/dev/null || echo "")
+    local root_password=""
+    root_password=$(kctl get secret "$MINIO_SECRET_NAME" -n "$MINIO_NAMESPACE" \
+        -o jsonpath='{.data.rootPassword}' 2>/dev/null)
     
-    # Clean the value (remove whitespace, newlines, carriage returns)
-    root_password=$(echo "$root_password" | tr -d '\n\r\t ' || echo "")
+    # Clean whitespace/newlines (but preserve the base64 string itself)
+    root_password=$(printf '%s' "$root_password" | tr -d '\n\r\t ')
     
     if [ -z "$root_password" ]; then
         log_error "Could not retrieve rootPassword from $MINIO_NAMESPACE/$MINIO_SECRET_NAME" >&2
