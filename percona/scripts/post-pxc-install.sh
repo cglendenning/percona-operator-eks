@@ -194,35 +194,36 @@ check_prerequisites() {
 
 # Get MinIO credentials
 get_minio_credentials() {
-    log_step "Retrieving MinIO credentials..."
-    log_debug "Getting secret '$MINIO_SECRET_NAME' from namespace '$MINIO_NAMESPACE'"
+    # All logging to stderr so it doesn't interfere with return values
+    log_step "Retrieving MinIO credentials..." >&2
+    log_debug "Getting secret '$MINIO_SECRET_NAME' from namespace '$MINIO_NAMESPACE'" >&2
     
     # Get rootUser from minio secret (base64 encoded)
-    log_debug "Extracting rootUser from secret..."
+    log_debug "Extracting rootUser from secret..." >&2
     local root_user=$(kctl get secret "$MINIO_SECRET_NAME" -n "$MINIO_NAMESPACE" \
         -o jsonpath='{.data.rootUser}' 2>/dev/null | tr -d '\n\r ' || echo "")
     
     if [ -z "$root_user" ]; then
-        log_error "Could not retrieve rootUser from $MINIO_NAMESPACE/$MINIO_SECRET_NAME"
-        log_debug "Command that failed: kctl get secret $MINIO_SECRET_NAME -n $MINIO_NAMESPACE -o jsonpath='{.data.rootUser}'"
+        log_error "Could not retrieve rootUser from $MINIO_NAMESPACE/$MINIO_SECRET_NAME" >&2
+        log_debug "Command that failed: kctl get secret $MINIO_SECRET_NAME -n $MINIO_NAMESPACE -o jsonpath='{.data.rootUser}'" >&2
         exit 1
     fi
-    log_debug "rootUser retrieved (base64 length: ${#root_user})"
+    log_debug "rootUser retrieved (base64 length: ${#root_user})" >&2
     
     # Get rootPassword from minio secret (base64 encoded)
-    log_debug "Extracting rootPassword from secret..."
+    log_debug "Extracting rootPassword from secret..." >&2
     local root_password=$(kctl get secret "$MINIO_SECRET_NAME" -n "$MINIO_NAMESPACE" \
         -o jsonpath='{.data.rootPassword}' 2>/dev/null | tr -d '\n\r ' || echo "")
     
     if [ -z "$root_password" ]; then
-        log_error "Could not retrieve rootPassword from $MINIO_NAMESPACE/$MINIO_SECRET_NAME"
-        log_debug "Command that failed: kctl get secret $MINIO_SECRET_NAME -n $MINIO_NAMESPACE -o jsonpath='{.data.rootPassword}'"
+        log_error "Could not retrieve rootPassword from $MINIO_NAMESPACE/$MINIO_SECRET_NAME" >&2
+        log_debug "Command that failed: kctl get secret $MINIO_SECRET_NAME -n $MINIO_NAMESPACE -o jsonpath='{.data.rootPassword}'" >&2
         exit 1
     fi
-    log_debug "rootPassword retrieved (base64 length: ${#root_password})"
+    log_debug "rootPassword retrieved (base64 length: ${#root_password})" >&2
     
     # Decode and display (masked) - for verification only
-    log_debug "Decoding base64 values for verification..."
+    log_debug "Decoding base64 values for verification..." >&2
     local root_user_decoded=""
     local root_password_decoded=""
     
@@ -238,21 +239,21 @@ get_minio_credentials() {
     fi
     
     if [ -z "$root_user_decoded" ] || [ -z "$root_password_decoded" ]; then
-        log_error "Failed to decode MinIO credentials for verification"
-        log_debug "root_user_decoded length: ${#root_user_decoded}"
-        log_debug "root_password_decoded length: ${#root_password_decoded}"
+        log_error "Failed to decode MinIO credentials for verification" >&2
+        log_debug "root_user_decoded length: ${#root_user_decoded}" >&2
+        log_debug "root_password_decoded length: ${#root_password_decoded}" >&2
         exit 1
     fi
     
-    log_success "MinIO credentials retrieved"
-    log_info "  Root User: ${root_user_decoded:0:3}***"
-    log_info "  Root Password: ***"
-    log_debug "Decoded user: $root_user_decoded"
-    log_debug "Decoded password length: ${#root_password_decoded}"
-    echo ""
+    log_success "MinIO credentials retrieved" >&2
+    log_info "  Root User: ${root_user_decoded:0:3}***" >&2
+    log_info "  Root Password: ***" >&2
+    log_debug "Decoded user: $root_user_decoded" >&2
+    log_debug "Decoded password length: ${#root_password_decoded}" >&2
+    echo "" >&2
     
-    # Return base64 encoded values (cleaned of whitespace/newlines)
-    log_debug "Returning base64 encoded credentials (cleaned)"
+    # Return ONLY the base64 encoded values to stdout (for capture)
+    log_debug "Returning base64 encoded credentials (cleaned)" >&2
     echo "$root_user"
     echo "$root_password"
 }
