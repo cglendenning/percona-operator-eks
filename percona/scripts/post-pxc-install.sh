@@ -197,37 +197,48 @@ get_minio_credentials() {
     log_step "Retrieving MinIO credentials..."
     log_debug "Getting secret '$MINIO_SECRET_NAME' from namespace '$MINIO_NAMESPACE'"
     
-    # Get rootUser from minio secret
+    # Get rootUser from minio secret (base64 encoded)
     log_debug "Extracting rootUser from secret..."
     local root_user=$(kctl get secret "$MINIO_SECRET_NAME" -n "$MINIO_NAMESPACE" \
-        -o jsonpath='{.data.rootUser}' 2>/dev/null || echo "")
+        -o jsonpath='{.data.rootUser}' 2>/dev/null | tr -d '\n\r ' || echo "")
     
     if [ -z "$root_user" ]; then
         log_error "Could not retrieve rootUser from $MINIO_NAMESPACE/$MINIO_SECRET_NAME"
         log_debug "Command that failed: kctl get secret $MINIO_SECRET_NAME -n $MINIO_NAMESPACE -o jsonpath='{.data.rootUser}'"
         exit 1
     fi
-    log_debug "rootUser retrieved (length: ${#root_user})"
+    log_debug "rootUser retrieved (base64 length: ${#root_user})"
     
-    # Get rootPassword from minio secret
+    # Get rootPassword from minio secret (base64 encoded)
     log_debug "Extracting rootPassword from secret..."
     local root_password=$(kctl get secret "$MINIO_SECRET_NAME" -n "$MINIO_NAMESPACE" \
-        -o jsonpath='{.data.rootPassword}' 2>/dev/null || echo "")
+        -o jsonpath='{.data.rootPassword}' 2>/dev/null | tr -d '\n\r ' || echo "")
     
     if [ -z "$root_password" ]; then
         log_error "Could not retrieve rootPassword from $MINIO_NAMESPACE/$MINIO_SECRET_NAME"
         log_debug "Command that failed: kctl get secret $MINIO_SECRET_NAME -n $MINIO_NAMESPACE -o jsonpath='{.data.rootPassword}'"
         exit 1
     fi
-    log_debug "rootPassword retrieved (length: ${#root_password})"
+    log_debug "rootPassword retrieved (base64 length: ${#root_password})"
     
-    # Decode and display (masked)
-    log_debug "Decoding base64 values..."
-    local root_user_decoded=$(echo "$root_user" | base64 -d 2>/dev/null || echo "")
-    local root_password_decoded=$(echo "$root_password" | base64 -d 2>/dev/null || echo "")
+    # Decode and display (masked) - for verification only
+    log_debug "Decoding base64 values for verification..."
+    local root_user_decoded=""
+    local root_password_decoded=""
+    
+    # Handle both Linux and macOS base64 decode
+    if echo "$root_user" | base64 -d &>/dev/null 2>&1; then
+        # Linux base64
+        root_user_decoded=$(echo "$root_user" | base64 -d 2>/dev/null || echo "")
+        root_password_decoded=$(echo "$root_password" | base64 -d 2>/dev/null || echo "")
+    else
+        # macOS/BSD base64
+        root_user_decoded=$(echo "$root_user" | base64 -D 2>/dev/null || echo "")
+        root_password_decoded=$(echo "$root_password" | base64 -D 2>/dev/null || echo "")
+    fi
     
     if [ -z "$root_user_decoded" ] || [ -z "$root_password_decoded" ]; then
-        log_error "Failed to decode MinIO credentials"
+        log_error "Failed to decode MinIO credentials for verification"
         log_debug "root_user_decoded length: ${#root_user_decoded}"
         log_debug "root_password_decoded length: ${#root_password_decoded}"
         exit 1
@@ -240,8 +251,8 @@ get_minio_credentials() {
     log_debug "Decoded password length: ${#root_password_decoded}"
     echo ""
     
-    # Return base64 encoded values (already base64 encoded from secret)
-    log_debug "Returning base64 encoded credentials"
+    # Return base64 encoded values (cleaned of whitespace/newlines)
+    log_debug "Returning base64 encoded credentials (cleaned)"
     echo "$root_user"
     echo "$root_password"
 }
@@ -256,10 +267,15 @@ get_pmm_token() {
     
     local pmm_token=""
     
-    # Prompt for token
+    # Prompt for token (using /dev/tty for better WSL compatibility)
     log_debug "Waiting for user input (PMM token)..."
-    echo -n "PMM Service Account Token: "
-    read -r pmm_token
+    if [ -t 0 ]; then
+        # stdin is a terminal
+        read -r pmm_token
+    else
+        # stdin is not a terminal, try /dev/tty
+        read -r pmm_token < /dev/tty
+    fi
     log_debug "User input received (length: ${#pmm_token})"
     
     if [ -z "$pmm_token" ]; then
@@ -267,9 +283,19 @@ get_pmm_token() {
         exit 1
     fi
     
-    # Base64 encode the token
+    # Base64 encode the token (handle both Linux and macOS base64)
     log_debug "Encoding PMM token to base64..."
-    local pmm_token_b64=$(echo -n "$pmm_token" | base64 | tr -d '\n')
+    local pmm_token_b64=""
+    if echo -n "$pmm_token" | base64 -w 0 &>/dev/null 2>&1; then
+        # Linux base64 (with -w 0 for no line wrapping)
+        pmm_token_b64=$(echo -n "$pmm_token" | base64 -w 0)
+    else
+        # macOS/BSD base64 (no line wrapping by default)
+        pmm_token_b64=$(echo -n "$pmm_token" | base64)
+    fi
+    
+    # Strip any newlines/whitespace just in case
+    pmm_token_b64=$(echo -n "$pmm_token_b64" | tr -d '\n\r ')
     
     if [ -z "$pmm_token_b64" ]; then
         log_error "Failed to base64 encode PMM token"
@@ -304,20 +330,39 @@ update_db_secrets() {
     log_debug "Temp patch file: $patch_file"
     
     # Build JSON patch to add/update the three keys
-    log_debug "Writing JSON patch..."
-    cat > "$patch_file" << EOF
+    log_debug "Writing JSON patch using jq for proper escaping..."
+    
+    # Use jq to build JSON properly (handles special characters and escaping)
+    if command -v jq &> /dev/null; then
+        log_debug "Using jq to build JSON patch"
+        jq -n \
+            --arg access_key "$aws_access_key_b64" \
+            --arg secret_key "$aws_secret_key_b64" \
+            --arg pmm_token "$pmm_token_b64" \
+            '{data: {AWS_ACCESS_KEY_ID: $access_key, AWS_SECRET_ACCESS_KEY: $secret_key, pmmservertoken: $pmm_token}}' \
+            > "$patch_file"
+    else
+        # Fallback: manual JSON construction with escaped values
+        log_debug "jq not available, using manual JSON construction"
+        # Escape any backslashes and double quotes in the base64 strings
+        local escaped_access=$(echo "$aws_access_key_b64" | sed 's/\\/\\\\/g; s/"/\\"/g')
+        local escaped_secret=$(echo "$aws_secret_key_b64" | sed 's/\\/\\\\/g; s/"/\\"/g')
+        local escaped_pmm=$(echo "$pmm_token_b64" | sed 's/\\/\\\\/g; s/"/\\"/g')
+        
+        cat > "$patch_file" << EOF
 {
   "data": {
-    "AWS_ACCESS_KEY_ID": "$aws_access_key_b64",
-    "AWS_SECRET_ACCESS_KEY": "$aws_secret_key_b64",
-    "pmmservertoken": "$pmm_token_b64"
+    "AWS_ACCESS_KEY_ID": "$escaped_access",
+    "AWS_SECRET_ACCESS_KEY": "$escaped_secret",
+    "pmmservertoken": "$escaped_pmm"
   }
 }
 EOF
+    fi
     
     if [ "$DEBUG" = true ]; then
         log_debug "Patch file contents:"
-        cat "$patch_file" | sed 's/\(.\{60\}\).*/\1.../' # Truncate long lines for debug
+        cat "$patch_file" | head -20 # Show first 20 lines
     fi
     
     # Apply the patch (strategic merge patch preserves other keys)
