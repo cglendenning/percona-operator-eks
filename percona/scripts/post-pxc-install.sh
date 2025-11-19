@@ -20,9 +20,14 @@ MINIO_NAMESPACE="minio"
 MINIO_SECRET_NAME="minio"
 DB_SECRET_NAME="db-secrets"
 KUBECONFIG="${KUBECONFIG:-}"
+DEBUG=false
 
 # kubectl wrapper function that always includes --kubeconfig if set
 kctl() {
+    if [ "$DEBUG" = true ]; then
+        log_debug "Running: kubectl $*"
+    fi
+    
     if [ -n "$KUBECONFIG" ]; then
         kubectl --kubeconfig="$KUBECONFIG" "$@"
     else
@@ -51,6 +56,12 @@ log_step() {
     echo -e "${BLUE}[STEP]${NC} $1"
 }
 
+log_debug() {
+    if [ "$DEBUG" = true ]; then
+        echo -e "${BLUE}[DEBUG]${NC} $1"
+    fi
+}
+
 # Usage information
 usage() {
     cat << EOF
@@ -64,6 +75,7 @@ This script updates the db-secrets in the target namespace with:
 
 OPTIONS:
     --target-namespace NAMESPACE   Target namespace containing db-secrets (required)
+    --debug                        Enable debug output
     -h, --help                     Show this help message
 
 PREREQUISITES:
@@ -110,6 +122,10 @@ parse_args() {
             --target-namespace)
                 TARGET_NAMESPACE="$2"
                 shift 2
+                ;;
+            --debug)
+                DEBUG=true
+                shift
                 ;;
             -h|--help)
                 usage
@@ -179,40 +195,53 @@ check_prerequisites() {
 # Get MinIO credentials
 get_minio_credentials() {
     log_step "Retrieving MinIO credentials..."
+    log_debug "Getting secret '$MINIO_SECRET_NAME' from namespace '$MINIO_NAMESPACE'"
     
     # Get rootUser from minio secret
+    log_debug "Extracting rootUser from secret..."
     local root_user=$(kctl get secret "$MINIO_SECRET_NAME" -n "$MINIO_NAMESPACE" \
         -o jsonpath='{.data.rootUser}' 2>/dev/null || echo "")
     
     if [ -z "$root_user" ]; then
         log_error "Could not retrieve rootUser from $MINIO_NAMESPACE/$MINIO_SECRET_NAME"
+        log_debug "Command that failed: kctl get secret $MINIO_SECRET_NAME -n $MINIO_NAMESPACE -o jsonpath='{.data.rootUser}'"
         exit 1
     fi
+    log_debug "rootUser retrieved (length: ${#root_user})"
     
     # Get rootPassword from minio secret
+    log_debug "Extracting rootPassword from secret..."
     local root_password=$(kctl get secret "$MINIO_SECRET_NAME" -n "$MINIO_NAMESPACE" \
         -o jsonpath='{.data.rootPassword}' 2>/dev/null || echo "")
     
     if [ -z "$root_password" ]; then
         log_error "Could not retrieve rootPassword from $MINIO_NAMESPACE/$MINIO_SECRET_NAME"
+        log_debug "Command that failed: kctl get secret $MINIO_SECRET_NAME -n $MINIO_NAMESPACE -o jsonpath='{.data.rootPassword}'"
         exit 1
     fi
+    log_debug "rootPassword retrieved (length: ${#root_password})"
     
     # Decode and display (masked)
+    log_debug "Decoding base64 values..."
     local root_user_decoded=$(echo "$root_user" | base64 -d 2>/dev/null || echo "")
     local root_password_decoded=$(echo "$root_password" | base64 -d 2>/dev/null || echo "")
     
     if [ -z "$root_user_decoded" ] || [ -z "$root_password_decoded" ]; then
         log_error "Failed to decode MinIO credentials"
+        log_debug "root_user_decoded length: ${#root_user_decoded}"
+        log_debug "root_password_decoded length: ${#root_password_decoded}"
         exit 1
     fi
     
     log_success "MinIO credentials retrieved"
     log_info "  Root User: ${root_user_decoded:0:3}***"
     log_info "  Root Password: ***"
+    log_debug "Decoded user: $root_user_decoded"
+    log_debug "Decoded password length: ${#root_password_decoded}"
     echo ""
     
     # Return base64 encoded values (already base64 encoded from secret)
+    log_debug "Returning base64 encoded credentials"
     echo "$root_user"
     echo "$root_password"
 }
@@ -228,8 +257,10 @@ get_pmm_token() {
     local pmm_token=""
     
     # Prompt for token
+    log_debug "Waiting for user input (PMM token)..."
     echo -n "PMM Service Account Token: "
     read -r pmm_token
+    log_debug "User input received (length: ${#pmm_token})"
     
     if [ -z "$pmm_token" ]; then
         log_error "PMM token cannot be empty"
@@ -237,17 +268,21 @@ get_pmm_token() {
     fi
     
     # Base64 encode the token
+    log_debug "Encoding PMM token to base64..."
     local pmm_token_b64=$(echo -n "$pmm_token" | base64 | tr -d '\n')
     
     if [ -z "$pmm_token_b64" ]; then
         log_error "Failed to base64 encode PMM token"
+        log_debug "base64 command may have failed"
         exit 1
     fi
+    log_debug "PMM token encoded (base64 length: ${#pmm_token_b64})"
     
     log_success "PMM token processed"
     log_info "  Token length: ${#pmm_token} characters"
     echo ""
     
+    log_debug "Returning encoded PMM token"
     echo "$pmm_token_b64"
 }
 
@@ -258,12 +293,18 @@ update_db_secrets() {
     local pmm_token_b64="$3"
     
     log_step "Updating db-secrets in namespace '$TARGET_NAMESPACE'..."
+    log_debug "AWS_ACCESS_KEY_ID length: ${#aws_access_key_b64}"
+    log_debug "AWS_SECRET_ACCESS_KEY length: ${#aws_secret_key_b64}"
+    log_debug "pmmservertoken length: ${#pmm_token_b64}"
     
     # Create a temporary JSON patch file
+    log_debug "Creating temporary patch file..."
     local patch_file=$(mktemp)
     trap "rm -f '$patch_file'" EXIT
+    log_debug "Temp patch file: $patch_file"
     
     # Build JSON patch to add/update the three keys
+    log_debug "Writing JSON patch..."
     cat > "$patch_file" << EOF
 {
   "data": {
@@ -274,13 +315,23 @@ update_db_secrets() {
 }
 EOF
     
+    if [ "$DEBUG" = true ]; then
+        log_debug "Patch file contents:"
+        cat "$patch_file" | sed 's/\(.\{60\}\).*/\1.../' # Truncate long lines for debug
+    fi
+    
     # Apply the patch (strategic merge patch preserves other keys)
+    log_debug "Applying patch to secret '$DB_SECRET_NAME' in namespace '$TARGET_NAMESPACE'..."
     if kctl patch secret "$DB_SECRET_NAME" -n "$TARGET_NAMESPACE" \
         --type=merge \
         --patch-file="$patch_file" 2>/dev/null; then
         log_success "Successfully updated $DB_SECRET_NAME"
     else
         log_error "Failed to update $DB_SECRET_NAME"
+        log_debug "Patch command failed. Trying with verbose output..."
+        kctl patch secret "$DB_SECRET_NAME" -n "$TARGET_NAMESPACE" \
+            --type=merge \
+            --patch-file="$patch_file"
         exit 1
     fi
     
@@ -334,29 +385,49 @@ verify_update() {
 
 # Main execution
 main() {
+    log_debug "Starting script execution..."
+    log_debug "Arguments: $*"
+    
     parse_args "$@"
+    
+    log_debug "DEBUG mode: $DEBUG"
+    log_debug "TARGET_NAMESPACE: $TARGET_NAMESPACE"
+    log_debug "KUBECONFIG: ${KUBECONFIG:-<not set>}"
     
     echo ""
     log_info "=== Post-PXC Installation Configuration ==="
     log_info "Target Namespace: $TARGET_NAMESPACE"
     log_info "MinIO Namespace: $MINIO_NAMESPACE"
+    if [ "$DEBUG" = true ]; then
+        log_info "Debug Mode: ENABLED"
+    fi
     echo ""
     
     check_prerequisites
     
     # Get MinIO credentials
+    log_debug "Calling get_minio_credentials..."
     local minio_creds=$(get_minio_credentials)
+    log_debug "get_minio_credentials returned. Processing output..."
     local aws_access_key_b64=$(echo "$minio_creds" | sed -n '1p')
     local aws_secret_key_b64=$(echo "$minio_creds" | sed -n '2p')
+    log_debug "Extracted AWS_ACCESS_KEY_ID (length: ${#aws_access_key_b64})"
+    log_debug "Extracted AWS_SECRET_ACCESS_KEY (length: ${#aws_secret_key_b64})"
     
     # Get PMM token
+    log_debug "Calling get_pmm_token..."
     local pmm_token_b64=$(get_pmm_token)
+    log_debug "get_pmm_token returned (length: ${#pmm_token_b64})"
     
     # Update db-secrets
+    log_debug "Calling update_db_secrets..."
     update_db_secrets "$aws_access_key_b64" "$aws_secret_key_b64" "$pmm_token_b64"
+    log_debug "update_db_secrets completed"
     
     # Verify
+    log_debug "Calling verify_update..."
     verify_update
+    log_debug "verify_update completed"
     
     echo ""
     log_success "=== Configuration Complete ==="
@@ -369,6 +440,8 @@ main() {
     log_info "To restart PXC pods (if needed):"
     log_info "  kubectl rollout restart statefulset -n $TARGET_NAMESPACE"
     echo ""
+    
+    log_debug "Script completed successfully"
 }
 
 main "$@"
