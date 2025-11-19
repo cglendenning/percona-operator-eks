@@ -58,7 +58,7 @@ log_step() {
 
 log_debug() {
     if [ "$DEBUG" = true ]; then
-        echo -e "${BLUE}[DEBUG]${NC} $1"
+        echo -e "${BLUE}[DEBUG]${NC} $1" >&2
     fi
 }
 
@@ -236,8 +236,9 @@ get_minio_credentials() {
     
     # Return ONLY the base64 encoded values to stdout (UNMODIFIED from secret)
     log_debug "Returning base64 credentials (length user=${#root_user}, pass=${#root_password})" >&2
-    echo "$root_user"
-    echo "$root_password"
+    
+    # Output ONLY the credentials, nothing else
+    printf '%s\n%s\n' "$root_user" "$root_password"
 }
 
 # Prompt for PMM token
