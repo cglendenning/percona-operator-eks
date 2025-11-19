@@ -259,32 +259,49 @@ get_minio_credentials() {
 
 # Prompt for PMM token
 get_pmm_token() {
-    log_step "PMM Service Account Token Configuration"
-    echo ""
-    log_info "Please enter the PMM service account token."
-    log_info "This token is used for PMM (Percona Monitoring and Management) integration."
-    echo ""
+    # All logging/output to stderr so it doesn't interfere with function return value
+    log_step "PMM Service Account Token Configuration" >&2
+    echo "" >&2
+    log_info "Please enter the PMM service account token." >&2
+    log_info "This token is used for PMM (Percona Monitoring and Management) integration." >&2
+    echo "" >&2
     
     local pmm_token=""
     
-    # Prompt for token (using /dev/tty for better WSL compatibility)
-    log_debug "Waiting for user input (PMM token)..."
-    if [ -t 0 ]; then
+    # Prompt for token (everything to stderr, read from /dev/tty for WSL)
+    log_debug "Waiting for user input (PMM token)..." >&2
+    
+    # Print prompt to /dev/tty to ensure it's visible
+    if [ -w /dev/tty ]; then
+        echo -n "PMM Service Account Token: " > /dev/tty
+    else
+        echo -n "PMM Service Account Token: " >&2
+    fi
+    
+    # Try multiple methods to read input (WSL compatibility)
+    if [ -r /dev/tty ]; then
+        # Best method: read directly from /dev/tty
+        log_debug "Reading from /dev/tty" >&2
+        read -r pmm_token < /dev/tty
+    elif [ -t 0 ]; then
         # stdin is a terminal
+        log_debug "Reading from stdin (terminal)" >&2
         read -r pmm_token
     else
-        # stdin is not a terminal, try /dev/tty
-        read -r pmm_token < /dev/tty
+        # Last resort: try stdin anyway
+        log_debug "Reading from stdin (not a terminal)" >&2
+        read -r pmm_token
     fi
-    log_debug "User input received (length: ${#pmm_token})"
+    
+    log_debug "User input received (length: ${#pmm_token})" >&2
     
     if [ -z "$pmm_token" ]; then
-        log_error "PMM token cannot be empty"
+        log_error "PMM token cannot be empty" >&2
         exit 1
     fi
     
     # Base64 encode the token (handle both Linux and macOS base64)
-    log_debug "Encoding PMM token to base64..."
+    log_debug "Encoding PMM token to base64..." >&2
     local pmm_token_b64=""
     if echo -n "$pmm_token" | base64 -w 0 &>/dev/null 2>&1; then
         # Linux base64 (with -w 0 for no line wrapping)
@@ -298,17 +315,19 @@ get_pmm_token() {
     pmm_token_b64=$(echo -n "$pmm_token_b64" | tr -d '\n\r ')
     
     if [ -z "$pmm_token_b64" ]; then
-        log_error "Failed to base64 encode PMM token"
-        log_debug "base64 command may have failed"
+        log_error "Failed to base64 encode PMM token" >&2
+        log_debug "base64 command may have failed" >&2
         exit 1
     fi
-    log_debug "PMM token encoded (base64 length: ${#pmm_token_b64})"
+    log_debug "PMM token encoded (base64 length: ${#pmm_token_b64})" >&2
     
-    log_success "PMM token processed"
-    log_info "  Token length: ${#pmm_token} characters"
-    echo ""
+    log_success "PMM token processed" >&2
+    log_info "  Token length: ${#pmm_token} characters" >&2
+    echo "" >&2
     
-    log_debug "Returning encoded PMM token"
+    log_debug "Returning encoded PMM token" >&2
+    
+    # ONLY the base64 token goes to stdout (for capture)
     echo "$pmm_token_b64"
 }
 
