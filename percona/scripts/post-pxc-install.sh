@@ -198,76 +198,46 @@ get_minio_credentials() {
     log_step "Retrieving MinIO credentials..." >&2
     log_debug "Getting secret '$MINIO_SECRET_NAME' from namespace '$MINIO_NAMESPACE'" >&2
     
-    # Get rootUser from minio secret (base64 encoded)
+    # Get rootUser from minio secret (base64 encoded) - store raw
     log_debug "Extracting rootUser from secret..." >&2
-    local root_user=""
-    root_user=$(kctl get secret "$MINIO_SECRET_NAME" -n "$MINIO_NAMESPACE" \
+    local root_user=$(kctl get secret "$MINIO_SECRET_NAME" -n "$MINIO_NAMESPACE" \
         -o jsonpath='{.data.rootUser}' 2>/dev/null)
-    
-    # Clean whitespace/newlines (but preserve the base64 string itself)
-    root_user=$(printf '%s' "$root_user" | tr -d '\n\r\t ')
     
     if [ -z "$root_user" ]; then
         log_error "Could not retrieve rootUser from $MINIO_NAMESPACE/$MINIO_SECRET_NAME" >&2
-        log_debug "Command that failed: kctl get secret $MINIO_SECRET_NAME -n $MINIO_NAMESPACE -o jsonpath='{.data.rootUser}'" >&2
         exit 1
     fi
-    log_debug "rootUser retrieved (base64 length: ${#root_user})" >&2
+    log_debug "rootUser retrieved RAW (length: ${#root_user})" >&2
     
-    # Get rootPassword from minio secret (base64 encoded)
+    # Get rootPassword from minio secret (base64 encoded) - store raw
     log_debug "Extracting rootPassword from secret..." >&2
-    local root_password=""
-    root_password=$(kctl get secret "$MINIO_SECRET_NAME" -n "$MINIO_NAMESPACE" \
+    local root_password=$(kctl get secret "$MINIO_SECRET_NAME" -n "$MINIO_NAMESPACE" \
         -o jsonpath='{.data.rootPassword}' 2>/dev/null)
-    
-    # Clean whitespace/newlines (but preserve the base64 string itself)
-    root_password=$(printf '%s' "$root_password" | tr -d '\n\r\t ')
     
     if [ -z "$root_password" ]; then
         log_error "Could not retrieve rootPassword from $MINIO_NAMESPACE/$MINIO_SECRET_NAME" >&2
-        log_debug "Command that failed: kctl get secret $MINIO_SECRET_NAME -n $MINIO_NAMESPACE -o jsonpath='{.data.rootPassword}'" >&2
         exit 1
     fi
-    log_debug "rootPassword retrieved (base64 length: ${#root_password})" >&2
+    log_debug "rootPassword retrieved RAW (length: ${#root_password})" >&2
     
-    # Decode and display (masked) - for verification only
-    log_debug "Decoding base64 values for verification..." >&2
-    local root_user_decoded=""
-    local root_password_decoded=""
-    
-    # Handle both Linux and macOS base64 decode
-    if echo "$root_user" | base64 -d &>/dev/null 2>&1; then
-        # Linux base64
-        root_user_decoded=$(echo "$root_user" | base64 -d 2>/dev/null || echo "")
-        root_password_decoded=$(echo "$root_password" | base64 -d 2>/dev/null || echo "")
-    else
-        # macOS/BSD base64
-        root_user_decoded=$(echo "$root_user" | base64 -D 2>/dev/null || echo "")
-        root_password_decoded=$(echo "$root_password" | base64 -D 2>/dev/null || echo "")
-    fi
+    # Decode for display only - don't modify the original base64 values
+    log_debug "Decoding base64 values for display only..." >&2
+    local root_user_decoded=$(echo -n "$root_user" | base64 -d 2>/dev/null || echo -n "$root_user" | base64 -D 2>/dev/null || echo "")
+    local root_password_decoded=$(echo -n "$root_password" | base64 -d 2>/dev/null || echo -n "$root_password" | base64 -D 2>/dev/null || echo "")
     
     if [ -z "$root_user_decoded" ] || [ -z "$root_password_decoded" ]; then
-        log_error "Failed to decode MinIO credentials for verification" >&2
-        log_debug "root_user_decoded length: ${#root_user_decoded}" >&2
-        log_debug "root_password_decoded length: ${#root_password_decoded}" >&2
-        exit 1
+        log_warn "Could not decode credentials for display, but will use raw base64 values" >&2
+    else
+        log_success "MinIO credentials retrieved" >&2
+        log_info "  Root User: ${root_user_decoded:0:3}***" >&2
+        log_info "  Root Password: ***" >&2
     fi
-    
-    log_success "MinIO credentials retrieved" >&2
-    log_info "  Root User: ${root_user_decoded:0:3}***" >&2
-    log_info "  Root Password: ***" >&2
-    log_debug "Decoded user: $root_user_decoded" >&2
-    log_debug "Decoded password length: ${#root_password_decoded}" >&2
     echo "" >&2
     
-    # Return ONLY the base64 encoded values to stdout (for capture)
-    log_debug "Returning base64 encoded credentials (cleaned)" >&2
-    log_debug "About to echo root_user (length: ${#root_user})" >&2
-    log_debug "About to echo root_password (length: ${#root_password})" >&2
-    
-    # Explicitly write to stdout (fd 1)
-    echo "$root_user" >&1
-    echo "$root_password" >&1
+    # Return ONLY the base64 encoded values to stdout (UNMODIFIED from secret)
+    log_debug "Returning base64 credentials (length user=${#root_user}, pass=${#root_password})" >&2
+    echo "$root_user"
+    echo "$root_password"
 }
 
 # Prompt for PMM token
