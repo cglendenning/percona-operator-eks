@@ -726,75 +726,57 @@ redact_directory() {
     
     # Find all files
     log_info "Starting file scan..."
-    
+
     if [ "$DRY_RUN" = true ]; then
         log_info "NOTE: Showing all files being checked..."
     fi
-    
+
     echo ""
-    
-    # Use a safer approach that works on both macOS and Linux
-    local loop_started=false
-    
-    # Disable exit on error for the main processing loop
-    set +e
-    
+
+    # Get all files into an array (simpler and more reliable)
+    local files=()
     while IFS= read -r -d '' file; do
-        if [ "$loop_started" = false ]; then
-            loop_started=true
-            if [ "$DEBUG" = true ]; then
-                log_info "Loop started - processing files..."
-                log_info "DEBUG: First file is: $file"
-            fi
-        fi
-        
+        files+=("$file")
+    done < <(if command -v timeout &> /dev/null; then timeout 300 find "$target_dir" -type f -print0 2>/dev/null; else find "$target_dir" -type f -print0 2>/dev/null; fi)
+
+    local total_found=${#files[@]}
+    if [ "$DEBUG" = true ]; then
+        log_info "DEBUG: Array contains $total_found files"
+    fi
+
+    # Process each file
+    for file in "${files[@]}"; do
         ((total_files++))
-        
+
         if [ "$DEBUG" = true ]; then
             log_info "DEBUG: File #$total_files: ${file#$target_dir/}"
         fi
-        
+
         # Debug output to see we're actually processing
         if [ "$DRY_RUN" = true ] && [ $((total_files % 5)) -eq 0 ]; then
             echo -n "."  # Progress indicator every 5 files
         fi
-        
-        if [ "$DEBUG" = true ]; then
-            log_info "DEBUG: About to check should_process_file..."
-        fi
-        
+
         local should_process=0
         if should_process_file "$file"; then
             should_process=1
         fi
-        
-        if [ "$DEBUG" = true ]; then
-            log_info "DEBUG: should_process_file returned: $should_process"
-        fi
-        
+
         if [ $should_process -eq 0 ]; then
-            if [ "$DRY_RUN" = true ]; then
+            if [ "$DRY_RUN" = true ] || [ "$DEBUG" = true ]; then
                 log_info "Skipping: ${file#$target_dir/} (binary, backup, or excluded)"
             fi
             continue
         fi
-        
+
         log_info "Processing: ${file#$target_dir/}"
-        
-        if [ "$DEBUG" = true ]; then
-            log_info "DEBUG: About to backup file..."
-        fi
-        
+
         # Backup original
         backup_file "$file" "$target_dir"
-        
-        if [ "$DEBUG" = true ]; then
-            log_info "DEBUG: About to redact file..."
-        fi
-        
+
         # Redact file
         local count=$(redact_file "$file" "$json_file")
-        
+
         if [ "$count" -gt 0 ]; then
             if [ "$DRY_RUN" = true ]; then
                 log_success "  Found $count items to redact"
@@ -808,22 +790,9 @@ redact_directory() {
                 log_info "  No sensitive data found"
             fi
         fi
-        
-    done < <(if command -v timeout &> /dev/null; then timeout 300 find "$target_dir" -type f -print0 2>/dev/null; else find "$target_dir" -type f -print0 2>/dev/null; fi)
-
-    # Re-enable exit on error
-    set -e
+    done
     
     echo ""  # Newline after progress dots
-    
-    # Check if loop actually ran
-    if [ "$loop_started" = false ]; then
-        log_error "File processing loop never started!"
-        log_error "This may indicate an issue with the find command or file permissions"
-        log_info "Attempting direct file listing..."
-        find "$target_dir" -type f | head -10
-        exit 1
-    fi
     
     if [ "$DRY_RUN" = true ]; then
         log_header "Dry-Run Summary"
