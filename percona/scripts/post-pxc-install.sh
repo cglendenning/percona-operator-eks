@@ -201,7 +201,10 @@ get_minio_credentials() {
     # Get rootUser from minio secret (base64 encoded)
     log_debug "Extracting rootUser from secret..." >&2
     local root_user=$(kctl get secret "$MINIO_SECRET_NAME" -n "$MINIO_NAMESPACE" \
-        -o jsonpath='{.data.rootUser}' 2>/dev/null | tr -d '\n\r ' || echo "")
+        -o jsonpath='{.data.rootUser}' 2>/dev/null || echo "")
+    
+    # Clean the value (remove whitespace, newlines, carriage returns)
+    root_user=$(echo "$root_user" | tr -d '\n\r\t ' || echo "")
     
     if [ -z "$root_user" ]; then
         log_error "Could not retrieve rootUser from $MINIO_NAMESPACE/$MINIO_SECRET_NAME" >&2
@@ -213,7 +216,10 @@ get_minio_credentials() {
     # Get rootPassword from minio secret (base64 encoded)
     log_debug "Extracting rootPassword from secret..." >&2
     local root_password=$(kctl get secret "$MINIO_SECRET_NAME" -n "$MINIO_NAMESPACE" \
-        -o jsonpath='{.data.rootPassword}' 2>/dev/null | tr -d '\n\r ' || echo "")
+        -o jsonpath='{.data.rootPassword}' 2>/dev/null || echo "")
+    
+    # Clean the value (remove whitespace, newlines, carriage returns)
+    root_password=$(echo "$root_password" | tr -d '\n\r\t ' || echo "")
     
     if [ -z "$root_password" ]; then
         log_error "Could not retrieve rootPassword from $MINIO_NAMESPACE/$MINIO_SECRET_NAME" >&2
@@ -254,8 +260,12 @@ get_minio_credentials() {
     
     # Return ONLY the base64 encoded values to stdout (for capture)
     log_debug "Returning base64 encoded credentials (cleaned)" >&2
-    echo "$root_user"
-    echo "$root_password"
+    log_debug "About to echo root_user (length: ${#root_user})" >&2
+    log_debug "About to echo root_password (length: ${#root_password})" >&2
+    
+    # Explicitly write to stdout (fd 1)
+    echo "$root_user" >&1
+    echo "$root_password" >&1
 }
 
 # Prompt for PMM token
@@ -474,10 +484,27 @@ main() {
     log_debug "Calling get_minio_credentials..."
     local minio_creds=$(get_minio_credentials)
     log_debug "get_minio_credentials returned. Processing output..."
-    local aws_access_key_b64=$(echo "$minio_creds" | sed -n '1p')
-    local aws_secret_key_b64=$(echo "$minio_creds" | sed -n '2p')
+    
+    if [ "$DEBUG" = true ]; then
+        log_debug "Raw minio_creds output:"
+        echo "$minio_creds" | od -c >&2
+        log_debug "Line count: $(echo "$minio_creds" | wc -l)"
+        log_debug "First line: $(echo "$minio_creds" | sed -n '1p')"
+        log_debug "Second line: $(echo "$minio_creds" | sed -n '2p')"
+    fi
+    
+    local aws_access_key_b64=$(echo "$minio_creds" | sed -n '1p' | tr -d '\n\r ')
+    local aws_secret_key_b64=$(echo "$minio_creds" | sed -n '2p' | tr -d '\n\r ')
+    
     log_debug "Extracted AWS_ACCESS_KEY_ID (length: ${#aws_access_key_b64})"
     log_debug "Extracted AWS_SECRET_ACCESS_KEY (length: ${#aws_secret_key_b64})"
+    
+    if [ -z "$aws_access_key_b64" ] || [ -z "$aws_secret_key_b64" ]; then
+        log_error "Failed to extract MinIO credentials from function output"
+        log_error "AWS_ACCESS_KEY_ID length: ${#aws_access_key_b64}"
+        log_error "AWS_SECRET_ACCESS_KEY length: ${#aws_secret_key_b64}"
+        exit 1
+    fi
     
     # Get PMM token
     log_debug "Calling get_pmm_token..."
