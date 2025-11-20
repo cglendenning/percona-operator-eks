@@ -16,9 +16,9 @@ NC='\033[0m' # No Color
 
 # Global variables
 TARGET_NAMESPACE=""
+DB_SECRET_NAME=""
 MINIO_NAMESPACE="minio"
 MINIO_SECRET_NAME="minio"
-DB_SECRET_NAME="db-secrets"
 KUBECONFIG="${KUBECONFIG:-}"
 DEBUG=false
 
@@ -74,37 +74,38 @@ This script updates the db-secrets in the target namespace with:
   2. PMM server token (pmmservertoken)
 
 OPTIONS:
-    --target-namespace NAMESPACE   Target namespace containing db-secrets (required)
+    --target-namespace NAMESPACE   Target namespace for the secret (required)
+    --secret-name NAME             Name of the secret to update (required)
     --debug                        Enable debug output
     -h, --help                     Show this help message
 
 PREREQUISITES:
-    - db-secrets must already exist in the target namespace
+    - Target secret must already exist in the target namespace
     - minio secret must exist in the minio namespace
     - kubectl must be configured with appropriate permissions
 
 DESCRIPTION:
-    This script configures the db-secrets secret after PXC installation by:
+    This script configures the specified secret after PXC installation by:
     
     1. MinIO Credentials:
        - Reads rootUser from minio/minio secret
        - Reads rootPassword from minio/minio secret
-       - Adds AWS_ACCESS_KEY_ID=rootUser to db-secrets
-       - Adds AWS_SECRET_ACCESS_KEY=rootPassword to db-secrets
+       - Adds AWS_ACCESS_KEY_ID=rootUser to target secret
+       - Adds AWS_SECRET_ACCESS_KEY=rootPassword to target secret
     
     2. PMM Token:
        - Prompts for PMM service account token
        - Base64 encodes the token
-       - Adds pmmservertoken to db-secrets
+       - Adds pmmservertoken to target secret
     
-    The script patches the existing db-secrets, preserving all other keys.
+    The script patches the existing secret, preserving all other keys.
 
 EXAMPLES:
     # Configure db-secrets in the percona namespace
-    $0 --target-namespace percona
-    
-    # Configure db-secrets in a custom namespace
-    $0 --target-namespace my-pxc-cluster
+    $0 --target-namespace percona --secret-name db-secrets
+
+    # Configure a custom secret
+    $0 --target-namespace my-pxc-cluster --secret-name my-secrets --debug
 
 EOF
     exit 0
@@ -121,6 +122,10 @@ parse_args() {
         case $1 in
             --target-namespace)
                 TARGET_NAMESPACE="$2"
+                shift 2
+                ;;
+            --secret-name)
+                DB_SECRET_NAME="$2"
                 shift 2
                 ;;
             --debug)
@@ -140,6 +145,11 @@ parse_args() {
     # Validate required arguments
     if [ -z "$TARGET_NAMESPACE" ]; then
         log_error "Target namespace is required (--target-namespace)"
+        usage
+    fi
+    
+    if [ -z "$DB_SECRET_NAME" ]; then
+        log_error "Secret name is required (--secret-name)"
         usage
     fi
 }
@@ -445,6 +455,7 @@ main() {
     echo ""
     log_info "=== Post-PXC Installation Configuration ==="
     log_info "Target Namespace: $TARGET_NAMESPACE"
+    log_info "Target Secret: $DB_SECRET_NAME"
     log_info "MinIO Namespace: $MINIO_NAMESPACE"
     if [ "$DEBUG" = true ]; then
         log_info "Debug Mode: ENABLED"
