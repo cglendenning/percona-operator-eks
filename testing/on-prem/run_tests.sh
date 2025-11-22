@@ -86,6 +86,15 @@ detect_os() {
 
 OS_TYPE=$(detect_os)
 
+# kubectl wrapper function that uses KUBECONFIG if set
+kctl() {
+    if [ -n "${KUBECONFIG:-}" ]; then
+        kubectl --kubeconfig="$KUBECONFIG" "$@"
+    else
+        kubectl "$@"
+    fi
+}
+
 # Colors for output
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -227,7 +236,7 @@ command -v kubectl >/dev/null 2>&1 || { echo -e "${RED}✗ kubectl not found${NC
 command -v helm >/dev/null 2>&1 || { echo -e "${RED}✗ helm not found${NC}" >&2; exit 1; }
 
 # Check Kubernetes connectivity
-if ! kubectl cluster-info >/dev/null 2>&1; then
+if ! kctl cluster-info >/dev/null 2>&1; then
     echo -e "${RED}✗ Cannot connect to Kubernetes cluster${NC}" >&2
     echo "Please configure kubectl to connect to your cluster"
     exit 1
@@ -535,9 +544,9 @@ if [ -z "${TEST_EXPECTED_NODES:-}" ]; then
     # Try to get node count from PXC StatefulSet
     # First try to find by name pattern (contains -pxc but not proxysql)
     # Use || true to prevent script exit if grep finds nothing (due to set -e)
-    PXC_STS_NAME=$(kubectl get statefulset -n "$TEST_NAMESPACE" -o jsonpath='{range .items[*]}{.metadata.name}{"\n"}{end}' 2>/dev/null | grep -E '\-pxc' | grep -v proxysql | head -1 || true)
+    PXC_STS_NAME=$(kctl get statefulset -n "$TEST_NAMESPACE" -o jsonpath='{range .items[*]}{.metadata.name}{"\n"}{end}' 2>/dev/null | grep -E '\-pxc' | grep -v proxysql | head -1 || true)
     if [ -n "$PXC_STS_NAME" ]; then
-        PXC_STS=$(kubectl get statefulset "$PXC_STS_NAME" -n "$TEST_NAMESPACE" -o jsonpath='{.spec.replicas}' 2>/dev/null || true)
+        PXC_STS=$(kctl get statefulset "$PXC_STS_NAME" -n "$TEST_NAMESPACE" -o jsonpath='{.spec.replicas}' 2>/dev/null || true)
         if [ -n "$PXC_STS" ] && [ "$PXC_STS" != "null" ] && [ "$PXC_STS" -gt 0 ] 2>/dev/null; then
             export TEST_EXPECTED_NODES=$PXC_STS
         fi
@@ -573,7 +582,7 @@ fi
 verbose_echo ""
 
 # Check if namespace exists
-if ! kubectl get namespace "$TEST_NAMESPACE" >/dev/null 2>&1; then
+if ! kctl get namespace "$TEST_NAMESPACE" >/dev/null 2>&1; then
     verbose_echo -e "${YELLOW}⚠ Warning: Namespace '$TEST_NAMESPACE' does not exist${NC}"
     verbose_echo "Some tests may fail. Create the namespace and deploy Percona cluster first."
     verbose_echo ""
