@@ -24,7 +24,7 @@ def test_percona_values_pxc_configuration():
     pxc = values['pxc']
     log_check("pxc.size must be 3 after substitution", "3", f"{pxc['size']}", source=path); assert pxc['size'] == 3
     log_check("pxc.requests.memory should be 4G", "4G", f"{pxc['resources']['requests']['memory']}", source=path); assert pxc['resources']['requests']['memory'] == '4G'
-    log_check("pxc.requests.cpu should be 500m", "500m", f"{pxc['resources']['requests']['cpu']}", source=path); assert pxc['resources']['requests']['cpu'] == '500m'
+    log_check("pxc.requests.cpu should be 1000m", "1000m", f"{pxc['resources']['requests']['cpu']}", source=path); assert pxc['resources']['requests']['cpu'] == '1000m'
     log_check("pxc.limits.memory should be 2Gi", "2Gi", f"{pxc['resources']['limits']['memory']}", source=path); assert pxc['resources']['limits']['memory'] == '2Gi'
     log_check("pxc.limits.cpu should be 1", "1", f"{pxc['resources']['limits']['cpu']}", source=path); assert pxc['resources']['limits']['cpu'] == 1
     
@@ -94,12 +94,12 @@ def test_percona_values_backup_configuration():
         "Scheduled backups are required for proper DR - PITR needs base backups to restore from"
     
     # Check PITR details
-    log_check("backup.pitr.storageName", "minio-backup", f"{backup['pitr']['storageName']}", source=path); assert backup['pitr']['storageName'] == 'minio-backup'
+    log_check("backup.pitr.storageName", "minio", f"{backup['pitr']['storageName']}", source=path); assert backup['pitr']['storageName'] == 'minio'
     log_check("backup.pitr.timeBetweenUploads", "60", f"{backup['pitr']['timeBetweenUploads']}", source=path); assert backup['pitr']['timeBetweenUploads'] == 60
     
     # Check storage configuration
-    storage = backup['storages']['minio-backup']
-    log_check("backup.storages.minio-backup.type", "s3", f"{storage['type']}", source=path); assert storage['type'] == 's3'
+    storage = backup['storages']['minio']
+    log_check("backup.storages.minio.type", "s3", f"{storage['type']}", source=path); assert storage['type'] == 's3'
     log_check("s3.bucket", "percona-backups", f"{storage['s3']['bucket']}", source=path); assert storage['s3']['bucket'] == 'percona-backups'
     log_check("s3.region", "us-east-1", f"{storage['s3']['region']}", source=path); assert storage['s3']['region'] == 'us-east-1'
     log_check("s3.endpointUrl", "http://minio.minio.svc.cluster.local:9000", f"{storage['s3']['endpointUrl']}", source=path); assert storage['s3']['endpointUrl'] == 'http://minio.minio.svc.cluster.local:9000'
@@ -115,7 +115,7 @@ def test_percona_values_backup_configuration():
     log_check("daily.retention.type", "count", f"{daily['retention']['type']}", source=path); assert daily['retention']['type'] == 'count'
     log_check("daily.retention.count", "7", f"{daily['retention']['count']}", source=path); assert daily['retention']['count'] == 7
     log_check("daily.retention.deleteFromStorage", "True", f"{daily['retention']['deleteFromStorage']}", source=path); assert daily['retention']['deleteFromStorage'] is True
-    log_check("daily.storageName", "minio-backup", f"{daily['storageName']}", source=path); assert daily['storageName'] == 'minio-backup'
+    log_check("daily.storageName", "minio", f"{daily['storageName']}", source=path); assert daily['storageName'] == 'minio'
     
     # Weekly backup
     weekly = next(s for s in schedules if s['name'] == 'weekly-backup')
@@ -123,7 +123,7 @@ def test_percona_values_backup_configuration():
     log_check("weekly.retention.type", "count", f"{weekly['retention']['type']}", source=path); assert weekly['retention']['type'] == 'count'
     log_check("weekly.retention.count", "8", f"{weekly['retention']['count']}", source=path); assert weekly['retention']['count'] == 8
     log_check("weekly.retention.deleteFromStorage", "True", f"{weekly['retention']['deleteFromStorage']}", source=path); assert weekly['retention']['deleteFromStorage'] is True
-    log_check("weekly.storageName", "minio-backup", f"{weekly['storageName']}", source=path); assert weekly['storageName'] == 'minio-backup'
+    log_check("weekly.storageName", "minio", f"{weekly['storageName']}", source=path); assert weekly['storageName'] == 'minio'
     
     # Monthly backup
     monthly = next(s for s in schedules if s['name'] == 'monthly-backup')
@@ -131,7 +131,7 @@ def test_percona_values_backup_configuration():
     log_check("monthly.retention.type", "count", f"{monthly['retention']['type']}", source=path); assert monthly['retention']['type'] == 'count'
     log_check("monthly.retention.count", "12", f"{monthly['retention']['count']}", source=path); assert monthly['retention']['count'] == 12
     log_check("monthly.retention.deleteFromStorage", "True", f"{monthly['retention']['deleteFromStorage']}", source=path); assert monthly['retention']['deleteFromStorage'] is True
-    log_check("monthly.storageName", "minio-backup", f"{monthly['storageName']}", source=path); assert monthly['storageName'] == 'minio-backup'
+    log_check("monthly.storageName", "minio", f"{monthly['storageName']}", source=path); assert monthly['storageName'] == 'minio'
 
 
 @pytest.mark.unit

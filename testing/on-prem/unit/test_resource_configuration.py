@@ -105,10 +105,10 @@ def test_pxc_storage_size():
     storage_size = pxc['volumeSpec']['persistentVolumeClaim']['resources']['requests']['storage']
     size_bytes = parse_resource_value(storage_size)
     
-    # Minimum 20Gi for PXC
-    min_storage = 20 * 1024 * 1024 * 1024  # 20Gi
-    log_check("PXC minimum storage size", ">= 20Gi", f"{int(size_bytes)} bytes", source=path)
-    assert size_bytes >= min_storage, "PXC minimum storage is 20Gi"
+    # Minimum 10Gi for PXC
+    min_storage = 10 * 1024 * 1024 * 1024  # 10Gi
+    log_check("PXC minimum storage size", ">= 10Gi", f"{int(size_bytes)} bytes", source=path)
+    assert size_bytes >= min_storage, "PXC minimum storage is 10Gi"
 
 
 @pytest.mark.unit

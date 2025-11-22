@@ -15,7 +15,7 @@ def test_pxc_image_version_pinned():
     values, path = get_values_for_test()
     
     pxc = values['pxc']
-    expected_image = "percona/percona-xtradb-cluster:8.4.6-6.1"
+    expected_image = "percona/percona-xtradb-cluster:8.4.6"
     
     # On-prem should have PXC image explicitly specified and pinned
     log_check(
