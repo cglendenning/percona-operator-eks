@@ -409,6 +409,8 @@ try:
     target_customizations = fleet.get('targetCustomizations', [])
     target_values_files = []
     target_namespace = base_namespace
+    target_chart_url = chart_url  # Default to base chart
+    target_release_name = release_name  # Default to base release name
     
     if fleet_target:
         for target in target_customizations:
@@ -416,18 +418,30 @@ try:
                 target_helm = target.get('helm', {})
                 target_values_files = target_helm.get('valuesFiles', [])
                 target_namespace = target.get('namespace') or target_helm.get('targetNamespace', base_namespace)
+                # Override chart URL if specified in target
+                if 'chart' in target_helm:
+                    target_chart_url = target_helm['chart']
+                # Override release name if specified in target
+                if 'releaseName' in target_helm:
+                    target_release_name = target_helm['releaseName']
                 break
     elif target_customizations:
         target = target_customizations[0]
         target_helm = target.get('helm', {})
         target_values_files = target_helm.get('valuesFiles', [])
         target_namespace = target.get('namespace') or target_helm.get('targetNamespace', base_namespace)
+        # Override chart URL if specified in target
+        if 'chart' in target_helm:
+            target_chart_url = target_helm['chart']
+        # Override release name if specified in target
+        if 'releaseName' in target_helm:
+            target_release_name = target_helm['releaseName']
     
     # Combine values files (base + target-specific)
     all_values_files = base_values_files + target_values_files
     
-    # Build helm template command
-    helm_cmd = ['helm', 'template', release_name, chart_url, '--insecure-skip-tls-verify']
+    # Build helm template command using target-specific chart and release name
+    helm_cmd = ['helm', 'template', target_release_name, target_chart_url, '--insecure-skip-tls-verify']
     if target_namespace:
         helm_cmd.extend(['--namespace', target_namespace])
     
@@ -461,9 +475,9 @@ try:
     with open(temp_file, 'w') as f:
         yaml.dump_all(manifest_docs, f, default_flow_style=False)
     
-    # Print results
-    print(f"CHART_URL={chart_url}")
-    print(f"RELEASE_NAME={release_name}")
+    # Print results (use target-specific values)
+    print(f"CHART_URL={target_chart_url}")
+    print(f"RELEASE_NAME={target_release_name}")
     print(f"NAMESPACE={target_namespace}")
     print(f"RENDERED_MANIFEST={temp_file}")
     print(f"FLEET_DIR={fleet_dir}")
