@@ -61,6 +61,8 @@ def test_percona_values_haproxy_enabled():
 @pytest.mark.unit
 def test_percona_values_backup_configuration():
     """Test backup configuration matches expected values."""
+    from conftest import TEST_NAMESPACE
+    
     values, path = get_values_for_test()
     
     backup = values['backup']
@@ -83,7 +85,14 @@ def test_percona_values_backup_configuration():
     # Check storage configuration
     storage = backup['storages']['minio']
     log_check("backup.storages.minio.type", "s3", f"{storage['type']}", source=path); assert storage['type'] == 's3'
-    log_check("s3.bucket", "pxc-backups", f"{storage['s3']['bucket']}", source=path); assert storage['s3']['bucket'] == 'pxc-backups'
+    
+    # Bucket name should be pxc-{namespace}
+    expected_bucket = f"pxc-{TEST_NAMESPACE}"
+    actual_bucket = storage['s3']['bucket']
+    log_check("s3.bucket", expected_bucket, f"{actual_bucket}", source=path)
+    assert actual_bucket == expected_bucket, \
+        f"S3 bucket must be named 'pxc-{{namespace}}'. Expected: {expected_bucket}, got: {actual_bucket}"
+    
     log_check("s3.region", "us-east-1", f"{storage['s3']['region']}", source=path); assert storage['s3']['region'] == 'us-east-1'
     log_check("s3.endpointUrl", "http://minio.minio.svc.cluster.local:9000", f"{storage['s3']['endpointUrl']}", source=path); assert storage['s3']['endpointUrl'] == 'http://minio.minio.svc.cluster.local:9000'
     log_check("s3.credentialsSecret", "initial-cluster-secrets", f"{storage['s3']['credentialsSecret']}", source=path); assert storage['s3']['credentialsSecret'] == 'initial-cluster-secrets'

@@ -110,6 +110,8 @@ def test_percona_values_haproxy_disabled(request):
 @pytest.mark.unit
 def test_percona_values_backup_configuration():
     """Test backup configuration matches expected values."""
+    from conftest import TEST_NAMESPACE
+    
     path = os.path.join(os.getcwd(), '..', '..', 'percona', 'templates', 'percona-values.yaml')
     with open(path, 'r', encoding='utf-8') as f:
         content = f.read()
@@ -125,7 +127,14 @@ def test_percona_values_backup_configuration():
     # Check storage configuration
     storage = backup['storages']['minio-backup']
     log_check("backup.storages.minio-backup.type", "s3", f"{storage['type']}", source=path); assert storage['type'] == 's3'
-    log_check("s3.bucket", "percona-backups", f"{storage['s3']['bucket']}", source=path); assert storage['s3']['bucket'] == 'percona-backups'
+    
+    # Bucket name should be pxc-{namespace}
+    expected_bucket = f"pxc-{TEST_NAMESPACE}"
+    actual_bucket = storage['s3']['bucket']
+    log_check("s3.bucket", expected_bucket, f"{actual_bucket}", source=path)
+    assert actual_bucket == expected_bucket, \
+        f"S3 bucket must be named 'pxc-{{namespace}}'. Expected: {expected_bucket}, got: {actual_bucket}"
+    
     log_check("s3.region", "us-east-1", f"{storage['s3']['region']}", source=path); assert storage['s3']['region'] == 'us-east-1'
     log_check("s3.endpointUrl", "http://minio.minio.svc.cluster.local:9000", f"{storage['s3']['endpointUrl']}", source=path); assert storage['s3']['endpointUrl'] == 'http://minio.minio.svc.cluster.local:9000'
     log_check("s3.forcePathStyle", "True", f"{storage['s3']['forcePathStyle']}", source=path); assert storage['s3']['forcePathStyle'] is True
