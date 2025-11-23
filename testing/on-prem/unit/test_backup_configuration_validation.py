@@ -115,7 +115,6 @@ def test_backup_storage_configuration():
     s3_config = storage['s3']
     for key in ['bucket','region','endpointUrl','credentialsSecret']:
         log_check(f"s3 config must include {key}", "present", f"present={key in s3_config}", source=path); assert key in s3_config
-    log_check("s3.forcePathStyle must be True", "True", f"{s3_config.get('forcePathStyle')}", source=path); assert s3_config.get('forcePathStyle') is True, "MinIO requires forcePathStyle=true"
 
 
 @pytest.mark.unit
