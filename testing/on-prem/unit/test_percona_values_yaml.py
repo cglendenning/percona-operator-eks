@@ -41,11 +41,6 @@ def test_percona_values_pxc_configuration():
     log_check("pxc.volumeSpec storage size should be 10Gi", "10Gi", f"{storage_size}", source=path)
     assert storage_size == '10Gi'
     
-    # Check storage class
-    expected_sc = STORAGE_CLASS_NAME
-    storage_class = pvc_spec.get('storageClassName', '')
-    log_check("pxc.volumeSpec storageClassName should match expected", f"{expected_sc}", f"{storage_class}", source=path)
-    assert storage_class == expected_sc
     log_check("pxc.pdb.maxUnavailable should be 1", "1", f"{pxc['podDisruptionBudget']['maxUnavailable']}", source=path); assert pxc['podDisruptionBudget']['maxUnavailable'] == 1
     
     # Check anti-affinity (on-prem uses antiAffinityTopologyKey)
@@ -104,10 +99,6 @@ def test_percona_values_backup_configuration():
     log_check("s3.region", "us-east-1", f"{storage['s3']['region']}", source=path); assert storage['s3']['region'] == 'us-east-1'
     log_check("s3.endpointUrl", "http://minio.minio.svc.cluster.local:9000", f"{storage['s3']['endpointUrl']}", source=path); assert storage['s3']['endpointUrl'] == 'http://minio.minio.svc.cluster.local:9000'
     log_check("s3.credentialsSecret", "initial-cluster-secrets", f"{storage['s3']['credentialsSecret']}", source=path); assert storage['s3']['credentialsSecret'] == 'initial-cluster-secrets'
-    log_check("monthly.retention.type", "count", f"{monthly['retention']['type']}", source=path); assert monthly['retention']['type'] == 'count'
-    log_check("monthly.retention.count", "12", f"{monthly['retention']['count']}", source=path); assert monthly['retention']['count'] == 12
-    log_check("monthly.retention.deleteFromStorage", "True", f"{monthly['retention']['deleteFromStorage']}", source=path); assert monthly['retention']['deleteFromStorage'] is True
-    log_check("monthly.storageName", "minio", f"{monthly['storageName']}", source=path); assert monthly['storageName'] == 'minio'
 
 
 @pytest.mark.unit

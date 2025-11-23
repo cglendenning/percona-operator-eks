@@ -2,6 +2,7 @@ import io
 import os
 import re
 import yaml
+import pytest
 from conftest import log_check
 
 
@@ -47,6 +48,7 @@ def extract_backup_yaml_from_cluster_values(ts_source: str) -> str:
     return "\n".join(captured) + "\n"
 
 
+@pytest.mark.unit
 def test_backup_configuration_defaults_match_source():
     project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
     ts_file = os.path.join(project_root, "src", "percona.ts")
