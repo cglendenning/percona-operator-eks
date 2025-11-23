@@ -147,6 +147,23 @@ def test_percona_values_backup_configuration():
 
 
 @pytest.mark.unit
+def test_pxc_expose_enabled():
+    """Test that PXC pods are exposed (required for external access and monitoring)."""
+    path = os.path.join(os.getcwd(), '..', '..', 'percona', 'templates', 'percona-values.yaml')
+    with open(path, 'r', encoding='utf-8') as f:
+        content = f.read()
+        content = content.replace('{{NODES}}', '3')
+        values = yaml.safe_load(content)
+    
+    pxc = values['pxc']
+    expose = pxc.get('expose', {})
+    enabled = expose.get('enabled', False)
+    
+    log_check("pxc.expose.enabled should be true", "True", f"{enabled}", source=path)
+    assert enabled is True, "PXC pods must be exposed for external access, monitoring, and async replication"
+
+
+@pytest.mark.unit
 def test_percona_values_template_has_nodes_placeholder():
     """Test that template contains NODES placeholder for substitution."""
     path = os.path.join(os.getcwd(), '..', '..', 'percona', 'templates', 'percona-values.yaml')

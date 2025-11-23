@@ -59,6 +59,19 @@ def test_percona_values_haproxy_enabled():
 
 
 @pytest.mark.unit
+def test_pxc_expose_enabled():
+    """Test that PXC pods are exposed (required for external access and monitoring)."""
+    values, path = get_values_for_test()
+    
+    pxc = values['pxc']
+    expose = pxc.get('expose', {})
+    enabled = expose.get('enabled', False)
+    
+    log_check("pxc.expose.enabled should be true", "True", f"{enabled}", source=path)
+    assert enabled is True, "PXC pods must be exposed for external access, monitoring, and async replication"
+
+
+@pytest.mark.unit
 def test_percona_values_backup_configuration():
     """Test backup configuration matches expected values."""
     from conftest import TEST_NAMESPACE
