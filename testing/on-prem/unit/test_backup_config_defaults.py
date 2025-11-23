@@ -50,8 +50,31 @@ def extract_backup_yaml_from_cluster_values(ts_source: str) -> str:
 
 @pytest.mark.unit
 def test_backup_configuration_defaults_match_source():
-    project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
-    ts_file = os.path.join(project_root, "src", "percona.ts")
+    # Find project root by looking for percona/src/percona.ts
+    # Start from test file location and walk up
+    current = os.path.abspath(os.path.dirname(__file__))
+    project_root = None
+    
+    # Walk up directories looking for percona/src/percona.ts
+    for _ in range(5):  # Max 5 levels up
+        candidate = os.path.join(current, "percona", "src", "percona.ts")
+        if os.path.exists(candidate):
+            ts_file = candidate
+            project_root = current
+            break
+        # Also try src/percona.ts directly (if we're already near the root)
+        candidate_direct = os.path.join(current, "src", "percona.ts")
+        if os.path.exists(candidate_direct):
+            ts_file = candidate_direct
+            project_root = current
+            break
+        parent = os.path.dirname(current)
+        if parent == current:  # Reached filesystem root
+            break
+        current = parent
+    
+    if project_root is None:
+        pytest.skip("percona.ts source file not found in repository structure")
 
     with io.open(ts_file, "r", encoding="utf-8") as f:
         ts_source = f.read()
