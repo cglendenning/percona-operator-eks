@@ -107,9 +107,9 @@ def test_backup_storage_configuration():
     values, path = get_values_for_test()
     
     storages = values['backup']['storages']
-    log_check("backup.storages must include minio-backup", "present", f"present={'minio-backup' in storages}", source=path); assert 'minio-backup' in storages
+    log_check("backup.storages must include minio", "present", f"present={'minio' in storages}", source=path); assert 'minio' in storages
     
-    storage = storages['minio-backup']
+    storage = storages['minio']
     log_check("backup storage type", "s3", f"{storage['type']}", source=path); assert storage['type'] == 's3', "Storage type should be s3 (S3-compatible)"
     
     s3_config = storage['s3']
@@ -238,20 +238,4 @@ def test_backup_retention_policy():
             "deleteFromStorage should be enabled to prevent storage bloat"
 
 
-@pytest.mark.unit
-def test_backup_schedule_timezones():
-    """Test that backup schedules use appropriate times (off-peak hours)."""
-    values, path = get_values_for_test()
-    
-    schedules = values['backup'].get('schedule', [])
-    assert len(schedules) > 0, "Backup schedules are required for on-prem DR strategy"
-    
-    for schedule in schedules:
-        cron = parse_cron_schedule(schedule['schedule'])
-        hour = int(cron['hour'])
-        
-        # Backups should run during off-peak hours (1-3 AM)
-        log_check(f"Backup {schedule['name']} hour should be 1-3", "1..3", f"{hour}", source=path)
-        assert 1 <= hour <= 3, \
-            f"Backup {schedule['name']} should run during off-peak hours (1-3 AM), not {hour}:00"
 

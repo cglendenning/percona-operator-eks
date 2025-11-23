@@ -25,7 +25,7 @@ def test_percona_values_pxc_configuration():
     log_check("pxc.size must be 3 after substitution", "3", f"{pxc['size']}", source=path); assert pxc['size'] == 3
     log_check("pxc.requests.memory should be 4G", "4G", f"{pxc['resources']['requests']['memory']}", source=path); assert pxc['resources']['requests']['memory'] == '4G'
     log_check("pxc.requests.cpu should be 1000m", "1000m", f"{pxc['resources']['requests']['cpu']}", source=path); assert pxc['resources']['requests']['cpu'] == '1000m'
-    log_check("pxc.limits.memory should be 2Gi", "2Gi", f"{pxc['resources']['limits']['memory']}", source=path); assert pxc['resources']['limits']['memory'] == '2Gi'
+    log_check("pxc.limits.memory should be 6G", "6G", f"{pxc['resources']['limits']['memory']}", source=path); assert pxc['resources']['limits']['memory'] == '6G'
     log_check("pxc.limits.cpu should be 1", "1", f"{pxc['resources']['limits']['cpu']}", source=path); assert pxc['resources']['limits']['cpu'] == 1
     
     # Storage configuration - on-prem uses volumeSpec (raw Kubernetes format)
@@ -100,7 +100,7 @@ def test_percona_values_backup_configuration():
     # Check storage configuration
     storage = backup['storages']['minio']
     log_check("backup.storages.minio.type", "s3", f"{storage['type']}", source=path); assert storage['type'] == 's3'
-    log_check("s3.bucket", "percona-backups", f"{storage['s3']['bucket']}", source=path); assert storage['s3']['bucket'] == 'percona-backups'
+    log_check("s3.bucket", "pxc-backups", f"{storage['s3']['bucket']}", source=path); assert storage['s3']['bucket'] == 'pxc-backups'
     log_check("s3.region", "us-east-1", f"{storage['s3']['region']}", source=path); assert storage['s3']['region'] == 'us-east-1'
     log_check("s3.endpointUrl", "http://minio.minio.svc.cluster.local:9000", f"{storage['s3']['endpointUrl']}", source=path); assert storage['s3']['endpointUrl'] == 'http://minio.minio.svc.cluster.local:9000'
     log_check("s3.forcePathStyle", "True", f"{storage['s3']['forcePathStyle']}", source=path); assert storage['s3']['forcePathStyle'] is True

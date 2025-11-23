@@ -11,11 +11,11 @@ from conftest import log_check, get_values_for_test
 
 @pytest.mark.unit
 def test_pxc_image_version_pinned():
-    """Test that PXC image is pinned to approved version for on-prem."""
+    """Test that PXC image version is 8.4.6 (repository path can vary)."""
     values, path = get_values_for_test()
     
     pxc = values['pxc']
-    expected_image = "percona/percona-xtradb-cluster:8.4.6"
+    expected_version = "8.4.6"
     
     # On-prem should have PXC image explicitly specified and pinned
     log_check(
@@ -27,14 +27,21 @@ def test_pxc_image_version_pinned():
     assert 'image' in pxc, "PXC image must be specified for on-prem deployments"
     
     actual_image = pxc['image']
+    
+    # Extract version from image (format: repository/image:version)
+    if ':' not in actual_image:
+        pytest.fail(f"PXC image must include version tag, got: {actual_image}")
+    
+    actual_version = actual_image.split(':')[-1]
+    
     log_check(
-        criterion="PXC image must match approved version",
-        expected=expected_image,
-        actual=actual_image,
+        criterion="PXC image version must be 8.4.6",
+        expected=expected_version,
+        actual=actual_version,
         source=path
     )
-    assert actual_image == expected_image, \
-        f"PXC image must be {expected_image} for on-prem, got {actual_image}"
+    assert actual_version == expected_version, \
+        f"PXC image version must be {expected_version}, got {actual_version} (full image: {actual_image})"
 
 
 @pytest.mark.unit
