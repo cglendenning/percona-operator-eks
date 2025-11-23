@@ -21,44 +21,37 @@ def test_pxc_pod_disruption_budget_exists():
 
 
 @pytest.mark.unit
-def test_pxc_pod_disruption_budget_max_unavailable():
-    """Test that PXC PDB has appropriate maxUnavailable setting."""
+def test_pdb_allows_rolling_updates_and_maintains_quorum():
+    """Test that PDB settings allow safe rolling updates while maintaining quorum."""
     values, path = get_values_for_test()
     
-    pdb = values['pxc']['podDisruptionBudget']
+    node_count = values['pxc']['size']
+    pxc_pdb = values['pxc']['podDisruptionBudget']
+    max_unavailable = pxc_pdb.get('maxUnavailable', 0)
     
-    # For a 3-node cluster, maxUnavailable should be 1 to maintain quorum
-    # This ensures at least 2 nodes remain available during maintenance
-    max_unavailable = pdb.get('maxUnavailable', 0)
-    
-    # Should be 1 for 3-node cluster (allows 1 pod to be disrupted)
-    # For larger clusters, this might be configurable, but 1 is safe
+    # For a 3-node cluster, maxUnavailable=1 allows rolling updates
+    # while ensuring at least 2 nodes remain available (maintaining quorum)
     log_check(
-        criterion="PXC PDB maxUnavailable must be 1 for quorum on 3-node cluster",
+        criterion="PXC PDB maxUnavailable must be 1 for 3-node cluster",
         expected="1",
         actual=f"pxc pdb maxUnavailable = {max_unavailable}",
         source=path,
     )
     assert max_unavailable == 1, \
-        "PXC PDB maxUnavailable should be 1 to maintain quorum during maintenance"
-
-
-@pytest.mark.unit
-def test_pdb_allows_rolling_updates():
-    """Test that PDB settings allow safe rolling updates."""
-    values, path = get_values_for_test()
+        "PXC PDB maxUnavailable should be 1 to maintain quorum and allow rolling updates"
     
-    # For 3-node cluster with maxUnavailable=1
-    # This allows rolling updates: update 1 pod at a time while 2 remain available
-    pxc_pdb = values['pxc']['podDisruptionBudget']
+    # Verify quorum is maintained: (n/2) + 1 nodes must be available
+    available_during_disruption = node_count - max_unavailable
+    quorum = (node_count // 2) + 1
     
     log_check(
-        criterion="Rolling updates: PXC PDB maxUnavailable must be 1",
-        expected="1",
-        actual=f"pxc pdb maxUnavailable = {pxc_pdb.get('maxUnavailable')}",
+        criterion=f"For {node_count}-node cluster, available during disruption must be >= quorum {quorum}",
+        expected=f">= {quorum}",
+        actual=f"available_during_disruption = {available_during_disruption}",
         source=path,
     )
-    assert pxc_pdb.get('maxUnavailable') == 1
+    assert available_during_disruption >= quorum, \
+        f"For {node_count}-node cluster, maxUnavailable={max_unavailable} must maintain quorum of {quorum}"
     
     # Check HAProxy PDB (on-prem uses HAProxy)
     if values.get('haproxy', {}).get('enabled'):
@@ -66,39 +59,11 @@ def test_pdb_allows_rolling_updates():
         if haproxy_pdb:
             max_unavailable = haproxy_pdb.get('maxUnavailable', 0)
             log_check(
-                criterion="Rolling updates: HAProxy PDB maxUnavailable should be configured",
+                criterion="HAProxy PDB maxUnavailable should be configured",
                 expected=">= 0",
                 actual=f"haproxy pdb maxUnavailable = {max_unavailable}",
                 source=path,
             )
             assert max_unavailable >= 0
-    
-    # This configuration allows safe rolling updates while maintaining service availability
 
 
-@pytest.mark.unit
-def test_pdb_maintains_quorum():
-    """Test that PDB settings maintain quorum for PXC cluster."""
-    values, path = get_values_for_test()
-    
-    node_count = values['pxc']['size']
-    pdb = values['pxc']['podDisruptionBudget']
-    max_unavailable = pdb.get('maxUnavailable', 0)
-    
-    # For quorum: (n/2) + 1 nodes must be available
-    # With maxUnavailable=1, for 3-node: 2 available (quorum OK)
-    # For 5-node: 4 available (quorum OK)
-    # For 7-node: 6 available (quorum OK)
-    available_during_disruption = node_count - max_unavailable
-    
-    # Quorum = floor(n/2) + 1
-    quorum = (node_count // 2) + 1
-    
-    log_check(
-        criterion=f"For {node_count}-node cluster, available during disruption must be >= quorum {quorum}",
-        expected=f">= {quorum}",
-        actual=f"available_during_disruption = {available_during_disruption} (maxUnavailable={max_unavailable})",
-        source=path,
-    )
-    assert available_during_disruption >= quorum, \
-        f"For {node_count}-node cluster, maxUnavailable={max_unavailable} must maintain quorum of {quorum}"

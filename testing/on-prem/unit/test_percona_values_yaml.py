@@ -28,20 +28,8 @@ def test_percona_values_pxc_configuration():
     log_check("pxc.limits.memory should be 6G", "6G", f"{pxc['resources']['limits']['memory']}", source=path); assert pxc['resources']['limits']['memory'] == '6G'
     log_check("pxc.limits.cpu should be 2000m", "2000m", f"{pxc['resources']['limits']['cpu']}", source=path); assert pxc['resources']['limits']['cpu'] == '2000m'
     
-    # Storage configuration - on-prem uses volumeSpec (raw Kubernetes format)
-    pvc_spec = pxc['volumeSpec']['persistentVolumeClaim']
-    
-    # Check access modes (critical for data integrity)
-    access_modes = pvc_spec.get('accessModes', [])
-    log_check("pxc.volumeSpec accessModes should include ReadWriteOnce", "ReadWriteOnce in list", f"{access_modes}", source=path)
-    assert 'ReadWriteOnce' in access_modes, "PXC must use ReadWriteOnce access mode to prevent data corruption"
-    
-    # Check storage size
-    storage_size = pvc_spec['resources']['requests']['storage']
-    log_check("pxc.volumeSpec storage size should be 10Gi", "10Gi", f"{storage_size}", source=path)
-    assert storage_size == '10Gi'
-    
-    log_check("pxc.pdb.maxUnavailable should be 1", "1", f"{pxc['podDisruptionBudget']['maxUnavailable']}", source=path); assert pxc['podDisruptionBudget']['maxUnavailable'] == 1
+    # Storage configuration - verified in test_resource_configuration.py
+    # PDB configuration - verified in test_pod_disruption_budget.py
     
     # Check anti-affinity (on-prem uses antiAffinityTopologyKey)
     affinity = pxc['affinity']

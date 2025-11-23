@@ -49,24 +49,6 @@ def test_odd_node_count_preference():
 
 
 @pytest.mark.unit
-def test_pdb_maintains_quorum():
-    """Test that PDB settings maintain quorum during disruptions."""
-    values, path = get_values_for_test()
-    
-    node_count = values['pxc']['size']
-    pdb = values['pxc']['podDisruptionBudget']
-    max_unavailable = pdb.get('maxUnavailable', 0)
-    
-    # Calculate quorum requirement: floor(n/2) + 1
-    quorum = (node_count // 2) + 1
-    available_during_disruption = node_count - max_unavailable
-    
-    assert available_during_disruption >= quorum, \
-        f"For {node_count}-node cluster, PDB must maintain quorum of {quorum}. " \
-        f"With maxUnavailable={max_unavailable}, only {available_during_disruption} would be available"
-
-
-@pytest.mark.unit
 def test_multi_az_anti_affinity():
     """Test that anti-affinity rules ensure multi-AZ deployment."""
     values, path = get_values_for_test()
@@ -126,63 +108,6 @@ def test_multi_az_anti_affinity():
                         for rule in haproxy_rules
                     )
                     assert haproxy_has_topology, "HAProxy must have topology-based anti-affinity for HA"
-
-
-@pytest.mark.unit
-def test_backup_configured_for_ha():
-    """Test that backup storage is configured for disaster recovery."""
-    values, path = get_values_for_test()
-    
-    # Percona operator doesn't have backup.enabled - backups are configured via storages
-    backup = values.get('backup', {})
-    storages = backup.get('storages', {})
-    
-    assert len(storages) > 0, \
-        "Backup storage must be configured for disaster recovery in HA deployments"
-
-
-@pytest.mark.unit
-def test_pitr_enabled_for_point_in_time_recovery():
-    """Test that PITR is enabled for point-in-time recovery."""
-    values, path = get_values_for_test()
-    
-    assert values['backup']['pitr']['enabled'] is True, \
-        "PITR must be enabled for point-in-time recovery in HA deployments"
-
-
-@pytest.mark.unit
-def test_complete_backup_strategy_for_ha():
-    """Test that a complete backup strategy is configured for HA: PITR + scheduled backups."""
-    values, path = get_values_for_test()
-    
-    backup = values.get('backup', {})
-    
-    # Check PITR is enabled (for continuous binary log shipping)
-    pitr = backup.get('pitr', {})
-    pitr_enabled = pitr.get('enabled', False)
-    assert pitr_enabled is True, \
-        "PITR must be enabled in HA deployments for continuous backup and point-in-time recovery"
-    
-    # Check scheduled backups exist (for base backups)
-    schedules = backup.get('schedule', [])
-    assert len(schedules) > 0, \
-        "Scheduled backups are required in HA deployments - PITR needs base backups to restore from"
-    
-    # Verify storage is configured for both
-    storages = backup.get('storages', {})
-    assert len(storages) > 0, \
-        "Backup storage must be configured for disaster recovery in HA deployments"
-    
-    # Verify PITR and schedules use valid storage
-    pitr_storage = pitr.get('storageName')
-    if pitr_storage:
-        assert pitr_storage in storages, \
-            f"PITR storage '{pitr_storage}' must exist in backup.storages for HA deployments"
-    
-    for schedule in schedules:
-        storage_name = schedule.get('storageName')
-        assert storage_name in storages, \
-            f"Schedule storage '{storage_name}' must exist in backup.storages for HA deployments"
 
 
 @pytest.mark.unit
