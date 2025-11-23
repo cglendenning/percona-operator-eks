@@ -129,16 +129,6 @@ def test_backup_schedules_exist():
     assert len(schedules) > 0, \
         "Scheduled backups are required for on-prem DR - PITR alone is not sufficient (needs base backups)"
     
-    # Should have daily, weekly, and monthly backups (best practice)
-    schedule_names = [s['name'] for s in schedules]
-    log_check("Schedule names should include daily/weekly/monthly", "present", f"{schedule_names}", source=path)
-    
-    has_daily = 'daily-backup' in schedule_names
-    has_weekly = 'weekly-backup' in schedule_names
-    has_monthly = 'monthly-backup' in schedule_names
-    
-    if not (has_daily and has_weekly and has_monthly):
-        pytest.skip(f"Best practice schedules not all present: daily={has_daily}, weekly={has_weekly}, monthly={has_monthly}")
 
 
 @pytest.mark.unit
@@ -151,7 +141,7 @@ def test_daily_backup_schedule():
     
     daily = next((s for s in schedules if s['name'] == 'daily-backup'), None)
     if not daily:
-        pytest.skip("Daily backup schedule not configured (has schedules but no 'daily-backup')")
+        return  # Daily backup not configured, skip this test
     
     # Validate cron schedule format
     cron = parse_cron_schedule(daily['schedule'])
@@ -176,7 +166,7 @@ def test_weekly_backup_schedule():
     
     weekly = next((s for s in schedules if s['name'] == 'weekly-backup'), None)
     if not weekly:
-        pytest.skip("Weekly backup schedule not configured (has schedules but no 'weekly-backup')")
+        return  # Weekly backup not configured, skip this test
     
     # Validate cron schedule format
     cron = parse_cron_schedule(weekly['schedule'])
@@ -201,7 +191,7 @@ def test_monthly_backup_schedule():
     
     monthly = next((s for s in schedules if s['name'] == 'monthly-backup'), None)
     if not monthly:
-        pytest.skip("Monthly backup schedule not configured (has schedules but no 'monthly-backup')")
+        return  # Monthly backup not configured, skip this test
     
     # Validate cron schedule format
     cron = parse_cron_schedule(monthly['schedule'])

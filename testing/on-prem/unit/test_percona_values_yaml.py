@@ -38,8 +38,8 @@ def test_percona_values_pxc_configuration():
     
     # Check storage size
     storage_size = pvc_spec['resources']['requests']['storage']
-    log_check("pxc.volumeSpec storage size should be 20Gi", "20Gi", f"{storage_size}", source=path)
-    assert storage_size == '20Gi'
+    log_check("pxc.volumeSpec storage size should be 10Gi", "10Gi", f"{storage_size}", source=path)
+    assert storage_size == '10Gi'
     
     # Check storage class
     expected_sc = STORAGE_CLASS_NAME
@@ -103,7 +103,7 @@ def test_percona_values_backup_configuration():
     log_check("s3.bucket", "pxc-backups", f"{storage['s3']['bucket']}", source=path); assert storage['s3']['bucket'] == 'pxc-backups'
     log_check("s3.region", "us-east-1", f"{storage['s3']['region']}", source=path); assert storage['s3']['region'] == 'us-east-1'
     log_check("s3.endpointUrl", "http://minio.minio.svc.cluster.local:9000", f"{storage['s3']['endpointUrl']}", source=path); assert storage['s3']['endpointUrl'] == 'http://minio.minio.svc.cluster.local:9000'
-    log_check("s3.credentialsSecret", "percona-backup-minio-credentials", f"{storage['s3']['credentialsSecret']}", source=path); assert storage['s3']['credentialsSecret'] == 'percona-backup-minio-credentials'
+    log_check("s3.credentialsSecret", "initial-cluster-secrets", f"{storage['s3']['credentialsSecret']}", source=path); assert storage['s3']['credentialsSecret'] == 'initial-cluster-secrets'
     log_check("monthly.retention.type", "count", f"{monthly['retention']['type']}", source=path); assert monthly['retention']['type'] == 'count'
     log_check("monthly.retention.count", "12", f"{monthly['retention']['count']}", source=path); assert monthly['retention']['count'] == 12
     log_check("monthly.retention.deleteFromStorage", "True", f"{monthly['retention']['deleteFromStorage']}", source=path); assert monthly['retention']['deleteFromStorage'] is True

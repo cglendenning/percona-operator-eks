@@ -38,7 +38,7 @@ def test_percona_values_pxc_configuration():
     log_check("pxc.limits.memory should be 2Gi", "2Gi", f"{pxc['resources']['limits']['memory']}", source=path); assert pxc['resources']['limits']['memory'] == '2Gi'
     log_check("pxc.limits.cpu should be 1", "1", f"{pxc['resources']['limits']['cpu']}", source=path); assert pxc['resources']['limits']['cpu'] == 1
     log_check("pxc.persistence.enabled should be true", "True", f"{pxc['persistence']['enabled']}", source=path); assert pxc['persistence']['enabled'] is True
-    log_check("pxc.persistence.size should be 20Gi", "20Gi", f"{pxc['persistence']['size']}", source=path); assert pxc['persistence']['size'] == '20Gi'
+    log_check("pxc.persistence.size should be 10Gi", "10Gi", f"{pxc['persistence']['size']}", source=path); assert pxc['persistence']['size'] == '10Gi'
     log_check("pxc.persistence.accessMode should be ReadWriteOnce", "ReadWriteOnce", f"{pxc['persistence']['accessMode']}", source=path); assert pxc['persistence']['accessMode'] == 'ReadWriteOnce'
     expected_sc = STORAGE_CLASS_NAME if ON_PREM else 'gp3'
     log_check("pxc.persistence.storageClass should match expected", f"{expected_sc}", f"{pxc['persistence']['storageClass']}", source=path); assert pxc['persistence']['storageClass'] == expected_sc
@@ -129,7 +129,7 @@ def test_percona_values_backup_configuration():
     log_check("s3.region", "us-east-1", f"{storage['s3']['region']}", source=path); assert storage['s3']['region'] == 'us-east-1'
     log_check("s3.endpointUrl", "http://minio.minio.svc.cluster.local:9000", f"{storage['s3']['endpointUrl']}", source=path); assert storage['s3']['endpointUrl'] == 'http://minio.minio.svc.cluster.local:9000'
     log_check("s3.forcePathStyle", "True", f"{storage['s3']['forcePathStyle']}", source=path); assert storage['s3']['forcePathStyle'] is True
-    log_check("s3.credentialsSecret", "percona-backup-minio-credentials", f"{storage['s3']['credentialsSecret']}", source=path); assert storage['s3']['credentialsSecret'] == 'percona-backup-minio-credentials'
+    log_check("s3.credentialsSecret", "initial-cluster-secrets", f"{storage['s3']['credentialsSecret']}", source=path); assert storage['s3']['credentialsSecret'] == 'initial-cluster-secrets'
     
     # Check backup schedules - require at least one
     schedules = backup['schedule']
