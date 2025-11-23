@@ -16,7 +16,7 @@ set -euo pipefail
 
 # Default values
 NAMESPACE="${NAMESPACE:-percona}"
-CLUSTER_NAME="${CLUSTER_NAME:-pxc-cluster}"
+CLUSTER_NAME=""
 INTERVAL="${INTERVAL:-5}"
 KUBECONFIG="${KUBECONFIG:-}"
 
@@ -39,26 +39,27 @@ Monitor a Percona XtraDB Cluster in real-time
 
 OPTIONS:
     -n, --namespace NAME        Kubernetes namespace (default: $NAMESPACE)
-    -c, --cluster NAME          PXC cluster name (default: $CLUSTER_NAME)
     -i, --interval SECONDS      Refresh interval in seconds (default: $INTERVAL)
     --kubeconfig PATH           Path to kubeconfig file
     -h, --help                  Show this help message
 
 ENVIRONMENT:
     NAMESPACE                   Default namespace
-    CLUSTER_NAME                Default cluster name
     INTERVAL                    Default refresh interval
     KUBECONFIG                  Path to kubeconfig
 
 EXAMPLES:
-    # Monitor default cluster
+    # Monitor default namespace
     $0
 
-    # Monitor specific cluster with 2-second refresh
-    $0 -n pxc-prod -c my-cluster -i 2
+    # Monitor specific namespace with 2-second refresh
+    $0 -n pxc-prod -i 2
 
     # Monitor with custom kubeconfig
     $0 --kubeconfig ~/.kube/prod-config
+
+NOTE:
+    The script will automatically discover the PXC cluster in the specified namespace.
 EOF
 }
 
@@ -67,10 +68,6 @@ while [[ $# -gt 0 ]]; do
     case $1 in
         -n|--namespace)
             NAMESPACE="$2"
-            shift 2
-            ;;
-        -c|--cluster)
-            CLUSTER_NAME="$2"
             shift 2
             ;;
         -i|--interval)
@@ -111,9 +108,21 @@ clear_screen() {
     fi
 }
 
+# Discover PXC cluster name in namespace
+discover_cluster_name() {
+    # Get any PXC pod and extract the cluster name from its labels
+    local cluster=$(kctl get pods -n "$NAMESPACE" -l app.kubernetes.io/name=percona-xtradb-cluster,app.kubernetes.io/component=pxc -o jsonpath='{.items[0].metadata.labels.app\.kubernetes\.io/instance}' 2>/dev/null || echo "")
+    echo "$cluster"
+}
+
 # Get PXC pods
 get_pxc_pods() {
-    kctl get pods -n "$NAMESPACE" -l app.kubernetes.io/name=percona-xtradb-cluster,app.kubernetes.io/instance="$CLUSTER_NAME",app.kubernetes.io/component=pxc -o jsonpath='{.items[*].metadata.name}' 2>/dev/null || echo ""
+    if [ -z "$CLUSTER_NAME" ]; then
+        # Get all PXC pods in namespace
+        kctl get pods -n "$NAMESPACE" -l app.kubernetes.io/name=percona-xtradb-cluster,app.kubernetes.io/component=pxc -o jsonpath='{.items[*].metadata.name}' 2>/dev/null || echo ""
+    else
+        kctl get pods -n "$NAMESPACE" -l app.kubernetes.io/name=percona-xtradb-cluster,app.kubernetes.io/instance="$CLUSTER_NAME",app.kubernetes.io/component=pxc -o jsonpath='{.items[*].metadata.name}' 2>/dev/null || echo ""
+    fi
 }
 
 # Get root password from secret
@@ -226,16 +235,23 @@ calculate_rate() {
 
 # Main monitoring loop
 monitor_cluster() {
-    # Find secret name
-    local secret_name="${CLUSTER_NAME}-secrets"
-    
     # Check if cluster exists
     local pods=$(get_pxc_pods)
     if [ -z "$pods" ]; then
-        echo -e "${RED}Error: No PXC pods found for cluster '$CLUSTER_NAME' in namespace '$NAMESPACE'${NC}"
-        echo "Please check cluster name and namespace."
+        echo -e "${RED}Error: No PXC pods found in namespace '$NAMESPACE'${NC}"
+        echo "Please check namespace."
         exit 1
     fi
+    
+    # Discover cluster name
+    CLUSTER_NAME=$(discover_cluster_name)
+    if [ -z "$CLUSTER_NAME" ]; then
+        echo -e "${RED}Error: Could not determine PXC cluster name${NC}"
+        exit 1
+    fi
+    
+    # Find secret name
+    local secret_name="${CLUSTER_NAME}-secrets"
     
     # Get root password
     local root_password=$(get_root_password "$secret_name")
