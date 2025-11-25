@@ -2,13 +2,13 @@
 
 ## What Was Added
 
-### 1. "Unknown Scenario" Section ✅
+### 1. "Unknown Scenario" Section
 - **Location**: Top of page, below environment switcher
 - **Purpose**: For users who know the database is down but don't know which specific scenario
-- **Design**: Red border, standout styling with ⚠️ icon
-- **Functionality**: Expands to show diagnostic script with copy button
+- **Design**: Red border, standout styling with high-contrast typography
+- **Functionality**: Expands to show diagnostic script with inline copy controls
 
-### 2. Diagnostic Script ✅
+### 2. Diagnostic Script
 - **File**: `static/detect-scenario.py`
 - **Purpose**: Automatically detect which DR scenario is occurring
 - **Features**:
@@ -22,13 +22,13 @@
 
 - **Output**: Lists matching scenarios with confidence level and links to recovery docs
 
-### 3. Copy-to-Clipboard Functionality ✅
-- **Location**: Diagnostic script code block
-- **Button**: "📋 Copy" button in code block header
-- **Feedback**: Changes to "✓ Copied!" for 2 seconds
+### 3. Copy Interactions
+- **Location**: Diagnostic script and every rendered code block
+- **Control**: GitHub-style icon that appears on hover/focus, plus click-to-copy on the entire code area
+- **Feedback**: Icon highlights for ~2 seconds after copying
 - **Fallback**: Alert if clipboard API fails
 
-### 4. Complete Recovery Process Documentation ✅
+### 4. Complete Recovery Process Documentation
 Created **8 new recovery process markdown files**:
 
 #### New Files:
@@ -55,10 +55,10 @@ Created **8 new recovery process markdown files**:
 1. **Open Dashboard**: `http://localhost:8080`
 
 2. **Expand Unknown Scenario Section**: 
-   - Click the ▶️ arrow on the red-bordered card at top
+   - Click the disclosure arrow on the red-bordered card at top
 
 3. **Copy Diagnostic Script**:
-   - Click "📋 Copy" button
+   - Click anywhere in the code block (or the copy icon)
    - Paste into terminal
    - Run the script
 
@@ -70,7 +70,7 @@ Created **8 new recovery process markdown files**:
 ### Diagnostic Script Output Example
 
 ```
-🔍 Running diagnostics...
+Running diagnostics...
 
 Current State:
   Pods: 2/3 running, 1 in CrashLoopBackOff
@@ -79,11 +79,11 @@ Current State:
   Operator: Running
   Service Endpoints: 2
 
-⚠ DETECTED SCENARIOS:
+Detected Scenarios:
 
 1. [HIGH] Single MySQL pod failure (container crash / OOM)
-   📖 Recovery Process: http://localhost:8080/#scenario-single-mysql-pod-failure
-   📄 File: recovery_processes/eks/single-mysql-pod-failure.md
+   Recovery Process: http://localhost:8080/#scenario-single-mysql-pod-failure
+   File: recovery_processes/eks/single-mysql-pod-failure.md
 
 Next Steps:
 1. Open the Database Emergency Kit: http://localhost:8080
@@ -98,18 +98,18 @@ Next Steps:
 
 #### HTML (`static/index.html`)
 - Added `.unknown-scenario-section` div with special styling
-- Implemented code block with copy button
+- Implemented code block with inline copy affordance
 - Added diagnostic info and "What it does" section
 
 #### CSS (`static/styles.css`)
 - `.unknown-scenario` - Red border, gradient background
 - `.code-block` - Code display with header
-- `.copy-btn` - Styled button with hover/active states
+- `.copy-icon` - Minimal GitHub-style copy control
 - `.diagnostic-info` - Warning-styled info box
 - `.diagnostic-note` - Blue info box for script details
 
 #### JavaScript (`static/app.js`)
-- `copyToClipboard()` - Copy script to clipboard
+- `copyCodeText()` + `enhanceCodeBlocks()` - Copy interactions for all code blocks
 - Updated `toggleScenario()` - Handle 'unknown' special case
 - Clipboard API with fallback alert
 

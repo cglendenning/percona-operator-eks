@@ -5,30 +5,99 @@ let allScenarios = [];
 document.addEventListener('DOMContentLoaded', () => {
     loadScenarios(currentEnv);
     setupEventListeners();
+    enhanceCodeBlocks();
 });
 
-// Copy to clipboard function
-function copyToClipboard(elementId) {
-    const element = document.getElementById(elementId);
-    const text = element.textContent;
-    
-    navigator.clipboard.writeText(text).then(() => {
-        // Find the copy button
-        const btn = event.target.closest('.copy-btn');
-        const originalText = btn.textContent;
-        
-        // Show feedback
-        btn.textContent = 'Copied!';
-        btn.classList.add('copied');
-        
-        // Reset after 2 seconds
-        setTimeout(() => {
-            btn.textContent = originalText;
-            btn.classList.remove('copied');
-        }, 2000);
-    }).catch(err => {
-        console.error('Failed to copy:', err);
-        alert('Failed to copy to clipboard. Please copy manually.');
+function copyCodeText(codeElement, triggerEl) {
+    if (!codeElement) return;
+    const text = codeElement.innerText;
+    if (!text) return;
+
+    const handleSuccess = () => {
+        if (triggerEl) {
+            triggerEl.classList.add('copied');
+            clearTimeout(triggerEl._copyTimeout);
+            triggerEl._copyTimeout = setTimeout(() => {
+                triggerEl.classList.remove('copied');
+            }, 1500);
+        }
+    };
+
+    const clipboardCopy = navigator.clipboard?.writeText(text);
+    if (clipboardCopy) {
+        clipboardCopy.then(handleSuccess).catch((err) => {
+            console.error('Clipboard copy failed, falling back to execCommand:', err);
+            fallbackCopy();
+        });
+    } else {
+        fallbackCopy();
+    }
+
+    function fallbackCopy() {
+        const selection = window.getSelection();
+        const range = document.createRange();
+        range.selectNodeContents(codeElement);
+        selection.removeAllRanges();
+        selection.addRange(range);
+
+        try {
+            const successful = document.execCommand('copy');
+            if (successful) {
+                handleSuccess();
+            } else {
+                alert('Failed to copy. Please copy manually.');
+            }
+        } catch (err) {
+            console.error('Fallback copy failed:', err);
+            alert('Failed to copy. Please copy manually.');
+        } finally {
+            selection.removeAllRanges();
+        }
+    }
+}
+
+function enhanceCodeBlocks(context = document) {
+    const codeBlocks = context.querySelectorAll('pre code');
+    codeBlocks.forEach((codeBlock) => {
+        if (codeBlock.dataset.copyEnhanced === 'true') return;
+        codeBlock.dataset.copyEnhanced = 'true';
+
+        const pre = codeBlock.parentElement;
+        if (!pre) return;
+
+        pre.classList.add('code-copy-container');
+        if (!pre.getAttribute('tabindex')) {
+            pre.setAttribute('tabindex', '0');
+        }
+
+        let copyIcon = pre.querySelector('.copy-icon');
+        if (!copyIcon) {
+            copyIcon = document.createElement('button');
+            copyIcon.type = 'button';
+            copyIcon.className = 'copy-icon';
+            copyIcon.setAttribute('aria-label', 'Copy code');
+            copyIcon.innerHTML = `
+                <svg viewBox="0 0 16 16" role="img" aria-hidden="true">
+                    <path d="M4 1.75A1.75 1.75 0 0 1 5.75 0h7.5A1.75 1.75 0 0 1 15 1.75v7.5A1.75 1.75 0 0 1 13.25 11h-7.5A1.75 1.75 0 0 1 4 9.25ZM5.75 1.5a.25.25 0 0 0-.25.25v7.5c0 .138.112.25.25.25h7.5a.25.25 0 0 0 .25-.25v-7.5a.25.25 0 0 0-.25-.25Z"></path>
+                    <path d="M1.75 5A1.75 1.75 0 0 0 0 6.75v7.5C0 15.216.784 16 1.75 16h7.5A1.75 1.75 0 0 0 11 14.25V13H9.5v1.25a.25.25 0 0 1-.25.25h-7.5a.25.25 0 0 1-.25-.25v-7.5a.25.25 0 0 1 .25-.25H3V5Z"></path>
+                </svg>
+            `;
+            pre.appendChild(copyIcon);
+        }
+
+        copyIcon.addEventListener('click', (event) => {
+            event.preventDefault();
+            event.stopPropagation();
+            copyCodeText(codeBlock, copyIcon);
+        });
+
+        pre.addEventListener('click', () => copyCodeText(codeBlock, copyIcon));
+        pre.addEventListener('keydown', (event) => {
+            if (event.key === 'Enter' || event.key === ' ') {
+                event.preventDefault();
+                copyCodeText(codeBlock, copyIcon);
+            }
+        });
     });
 }
 
@@ -239,6 +308,7 @@ async function loadRecoveryProcess(index) {
         if (response.ok) {
             const markdown = await response.text();
             processContent.innerHTML = marked.parse(markdown);
+            enhanceCodeBlocks(processContent);
         } else {
             processContent.innerHTML = `
                 <div style="padding: 2rem; text-align: center;">
