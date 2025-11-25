@@ -209,6 +209,125 @@ monitor_resources() {
     );" "I/O STATISTICS"
 }
 
+# Monitor PVC storage (Kubernetes environments)
+monitor_storage() {
+    # Check if kubectl is available and we're in a K8s environment
+    if ! command -v kubectl &> /dev/null; then
+        return 0  # Skip silently if not in K8s
+    fi
+
+    # Try to detect namespace from MySQL host if it contains a service name
+    local namespace=""
+    if [[ "$MYSQL_HOST" =~ ^[^.]+\. ]]; then
+        # Extract namespace from service FQDN (e.g., mysql.default.svc.cluster.local)
+        namespace=$(echo "$MYSQL_HOST" | cut -d. -f2)
+    fi
+    
+    # If no namespace detected, try common ones or get from context
+    if [ -z "$namespace" ]; then
+        namespace=$(kubectl config view --minify -o jsonpath='{..namespace}' 2>/dev/null || echo "default")
+    fi
+
+    log "Monitoring Storage (PVCs in namespace: $namespace)..."
+
+    # Get PVC information for the namespace
+    local pvc_output
+    if pvc_output=$(kubectl get pvc -n "$namespace" --no-headers 2>/dev/null); then
+        if [ -n "$pvc_output" ]; then
+            echo "=== PERSISTENT VOLUME CLAIMS (PVCs) ==="
+            printf "%-40s %-10s %-12s %-12s %-8s\n" "NAME" "STATUS" "CAPACITY" "USED" "AVAIL%"
+            echo "------------------------------------------------------------------------------------"
+            
+            while IFS= read -r line; do
+                local pvc_name=$(echo "$line" | awk '{print $1}')
+                local status=$(echo "$line" | awk '{print $2}')
+                local capacity=$(echo "$line" | awk '{print $4}')
+                
+                # Try to get actual usage from the pod mounting this PVC
+                local pod_name=$(kubectl get pods -n "$namespace" -o json 2>/dev/null | \
+                    jq -r --arg pvc "$pvc_name" '.items[] | select(.spec.volumes[]?.persistentVolumeClaim.claimName == $pvc) | .metadata.name' 2>/dev/null | head -1)
+                
+                local usage="N/A"
+                local avail_pct="N/A"
+                
+                if [ -n "$pod_name" ] && kubectl get pod "$pod_name" -n "$namespace" &>/dev/null; then
+                    # Find the mount point for this PVC
+                    local mount_point=$(kubectl get pod "$pod_name" -n "$namespace" -o json 2>/dev/null | \
+                        jq -r --arg pvc "$pvc_name" '.spec.volumes[] | select(.persistentVolumeClaim.claimName == $pvc) | .name' 2>/dev/null | head -1)
+                    
+                    if [ -n "$mount_point" ]; then
+                        # Get the actual mount path from container
+                        local container_path=$(kubectl get pod "$pod_name" -n "$namespace" -o json 2>/dev/null | \
+                            jq -r --arg vol "$mount_point" '.spec.containers[0].volumeMounts[] | select(.name == $vol) | .mountPath' 2>/dev/null | head -1)
+                        
+                        if [ -n "$container_path" ]; then
+                            # Get disk usage from the pod
+                            local df_output=$(kubectl exec "$pod_name" -n "$namespace" -- df -h "$container_path" 2>/dev/null | tail -1)
+                            if [ $? -eq 0 ]; then
+                                usage=$(echo "$df_output" | awk '{print $3}')
+                                avail_pct=$(echo "$df_output" | awk '{print $5}' | tr -d '%')
+                                
+                                # Color code based on usage
+                                if [ "$avail_pct" != "N/A" ]; then
+                                    if [ "$avail_pct" -gt 90 ]; then
+                                        status="${RED}${status}${NC}"
+                                        avail_pct="${RED}${avail_pct}%${NC}"
+                                    elif [ "$avail_pct" -gt 75 ]; then
+                                        status="${YELLOW}${status}${NC}"
+                                        avail_pct="${YELLOW}${avail_pct}%${NC}"
+                                    else
+                                        avail_pct="${GREEN}${avail_pct}%${NC}"
+                                    fi
+                                fi
+                            fi
+                        fi
+                    fi
+                fi
+                
+                printf "%-40s %-10s %-12s %-12s %-8s\n" "$pvc_name" "$status" "$capacity" "$usage" "$avail_pct"
+            done <<< "$pvc_output"
+            echo
+            
+            # Summary of storage class usage
+            echo "=== STORAGE CLASS USAGE ==="
+            kubectl get pvc -n "$namespace" --no-headers 2>/dev/null | awk '{print $6}' | sort | uniq -c | \
+                awk '{printf "%-40s %s PVCs\n", $2, $1}'
+            echo
+        else
+            info "No PVCs found in namespace: $namespace"
+        fi
+    fi
+}
+
+# Monitor storage in detail for report
+monitor_storage_detailed() {
+    if ! command -v kubectl &> /dev/null; then
+        return 0
+    fi
+
+    local namespace=""
+    if [[ "$MYSQL_HOST" =~ ^[^.]+\. ]]; then
+        namespace=$(echo "$MYSQL_HOST" | cut -d. -f2)
+    fi
+    
+    if [ -z "$namespace" ]; then
+        namespace=$(kubectl config view --minify -o jsonpath='{..namespace}' 2>/dev/null || echo "default")
+    fi
+
+    echo "================================================================="
+    echo "STORAGE DETAILS (Namespace: $namespace)"
+    echo "================================================================="
+    
+    kubectl get pvc -n "$namespace" -o wide 2>/dev/null || echo "No PVC information available"
+    echo
+    
+    echo "PVC to Pod Mappings:"
+    kubectl get pods -n "$namespace" -o json 2>/dev/null | \
+        jq -r '.items[] | "\(.metadata.name): " + ([.spec.volumes[]?.persistentVolumeClaim.claimName] | map(select(. != null)) | join(", "))' 2>/dev/null | \
+        grep -v ": $" || echo "No pods with PVCs found"
+    echo
+}
+
 # Generate summary report
 generate_report() {
     local timestamp=$(date +%Y%m%d-%H%M%S)
@@ -310,6 +429,9 @@ generate_report() {
             COUNT(*)
         FROM information_schema.innodb_lock_waits;"
 
+        echo
+        monitor_storage_detailed
+
     } > "$report_file" 2>/dev/null || warning "Some queries failed during report generation"
 
     info "Report saved to: $report_file"
@@ -329,6 +451,7 @@ main() {
     monitor_cluster_status
     monitor_performance
     monitor_resources
+    monitor_storage
 
     if [ "$INTERVAL" -gt 0 ]; then
         info "Starting continuous monitoring (Ctrl+C to stop)..."
@@ -343,6 +466,7 @@ main() {
             monitor_cluster_status
             monitor_performance
             monitor_resources
+            monitor_storage
             echo "================================================================="
         done
     else
@@ -377,8 +501,16 @@ ENVIRONMENT VARIABLES:
     INTERVAL                 Same as --interval
     OUTPUT_DIR               Same as --output
 
+FEATURES:
+    - Real-time cluster health monitoring
+    - Performance metrics tracking
+    - Resource usage monitoring
+    - PVC storage monitoring (Kubernetes environments)
+    - Daemon mode with configurable refresh interval
+    - Comprehensive final report generation
+
 EXAMPLES:
-    # Monitor every 5 seconds (default)
+    # Monitor every 5 seconds (default) - daemon mode
     $0 -u admin -p
 
     # Single report only
@@ -386,6 +518,18 @@ EXAMPLES:
 
     # Custom host and port
     $0 -h mysql-cluster.example.com -P 3307 -u admin -p
+
+    # On-prem with local MySQL
+    $0 -h 127.0.0.1 -u root -p
+
+KUBERNETES ENVIRONMENTS:
+    When running in Kubernetes (kubectl available), the script will
+    automatically detect and monitor PVC storage usage for the MySQL
+    pods, including:
+    - PVC capacity and status
+    - Actual disk usage per PVC
+    - Storage class information
+    - PVC to Pod mappings
 
 EOF
 }
