@@ -13,8 +13,11 @@ This directory contains tools to monitor your Percona XtraDB Cluster (PXC) durin
 ### Option 1: Automated Monitoring Script (Recommended)
 
 ```bash
-# Dashboard mode (default) - single screen that refreshes in place
+# Dashboard mode (default) - single screen that refreshes values only, no files created
 ./monitoring/monitor-pxc-load-test.sh -h 2.3.4.5 -u root -p
+
+# Dashboard mode with report saving
+./monitoring/monitor-pxc-load-test.sh -h 2.3.4.5 -u root -p --save-reports
 
 # Scrolling mode - traditional output that scrolls
 ./monitoring/monitor-pxc-load-test.sh -h 2.3.4.5 -u root -p --scroll
@@ -28,8 +31,8 @@ This directory contains tools to monitor your Percona XtraDB Cluster (PXC) durin
 # Custom refresh interval (10 seconds instead of 5)
 ./monitoring/monitor-pxc-load-test.sh -h 2.3.4.5 -u root -p -i 10
 
-# Single report only (no continuous monitoring)
-./monitoring/monitor-pxc-load-test.sh -i 0 -u root -p
+# Save reports to custom directory
+./monitoring/monitor-pxc-load-test.sh -h 2.3.4.5 -u root -p -o /tmp/mysql-reports
 
 # Custom connection settings
 ./monitoring/monitor-pxc-load-test.sh -h mysql-cluster.example.com -P 3307 -u admin -p
@@ -46,6 +49,9 @@ mysql -h 127.0.0.1 -P 3306 -u root -p < pxc-load-test-queries.sql
 ## Features
 
 - **Dashboard Mode**: Single-screen refreshing display (like `top` or `htop`) - default behavior
+  - Only values update, not the entire screen
+  - Static labels drawn once for clean display
+  - No files created unless explicitly requested
 - **Scrolling Mode**: Traditional scrolling output available with `--scroll` flag
 - **Real-time Monitoring**: Continuous monitoring with configurable refresh intervals (default: 5 seconds)
 - **Daemon Mode**: Runs as a continuous process until interrupted (Ctrl+C)
@@ -53,8 +59,8 @@ mysql -h 127.0.0.1 -P 3306 -u root -p < pxc-load-test-queries.sql
 - **Performance Metrics**: Track connections, queries, InnoDB performance, and buffer pool efficiency
 - **Resource Monitoring**: Memory usage, I/O statistics, and system resources
 - **Storage Monitoring**: PVC usage and capacity (Kubernetes environments)
-- **Comprehensive Reports**: Generate detailed reports on demand or when stopping monitoring
-- **Responsive Layout**: Automatically adapts to terminal width (tested up to 170 columns)
+- **Optional Reports**: Reports only saved when `--save-reports` or `-o` is specified
+- **Responsive Layout**: Optimized for wide terminals (170 columns), adapts to smaller sizes
 
 ## What to Monitor During Load Testing
 

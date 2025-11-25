@@ -11,15 +11,23 @@ MYSQL_PORT="${MYSQL_PORT:-3306}"
 MYSQL_USER="${MYSQL_USER:-root}"
 MYSQL_PASSWORD="${MYSQL_PASSWORD:-}"
 INTERVAL="${INTERVAL:-5}"  # seconds between checks
-OUTPUT_DIR="${OUTPUT_DIR:-pxc-monitoring-$(date +%Y%m%d-%H%M%S)}"
 DASHBOARD_MODE="${DASHBOARD_MODE:-1}"  # 1 for dashboard mode, 0 for scrolling mode
+SAVE_REPORTS="${SAVE_REPORTS:-0}"  # Only create output dir if explicitly requested
 
 # Get terminal dimensions
 get_terminal_width() {
     tput cols 2>/dev/null || echo 80
 }
 
+get_terminal_height() {
+    tput lines 2>/dev/null || echo 24
+}
+
 TERM_WIDTH=$(get_terminal_width)
+TERM_HEIGHT=$(get_terminal_height)
+
+# Dashboard state - line numbers for each value
+declare -A VALUE_POSITIONS
 
 # Colors for output
 RED='\033[0;31m'
@@ -29,9 +37,18 @@ BLUE='\033[0;34m'
 PURPLE='\033[0;35m'
 CYAN='\033[0;36m'
 NC='\033[0m' # No Color
+BOLD='\033[1m'
 
-# Create output directory
-mkdir -p "$OUTPUT_DIR"
+# Terminal control sequences
+CURSOR_HIDE='\033[?25l'
+CURSOR_SHOW='\033[?25h'
+CLEAR_LINE='\033[K'
+
+# Create output directory only if reports are enabled
+if [ "$SAVE_REPORTS" = "1" ]; then
+    OUTPUT_DIR="${OUTPUT_DIR:-pxc-monitoring-$(date +%Y%m%d-%H%M%S)}"
+    mkdir -p "$OUTPUT_DIR"
+fi
 
 # MySQL connection options (will be updated after password prompt)
 build_mysql_opts() {
@@ -125,7 +142,13 @@ check_mysql_connection() {
     info "✓ MySQL connection successful"
 }
 
-# Run a query and format output
+# Run a query and return result (for dashboard mode)
+run_query_silent() {
+    local query="$1"
+    mysql $MYSQL_OPTS -e "$query" 2>/dev/null || echo ""
+}
+
+# Run a query and format output (for scrolling mode)
 run_query() {
     local query="$1"
     local title="$2"
@@ -137,35 +160,199 @@ run_query() {
     echo
 }
 
+# Fetch all metrics at once
+fetch_all_metrics() {
+    # Fetch cluster metrics
+    CLUSTER_SIZE=$(mysql $MYSQL_OPTS -sN -e "SELECT VARIABLE_VALUE FROM performance_schema.global_status WHERE VARIABLE_NAME = 'wsrep_cluster_size';" 2>/dev/null || echo "N/A")
+    CLUSTER_STATUS=$(mysql $MYSQL_OPTS -sN -e "SELECT VARIABLE_VALUE FROM performance_schema.global_status WHERE VARIABLE_NAME = 'wsrep_cluster_status';" 2>/dev/null || echo "N/A")
+    NODE_READY=$(mysql $MYSQL_OPTS -sN -e "SELECT VARIABLE_VALUE FROM performance_schema.global_status WHERE VARIABLE_NAME = 'wsrep_ready';" 2>/dev/null || echo "N/A")
+    FLOW_CONTROL=$(mysql $MYSQL_OPTS -sN -e "SELECT VARIABLE_VALUE FROM performance_schema.global_status WHERE VARIABLE_NAME = 'wsrep_flow_control_paused';" 2>/dev/null || echo "N/A")
+    
+    # Fetch queue metrics
+    RECV_QUEUE=$(mysql $MYSQL_OPTS -sN -e "SELECT VARIABLE_VALUE FROM performance_schema.global_status WHERE VARIABLE_NAME = 'wsrep_local_recv_queue';" 2>/dev/null || echo "N/A")
+    SEND_QUEUE=$(mysql $MYSQL_OPTS -sN -e "SELECT VARIABLE_VALUE FROM performance_schema.global_status WHERE VARIABLE_NAME = 'wsrep_local_send_queue';" 2>/dev/null || echo "N/A")
+    
+    # Fetch connection metrics
+    CURRENT_CONNS=$(mysql $MYSQL_OPTS -sN -e "SELECT COUNT(*) FROM information_schema.processlist;" 2>/dev/null || echo "N/A")
+    MAX_CONNS=$(mysql $MYSQL_OPTS -sN -e "SELECT @@max_connections;" 2>/dev/null || echo "N/A")
+    ACTIVE_THREADS=$(mysql $MYSQL_OPTS -sN -e "SELECT COUNT(*) FROM performance_schema.threads WHERE PROCESSLIST_STATE IS NOT NULL;" 2>/dev/null || echo "N/A")
+    
+    # Fetch query metrics
+    RUNNING_QUERIES=$(mysql $MYSQL_OPTS -sN -e "SELECT COUNT(*) FROM information_schema.processlist WHERE COMMAND NOT IN ('Sleep', 'Connect');" 2>/dev/null || echo "N/A")
+    
+    # Fetch InnoDB metrics
+    BP_READS=$(mysql $MYSQL_OPTS -sN -e "SELECT VARIABLE_VALUE FROM performance_schema.global_status WHERE VARIABLE_NAME = 'Innodb_buffer_pool_reads';" 2>/dev/null || echo "0")
+    BP_READ_REQS=$(mysql $MYSQL_OPTS -sN -e "SELECT VARIABLE_VALUE FROM performance_schema.global_status WHERE VARIABLE_NAME = 'Innodb_buffer_pool_read_requests';" 2>/dev/null || echo "1")
+    if [ "$BP_READ_REQS" != "0" ] && [ "$BP_READ_REQS" != "N/A" ]; then
+        BP_HIT_RATE=$(awk "BEGIN {printf \"%.2f\", 100.0 * (1.0 - ($BP_READS / $BP_READ_REQS))}")
+    else
+        BP_HIT_RATE="N/A"
+    fi
+    
+    # Fetch I/O metrics
+    INNODB_DATA_READ=$(mysql $MYSQL_OPTS -sN -e "SELECT ROUND(VARIABLE_VALUE / 1024 / 1024, 2) FROM performance_schema.global_status WHERE VARIABLE_NAME = 'Innodb_data_read';" 2>/dev/null || echo "N/A")
+    INNODB_DATA_WRITTEN=$(mysql $MYSQL_OPTS -sN -e "SELECT ROUND(VARIABLE_VALUE / 1024 / 1024, 2) FROM performance_schema.global_status WHERE VARIABLE_NAME = 'Innodb_data_written';" 2>/dev/null || echo "N/A")
+    INNODB_DATA_READS=$(mysql $MYSQL_OPTS -sN -e "SELECT VARIABLE_VALUE FROM performance_schema.global_status WHERE VARIABLE_NAME = 'Innodb_data_reads';" 2>/dev/null || echo "N/A")
+    INNODB_DATA_WRITES=$(mysql $MYSQL_OPTS -sN -e "SELECT VARIABLE_VALUE FROM performance_schema.global_status WHERE VARIABLE_NAME = 'Innodb_data_writes';" 2>/dev/null || echo "N/A")
+    
+    # Fetch buffer pool size
+    BUFFER_POOL_SIZE=$(mysql $MYSQL_OPTS -sN -e "SELECT ROUND(@@innodb_buffer_pool_size / 1024 / 1024, 0);" 2>/dev/null || echo "N/A")
+}
+
+# Terminal cursor control
+cursor_to() {
+    local row=$1
+    local col=${2:-1}
+    printf '\033[%d;%dH' "$row" "$col"
+}
+
+save_cursor() {
+    printf '\033[s'
+}
+
+restore_cursor() {
+    printf '\033[u'
+}
+
+clear_to_eol() {
+    printf '\033[K'
+}
+
+hide_cursor() {
+    printf '\033[?25l'
+}
+
+show_cursor() {
+    printf '\033[?25h'
+}
+
 # Print a horizontal separator line
 print_separator() {
     local char="${1:--}"
     printf '%*s\n' "$TERM_WIDTH" '' | tr ' ' "$char"
 }
 
-# Print centered text
+# Print centered text (without newline, for use in bordered layouts)
 print_centered() {
     local text="$1"
-    local width=$TERM_WIDTH
-    local padding=$(( (width - ${#text}) / 2 ))
-    printf '%*s%s\n' $padding '' "$text"
+    # Remove color codes for length calculation
+    local clean_text=$(echo -e "$text" | sed 's/\x1B\[[0-9;]*[JKmsu]//g')
+    local text_len=${#clean_text}
+    local width=170  # Dashboard width
+    local padding=$(( (width - text_len - 2) / 2 ))  # -2 for borders
+    printf '%*s%s%*s' $padding '' "$text" $((width - text_len - padding - 2)) ''
 }
 
-# Clear screen for dashboard mode
-clear_screen() {
-    if [ "$DASHBOARD_MODE" = "1" ]; then
-        clear
-    fi
+# Update a value at a specific position
+update_value_at() {
+    local row=$1
+    local col=$2
+    local value="$3"
+    save_cursor
+    cursor_to "$row" "$col"
+    clear_to_eol
+    echo -ne "$value"
+    restore_cursor
 }
 
-# Dashboard header
-print_dashboard_header() {
+# Draw the static dashboard layout (once)
+draw_dashboard_layout() {
+    clear
+    hide_cursor
+    
     local timestamp=$(date +'%Y-%m-%d %H:%M:%S')
-    print_separator '='
-    print_centered "PERCONA XtraDB CLUSTER MONITORING DASHBOARD"
-    print_centered "$MYSQL_HOST:$MYSQL_PORT | User: $MYSQL_USER | $timestamp"
-    print_separator '='
-    echo
+    
+    echo -e "${BOLD}╔══════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════╗${NC}"
+    echo -e "${BOLD}║${NC}$(print_centered "PERCONA XtraDB CLUSTER MONITORING DASHBOARD")${BOLD}║${NC}"
+    echo -e "${BOLD}║${NC}$(print_centered "$MYSQL_HOST:$MYSQL_PORT | User: $MYSQL_USER")${BOLD}║${NC}"
+    echo -e "${BOLD}╠══════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════╣${NC}"
+    
+    # Cluster Health Section
+    echo -e "${BOLD}║ CLUSTER HEALTH${NC}                                ${BOLD}║ REPLICATION QUEUES${NC}                     ${BOLD}║ CONNECTIONS${NC}                                  ${BOLD}║${NC}"
+    echo -e "${BOLD}╠══════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════╣${NC}"
+    echo    "║ Cluster Size:                                 ║ Local Recv Queue:                      ║ Current:                                       ║"
+    echo    "║ Cluster Status:                               ║ Local Send Queue:                      ║ Max:                                           ║"
+    echo    "║ Node Ready:                                   ║                                        ║ Active Threads:                                ║"
+    echo    "║ Flow Control Paused:                          ║                                        ║ Running Queries:                               ║"
+    
+    echo -e "${BOLD}╠══════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════╣${NC}"
+    echo -e "${BOLD}║ INNODB PERFORMANCE${NC}                           ${BOLD}║ I/O STATISTICS${NC}                                                                                   ${BOLD}║${NC}"
+    echo -e "${BOLD}╠══════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════╣${NC}"
+    echo    "║ Buffer Pool Size (MB):                        ║ Data Read (MB):                              Data Written (MB):                              ║"
+    echo    "║ Buffer Pool Hit Rate (%):                     ║ Read Operations:                             Write Operations:                               ║"
+    
+    echo -e "${BOLD}╠══════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════╣${NC}"
+    echo -e "${BOLD}║${NC} Last Update: $timestamp                                                                                Press Ctrl+C to exit ${BOLD}║${NC}"
+    echo -e "${BOLD}╚══════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════╝${NC}"
+    
+    # Store value positions (row, column)
+    VALUE_POSITIONS[CLUSTER_SIZE]="7,20"
+    VALUE_POSITIONS[RECV_QUEUE]="7,72"
+    VALUE_POSITIONS[CURRENT_CONNS]="7,124"
+    VALUE_POSITIONS[CLUSTER_STATUS]="8,21"
+    VALUE_POSITIONS[SEND_QUEUE]="8,72"
+    VALUE_POSITIONS[MAX_CONNS]="8,124"
+    VALUE_POSITIONS[NODE_READY]="9,18"
+    VALUE_POSITIONS[ACTIVE_THREADS]="9,124"
+    VALUE_POSITIONS[FLOW_CONTROL]="10,26"
+    VALUE_POSITIONS[RUNNING_QUERIES]="10,124"
+    
+    VALUE_POSITIONS[BUFFER_POOL_SIZE]="14,28"
+    VALUE_POSITIONS[INNODB_DATA_READ]="14,72"
+    VALUE_POSITIONS[INNODB_DATA_WRITTEN]="14,114"
+    VALUE_POSITIONS[BP_HIT_RATE]="15,31"
+    VALUE_POSITIONS[INNODB_DATA_READS]="15,72"
+    VALUE_POSITIONS[INNODB_DATA_WRITES]="15,114"
+    
+    VALUE_POSITIONS[TIMESTAMP]="18,18"
+}
+
+# Update dashboard values
+update_dashboard_values() {
+    local timestamp=$(date +'%Y-%m-%d %H:%M:%S')
+    
+    # Update cluster health values
+    update_value_at 7 20 "$(format_value "$CLUSTER_SIZE" "3")"
+    update_value_at 8 21 "$(format_value "$CLUSTER_STATUS" "Primary")"
+    update_value_at 9 18 "$(format_value "$NODE_READY" "ON")"
+    update_value_at 10 26 "$(format_value "$FLOW_CONTROL" "0")"
+    
+    # Update queue values
+    update_value_at 7 72 "$(format_value "$RECV_QUEUE" "0")"
+    update_value_at 8 72 "$(format_value "$SEND_QUEUE" "0")"
+    
+    # Update connection values
+    update_value_at 7 124 "$CURRENT_CONNS / $MAX_CONNS      "
+    update_value_at 8 124 "$MAX_CONNS      "
+    update_value_at 9 124 "$ACTIVE_THREADS      "
+    update_value_at 10 124 "$RUNNING_QUERIES      "
+    
+    # Update InnoDB values
+    update_value_at 14 28 "$BUFFER_POOL_SIZE      "
+    update_value_at 15 31 "$(format_value "$BP_HIT_RATE" "99+")"
+    
+    # Update I/O values
+    update_value_at 14 72 "$INNODB_DATA_READ      "
+    update_value_at 14 114 "$INNODB_DATA_WRITTEN      "
+    update_value_at 15 72 "$INNODB_DATA_READS      "
+    update_value_at 15 114 "$INNODB_DATA_WRITES      "
+    
+    # Update timestamp
+    update_value_at 18 18 "$timestamp"
+}
+
+# Format and colorize a value based on expected good value
+format_value() {
+    local value="$1"
+    local expected="$2"
+    
+    if [ "$value" = "N/A" ]; then
+        echo -e "${YELLOW}N/A${NC}      "
+    elif [ "$value" = "$expected" ]; then
+        echo -e "${GREEN}${value}${NC}      "
+    else
+        echo -e "${YELLOW}${value}${NC}      "
+    fi
 }
 
 # Monitor cluster status
@@ -580,7 +767,9 @@ main() {
     info "Starting PXC Load Testing Monitor"
     info "Host: $MYSQL_HOST:$MYSQL_PORT"
     info "Interval: $INTERVAL seconds"
-    info "Output directory: $OUTPUT_DIR"
+    if [ "$SAVE_REPORTS" = "1" ]; then
+        info "Output directory: $OUTPUT_DIR"
+    fi
     info "Dashboard mode: $([ "$DASHBOARD_MODE" = "1" ] && echo "enabled" || echo "disabled (scrolling)")"
     echo
 
@@ -590,46 +779,67 @@ main() {
     if [ "$INTERVAL" -gt 0 ]; then
         if [ "$DASHBOARD_MODE" = "1" ]; then
             info "Starting dashboard monitoring (refreshing every $INTERVAL seconds)..."
-            info "Press Ctrl+C to stop monitoring and generate final report"
+            info "Press Ctrl+C to stop"
             sleep 2  # Give user time to read
-        else
-            info "Starting continuous monitoring (Ctrl+C to stop)..."
-            echo "Press Ctrl+C to stop monitoring and generate final report"
-            echo
-        fi
-
-        trap 'clear; echo; log "Stopping monitoring..."; generate_report; exit 0' INT
-
-        while true; do
-            if [ "$DASHBOARD_MODE" = "1" ]; then
-                clear_screen
-                print_dashboard_header
-            else
-                echo "================================================================="
-            fi
             
+            # Set up exit handler
+            trap 'show_cursor; clear; echo; log "Monitoring stopped"; exit 0' INT TERM EXIT
+            
+            # Draw static layout once
+            draw_dashboard_layout
+            
+            # Update loop - only values change
+            while true; do
+                fetch_all_metrics
+                update_dashboard_values
+                sleep "$INTERVAL"
+            done
+        else
+            # Scrolling mode
+            info "Starting continuous monitoring (Ctrl+C to stop)..."
+            echo "Press Ctrl+C to stop monitoring"
+            if [ "$SAVE_REPORTS" = "1" ]; then
+                echo "Final report will be generated on exit"
+            fi
+            echo
+
+            if [ "$SAVE_REPORTS" = "1" ]; then
+                trap 'echo; log "Stopping monitoring..."; generate_report; exit 0' INT
+            else
+                trap 'echo; log "Monitoring stopped"; exit 0' INT
+            fi
+
+            while true; do
+                echo "================================================================="
+                monitor_cluster_status
+                monitor_performance
+                monitor_resources
+                monitor_storage
+                echo "================================================================="
+                sleep "$INTERVAL"
+            done
+        fi
+    else
+        # Single run mode
+        if [ "$DASHBOARD_MODE" = "1" ]; then
+            draw_dashboard_layout
+            fetch_all_metrics
+            update_dashboard_values
+            show_cursor
+            echo ""
+            echo ""
+            read -p "Press Enter to exit..." -t 30
+        else
+            log "Single monitoring run"
             monitor_cluster_status
             monitor_performance
             monitor_resources
             monitor_storage
-            
-            if [ "$DASHBOARD_MODE" = "1" ]; then
-                print_separator '='
-                echo -e "${CYAN}Next refresh in $INTERVAL seconds... (Ctrl+C to stop)${NC}"
-            else
-                echo "================================================================="
-            fi
-            
-            sleep "$INTERVAL"
-        done
-    else
-        log "Single monitoring run completed"
-        print_dashboard_header
-        monitor_cluster_status
-        monitor_performance
-        monitor_resources
-        monitor_storage
-        generate_report
+        fi
+        
+        if [ "$SAVE_REPORTS" = "1" ]; then
+            generate_report
+        fi
     fi
 }
 
@@ -650,8 +860,9 @@ OPTIONS:
     --password PASS          MySQL password (required argument)
     -i, --interval SEC       Monitoring interval in seconds (default: 5)
                                Use 0 for single run only
-    -o, --output DIR         Output directory (default: auto-generated)
+    -o, --output DIR         Output directory for reports (implies --save-reports)
     -s, --scroll             Disable dashboard mode (use scrolling output)
+    -r, --save-reports       Save reports to disk (creates output directory)
     --help                   Show this help
 
 ENVIRONMENT VARIABLES:
@@ -660,7 +871,8 @@ ENVIRONMENT VARIABLES:
     MYSQL_USER               Same as --user
     MYSQL_PASSWORD           Same as --password
     INTERVAL                 Same as --interval
-    OUTPUT_DIR               Same as --output
+    OUTPUT_DIR               Output directory for reports
+    SAVE_REPORTS             Set to 1 to save reports (default: 0)
     DASHBOARD_MODE           Set to 0 to disable dashboard (default: 1)
     DEBUG                    Set to 1 to enable debug output (default: 0)
 
@@ -673,8 +885,11 @@ FEATURES:
     - Comprehensive final report generation
 
 EXAMPLES:
-    # Dashboard mode (default) - refreshing display
+    # Dashboard mode (default) - refreshing display, no files created
     $0 -h 2.3.4.5 -u root -p
+
+    # Dashboard mode with report saving
+    $0 -h 2.3.4.5 -u root -p --save-reports
 
     # Scrolling mode - old behavior
     $0 -h 2.3.4.5 -u root -p --scroll
@@ -685,20 +900,17 @@ EXAMPLES:
     # Provide password directly (no space, MySQL style)
     $0 -h 2.3.4.5 -u root -pmypassword
 
-    # Single report only (no continuous monitoring)
-    $0 -i 0 -u admin -p
-
     # Custom refresh interval (10 seconds)
     $0 -h mysql-cluster.example.com -P 3307 -u admin -p -i 10
+
+    # Save reports to custom directory
+    $0 -h 2.3.4.5 -u root -p -o /tmp/mysql-reports
 
     # On-prem with local MySQL
     $0 -h 127.0.0.1 -u root -p
 
     # Debug mode - shows detailed connection info
     DEBUG=1 $0 -h 2.3.4.5 -u root -p
-
-    # Disable dashboard with environment variable
-    DASHBOARD_MODE=0 $0 -h 2.3.4.5 -u root -p
 
 KUBERNETES ENVIRONMENTS:
     When running in Kubernetes (kubectl available), the script will
@@ -779,7 +991,12 @@ while [[ $# -gt 0 ]]; do
                 exit 1
             fi
             OUTPUT_DIR="$2"
+            SAVE_REPORTS=1
             shift 2
+            ;;
+        -r|--save-reports)
+            SAVE_REPORTS=1
+            shift
             ;;
         -s|--scroll)
             DASHBOARD_MODE=0
