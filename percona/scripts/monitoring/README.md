@@ -249,26 +249,48 @@ When you press **Ctrl+C**, the script generates a comprehensive final report and
 
 ## Troubleshooting
 
-### Connection Issues
+### Script Exits Immediately / Connection Issues
 
-If you see `[ERROR] Cannot connect to MySQL`, the script now shows the actual MySQL error to help debug:
+If the script exits immediately or you see connection errors, enable **debug mode** to see detailed information:
 
 ```bash
-# Test MySQL connection manually
+# Enable debug mode to see what's happening
+DEBUG=1 ./monitor-pxc-load-test.sh -h 2.3.4.5 -u root -p
+```
+
+Debug mode shows:
+- MySQL client detection
+- Connection parameters being used
+- Full MySQL error messages
+- Exit codes and detailed diagnostics
+
+### Common Connection Issues
+
+If you see `[ERROR] Cannot connect to MySQL`, the script shows the actual MySQL error. Here's how to diagnose:
+
+```bash
+# 1. Check if MySQL client is installed
+mysql --version
+
+# 2. Test connectivity to MySQL server
+nc -zv 2.3.4.5 3306
+# or
+telnet 2.3.4.5 3306
+
+# 3. Test MySQL connection manually
 mysql -h 2.3.4.5 -P 3306 -u root -p -e "SELECT 1;"
 
-# Check if MySQL is running on the host
-telnet 2.3.4.5 3306
-# or
-nc -zv 2.3.4.5 3306
-
-# Common issues:
-# 1. MySQL server not running
-# 2. Firewall blocking port 3306
-# 3. MySQL not configured to accept remote connections
-# 4. Wrong password
-# 5. User not granted access from your IP
+# 4. Check MySQL error log on the server
+tail -f /var/log/mysql/error.log
 ```
+
+**Common Issues:**
+1. **MySQL client not installed** - Install with: `sudo apt-get install mysql-client`
+2. **MySQL server not running** - Check server status
+3. **Firewall blocking port 3306** - Check firewall rules on both client and server
+4. **Wrong password** - Verify credentials
+5. **MySQL not accepting remote connections** - Check `bind-address` in my.cnf (should be `0.0.0.0` or specific IP)
+6. **User not granted remote access** - Grant access: `GRANT ALL ON *.* TO 'root'@'%' IDENTIFIED BY 'password';`
 
 **Password Options:**
 The script supports multiple ways to provide passwords (like MySQL client):

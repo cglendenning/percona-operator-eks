@@ -2,7 +2,8 @@
 # Percona XtraDB Cluster Load Testing Monitor
 # Run this script during load testing to monitor cluster health
 
-set -euo pipefail
+# Note: We don't use 'set -e' here to allow better error handling
+set -uo pipefail
 
 # Configuration
 MYSQL_HOST="${MYSQL_HOST:-127.0.0.1}"
@@ -24,11 +25,13 @@ NC='\033[0m' # No Color
 # Create output directory
 mkdir -p "$OUTPUT_DIR"
 
-# MySQL connection options
-MYSQL_OPTS="-h$MYSQL_HOST -P$MYSQL_PORT -u$MYSQL_USER"
-if [ -n "$MYSQL_PASSWORD" ]; then
-    MYSQL_OPTS="$MYSQL_OPTS -p$MYSQL_PASSWORD"
-fi
+# MySQL connection options (will be updated after password prompt)
+build_mysql_opts() {
+    MYSQL_OPTS="-h$MYSQL_HOST -P$MYSQL_PORT -u$MYSQL_USER"
+    if [ -n "$MYSQL_PASSWORD" ]; then
+        MYSQL_OPTS="$MYSQL_OPTS -p$MYSQL_PASSWORD"
+    fi
+}
 
 log() {
     echo -e "${GREEN}[$(date +'%Y-%m-%d %H:%M:%S')] $1${NC}"
@@ -48,29 +51,70 @@ info() {
 
 # Check if mysql client is available
 check_mysql_client() {
+    info "Checking for MySQL client..."
     if ! command -v mysql &> /dev/null; then
-        error "MySQL client is not installed"
-        error "Install it with: sudo apt-get install mysql-client"
+        echo ""
+        error "MySQL client (mysql command) is not installed or not in PATH"
+        error ""
+        error "Installation instructions:"
+        error "  Ubuntu/Debian/WSL: sudo apt-get update && sudo apt-get install mysql-client"
+        error "  RHEL/CentOS:       sudo yum install mysql"
+        error "  macOS:             brew install mysql-client"
+        error ""
+        error "After installation, verify with: mysql --version"
+        echo ""
         exit 1
     fi
+    
+    local mysql_version
+    mysql_version=$(mysql --version 2>/dev/null || echo "unknown")
+    info "✓ MySQL client found: $mysql_version"
 }
 
 check_mysql_connection() {
+    info "Testing MySQL connection to $MYSQL_HOST:$MYSQL_PORT..."
+    
     local error_output
+    local exit_code
+    
+    # Try to connect - capture both stdout and stderr
     error_output=$(mysql $MYSQL_OPTS -e "SELECT 1;" 2>&1)
-    local exit_code=$?
+    exit_code=$?
+    
+    if [ "${DEBUG:-0}" = "1" ]; then
+        info "MySQL exit code: $exit_code"
+        if [ -n "$error_output" ]; then
+            info "MySQL output: $error_output"
+        fi
+    fi
+    
     if [ $exit_code -ne 0 ]; then
+        echo ""
         error "Cannot connect to MySQL at $MYSQL_HOST:$MYSQL_PORT"
-        error "MySQL error: $(echo "$error_output" | head -n 1)"
-        error "Connection string: mysql -h $MYSQL_HOST -P $MYSQL_PORT -u $MYSQL_USER"
+        error "Exit code: $exit_code"
         error ""
-        error "Troubleshooting:"
-        error "  1. Check if MySQL is running: telnet $MYSQL_HOST $MYSQL_PORT"
-        error "  2. Verify credentials are correct"
-        error "  3. Check firewall rules"
-        error "  4. Ensure MySQL accepts remote connections (bind-address in my.cnf)"
+        error "MySQL error message:"
+        echo "$error_output" | while IFS= read -r line; do
+            error "  $line"
+        done
+        error ""
+        error "Connection details:"
+        error "  Host: $MYSQL_HOST"
+        error "  Port: $MYSQL_PORT"
+        error "  User: $MYSQL_USER"
+        error "  Password: $([ -n "$MYSQL_PASSWORD" ] && echo "[SET]" || echo "[NOT SET]")"
+        error ""
+        error "Troubleshooting steps:"
+        error "  1. Test connectivity: nc -zv $MYSQL_HOST $MYSQL_PORT"
+        error "  2. Try manual connection: mysql -h $MYSQL_HOST -P $MYSQL_PORT -u $MYSQL_USER -p"
+        error "  3. Verify credentials are correct"
+        error "  4. Check if MySQL accepts remote connections (bind-address in my.cnf)"
+        error "  5. Check firewall rules on both client and server"
+        echo ""
         exit 1
     fi
+    
+    info "✓ MySQL connection successful"
 }
 
 # Run a query and format output
@@ -538,6 +582,7 @@ ENVIRONMENT VARIABLES:
     MYSQL_PASSWORD           Same as --password
     INTERVAL                 Same as --interval
     OUTPUT_DIR               Same as --output
+    DEBUG                    Set to 1 to enable debug output (default: 0)
 
 FEATURES:
     - Real-time cluster health monitoring
@@ -565,6 +610,9 @@ EXAMPLES:
 
     # On-prem with local MySQL
     $0 -h 127.0.0.1 -u root -p
+
+    # Debug mode - shows detailed connection info
+    DEBUG=1 $0 -h 2.3.4.5 -u root -p
 
 KUBERNETES ENVIRONMENTS:
     When running in Kubernetes (kubectl available), the script will
@@ -666,6 +714,18 @@ if [ -z "$MYSQL_PASSWORD" ] || [ "$MYSQL_PASSWORD" = "__PROMPT__" ]; then
     if [ -z "$MYSQL_PASSWORD" ]; then
         warning "No password provided, attempting to connect without password"
     fi
+fi
+
+# Build MySQL connection options after password is set
+build_mysql_opts
+
+# Enable debug mode if DEBUG=1 is set
+if [ "${DEBUG:-0}" = "1" ]; then
+    info "Debug mode enabled"
+    info "MySQL Host: $MYSQL_HOST"
+    info "MySQL Port: $MYSQL_PORT"
+    info "MySQL User: $MYSQL_USER"
+    info "Password set: $([ -n "$MYSQL_PASSWORD" ] && echo "yes" || echo "no")"
 fi
 
 main
