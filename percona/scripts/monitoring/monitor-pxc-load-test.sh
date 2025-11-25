@@ -47,9 +47,28 @@ info() {
 }
 
 # Check if mysql client is available
+check_mysql_client() {
+    if ! command -v mysql &> /dev/null; then
+        error "MySQL client is not installed"
+        error "Install it with: sudo apt-get install mysql-client"
+        exit 1
+    fi
+}
+
 check_mysql_connection() {
-    if ! mysql $MYSQL_OPTS -e "SELECT 1;" >/dev/null 2>&1; then
+    local error_output
+    error_output=$(mysql $MYSQL_OPTS -e "SELECT 1;" 2>&1)
+    local exit_code=$?
+    if [ $exit_code -ne 0 ]; then
         error "Cannot connect to MySQL at $MYSQL_HOST:$MYSQL_PORT"
+        error "MySQL error: $(echo "$error_output" | head -n 1)"
+        error "Connection string: mysql -h $MYSQL_HOST -P $MYSQL_PORT -u $MYSQL_USER"
+        error ""
+        error "Troubleshooting:"
+        error "  1. Check if MySQL is running: telnet $MYSQL_HOST $MYSQL_PORT"
+        error "  2. Verify credentials are correct"
+        error "  3. Check firewall rules"
+        error "  4. Ensure MySQL accepts remote connections (bind-address in my.cnf)"
         exit 1
     fi
 }
@@ -244,47 +263,59 @@ monitor_storage() {
                 local capacity=$(echo "$line" | awk '{print $4}')
                 
                 # Try to get actual usage from the pod mounting this PVC
-                local pod_name=$(kubectl get pods -n "$namespace" -o json 2>/dev/null | \
-                    jq -r --arg pvc "$pvc_name" '.items[] | select(.spec.volumes[]?.persistentVolumeClaim.claimName == $pvc) | .metadata.name' 2>/dev/null | head -1)
+                local pod_name=""
+                if command -v jq &> /dev/null; then
+                    pod_name=$(kubectl get pods -n "$namespace" -o json 2>/dev/null | \
+                        jq -r --arg pvc "$pvc_name" '.items[] | select(.spec.volumes[]?.persistentVolumeClaim.claimName == $pvc) | .metadata.name' 2>/dev/null | head -1)
+                fi
                 
                 local usage="N/A"
                 local avail_pct="N/A"
+                local avail_pct_colored="N/A"
                 
-                if [ -n "$pod_name" ] && kubectl get pod "$pod_name" -n "$namespace" &>/dev/null; then
+                if [ -n "$pod_name" ] && kubectl get pod "$pod_name" -n "$namespace" &>/dev/null 2>&1; then
                     # Find the mount point for this PVC
-                    local mount_point=$(kubectl get pod "$pod_name" -n "$namespace" -o json 2>/dev/null | \
-                        jq -r --arg pvc "$pvc_name" '.spec.volumes[] | select(.persistentVolumeClaim.claimName == $pvc) | .name' 2>/dev/null | head -1)
+                    local mount_point=""
+                    if command -v jq &> /dev/null; then
+                        mount_point=$(kubectl get pod "$pod_name" -n "$namespace" -o json 2>/dev/null | \
+                            jq -r --arg pvc "$pvc_name" '.spec.volumes[] | select(.persistentVolumeClaim.claimName == $pvc) | .name' 2>/dev/null | head -1)
+                    fi
                     
                     if [ -n "$mount_point" ]; then
                         # Get the actual mount path from container
-                        local container_path=$(kubectl get pod "$pod_name" -n "$namespace" -o json 2>/dev/null | \
-                            jq -r --arg vol "$mount_point" '.spec.containers[0].volumeMounts[] | select(.name == $vol) | .mountPath' 2>/dev/null | head -1)
+                        local container_path=""
+                        if command -v jq &> /dev/null; then
+                            container_path=$(kubectl get pod "$pod_name" -n "$namespace" -o json 2>/dev/null | \
+                                jq -r --arg vol "$mount_point" '.spec.containers[0].volumeMounts[] | select(.name == $vol) | .mountPath' 2>/dev/null | head -1)
+                        fi
                         
                         if [ -n "$container_path" ]; then
                             # Get disk usage from the pod
-                            local df_output=$(kubectl exec "$pod_name" -n "$namespace" -- df -h "$container_path" 2>/dev/null | tail -1)
-                            if [ $? -eq 0 ]; then
+                            local df_output
+                            df_output=$(kubectl exec "$pod_name" -n "$namespace" -- df -h "$container_path" 2>/dev/null | tail -1)
+                            if [ $? -eq 0 ] && [ -n "$df_output" ]; then
                                 usage=$(echo "$df_output" | awk '{print $3}')
                                 avail_pct=$(echo "$df_output" | awk '{print $5}' | tr -d '%')
                                 
                                 # Color code based on usage
-                                if [ "$avail_pct" != "N/A" ]; then
-                                    if [ "$avail_pct" -gt 90 ]; then
-                                        status="${RED}${status}${NC}"
-                                        avail_pct="${RED}${avail_pct}%${NC}"
-                                    elif [ "$avail_pct" -gt 75 ]; then
-                                        status="${YELLOW}${status}${NC}"
-                                        avail_pct="${YELLOW}${avail_pct}%${NC}"
+                                if [ "$avail_pct" != "N/A" ] && [ -n "$avail_pct" ]; then
+                                    if [ "$avail_pct" -gt 90 ] 2>/dev/null; then
+                                        avail_pct_colored="${RED}${avail_pct}%${NC}"
+                                    elif [ "$avail_pct" -gt 75 ] 2>/dev/null; then
+                                        avail_pct_colored="${YELLOW}${avail_pct}%${NC}"
                                     else
-                                        avail_pct="${GREEN}${avail_pct}%${NC}"
+                                        avail_pct_colored="${GREEN}${avail_pct}%${NC}"
                                     fi
+                                else
+                                    avail_pct_colored="N/A"
                                 fi
                             fi
                         fi
                     fi
                 fi
                 
-                printf "%-40s %-10s %-12s %-12s %-8s\n" "$pvc_name" "$status" "$capacity" "$usage" "$avail_pct"
+                # Use echo with -e to properly render color codes
+                echo -e "$(printf "%-40s %-10s %-12s %-12s" "$pvc_name" "$status" "$capacity" "$usage") $avail_pct_colored"
             done <<< "$pvc_output"
             echo
             
@@ -322,9 +353,13 @@ monitor_storage_detailed() {
     echo
     
     echo "PVC to Pod Mappings:"
-    kubectl get pods -n "$namespace" -o json 2>/dev/null | \
-        jq -r '.items[] | "\(.metadata.name): " + ([.spec.volumes[]?.persistentVolumeClaim.claimName] | map(select(. != null)) | join(", "))' 2>/dev/null | \
-        grep -v ": $" || echo "No pods with PVCs found"
+    if command -v jq &> /dev/null; then
+        kubectl get pods -n "$namespace" -o json 2>/dev/null | \
+            jq -r '.items[] | "\(.metadata.name): " + ([.spec.volumes[]?.persistentVolumeClaim.claimName] | map(select(. != null)) | join(", "))' 2>/dev/null | \
+            grep -v ": $" || echo "No pods with PVCs found"
+    else
+        echo "(jq not installed - install with: sudo apt-get install jq)"
+    fi
     echo
 }
 
@@ -445,6 +480,7 @@ main() {
     info "Output directory: $OUTPUT_DIR"
     echo
 
+    check_mysql_client
     check_mysql_connection
 
     log "Initial cluster health check..."
@@ -487,7 +523,9 @@ OPTIONS:
     -h, --host HOST          MySQL host (default: 127.0.0.1)
     -P, --port PORT          MySQL port (default: 3306)
     -u, --user USER          MySQL user (default: root)
-    -p, --password PASS      MySQL password (prompt if not provided)
+    -p [PASS]                MySQL password (prompts if not provided)
+                               Use: -p (prompt), -pPASS (no space), or -p PASS
+    --password PASS          MySQL password (required argument)
     -i, --interval SEC       Monitoring interval in seconds (default: 5)
                                Use 0 for single run only
     -o, --output DIR         Output directory (default: auto-generated)
@@ -510,13 +548,19 @@ FEATURES:
     - Comprehensive final report generation
 
 EXAMPLES:
-    # Monitor every 5 seconds (default) - daemon mode
-    $0 -u admin -p
+    # Monitor every 5 seconds - prompt for password
+    $0 -h 2.3.4.5 -u root -p
+
+    # Provide password directly (with space)
+    $0 -h 2.3.4.5 -u root -p mypassword
+
+    # Provide password directly (no space, MySQL style)
+    $0 -h 2.3.4.5 -u root -pmypassword
 
     # Single report only
     $0 -i 0 -u admin -p
 
-    # Custom host and port
+    # Custom host and port with password prompt
     $0 -h mysql-cluster.example.com -P 3307 -u admin -p
 
     # On-prem with local MySQL
@@ -561,7 +605,25 @@ while [[ $# -gt 0 ]]; do
             MYSQL_USER="$2"
             shift 2
             ;;
-        -p|--password)
+        -p*)
+            # Support both -p (prompt), -pPASSWORD (no space), and -p PASSWORD (with space)
+            if [ "$1" = "-p" ] || [ "$1" = "--password" ]; then
+                # Check if next argument exists and doesn't start with -
+                if [ $# -gt 1 ] && [[ ! "$2" =~ ^- ]]; then
+                    MYSQL_PASSWORD="$2"
+                    shift 2
+                else
+                    # Prompt for password
+                    MYSQL_PASSWORD="__PROMPT__"
+                    shift
+                fi
+            else
+                # Handle -pPASSWORD format (no space)
+                MYSQL_PASSWORD="${1#-p}"
+                shift
+            fi
+            ;;
+        --password)
             if [ $# -lt 2 ]; then
                 error "Option $1 requires an argument"
                 exit 1
@@ -597,10 +659,13 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
-# Password prompt if not provided
-if [ -z "$MYSQL_PASSWORD" ] && [ "$MYSQL_USER" != "root" ]; then
+# Password prompt if not provided or explicitly requested
+if [ -z "$MYSQL_PASSWORD" ] || [ "$MYSQL_PASSWORD" = "__PROMPT__" ]; then
     read -s -p "Enter MySQL password for $MYSQL_USER: " MYSQL_PASSWORD
     echo
+    if [ -z "$MYSQL_PASSWORD" ]; then
+        warning "No password provided, attempting to connect without password"
+    fi
 fi
 
 main

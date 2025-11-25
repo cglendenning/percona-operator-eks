@@ -13,8 +13,14 @@ This directory contains tools to monitor your Percona XtraDB Cluster (PXC) durin
 ### Option 1: Automated Monitoring Script (Recommended)
 
 ```bash
-# Real-time monitoring every 5 seconds
-./monitoring/monitor-pxc-load-test.sh -u root -p
+# Real-time monitoring every 5 seconds (prompts for password)
+./monitoring/monitor-pxc-load-test.sh -h 2.3.4.5 -u root -p
+
+# Provide password directly - with space
+./monitoring/monitor-pxc-load-test.sh -h 2.3.4.5 -u root -p mypassword
+
+# Provide password directly - MySQL style (no space)
+./monitoring/monitor-pxc-load-test.sh -h 2.3.4.5 -u root -pmypassword
 
 # Single report only (no continuous monitoring)
 ./monitoring/monitor-pxc-load-test.sh -i 0 -u root -p
@@ -135,7 +141,55 @@ datadir-cluster1-pxc-2                   Bound      10Gi         2.0G         20
 gp3-encrypted                            3 PVCs
 ```
 
+## Prerequisites
+
+### Required
+- `mysql` client (MySQL command-line client)
+- `bash` 4.0 or higher
+
+### Optional (for Kubernetes storage monitoring)
+- `kubectl` (Kubernetes CLI)
+- `jq` (JSON processor)
+
+### Installation on WSL/Ubuntu/Debian
+```bash
+# Install MySQL client
+sudo apt-get update
+sudo apt-get install mysql-client
+
+# Optional: Install kubectl (for K8s environments)
+curl -LO "https://dl.k8s.io/release/$(curl -L -s https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl"
+sudo install -o root -g root -m 0755 kubectl /usr/local/bin/kubectl
+
+# Optional: Install jq (for PVC monitoring)
+sudo apt-get install jq
+```
+
 ## Running in Different Environments
+
+### WSL (Windows Subsystem for Linux)
+
+The script is fully compatible with WSL. Make sure you have the MySQL client installed:
+
+```bash
+# Install MySQL client in WSL
+sudo apt-get update
+sudo apt-get install mysql-client
+
+# Test connection to your MySQL server
+mysql -h 2.3.4.5 -u root -p -e "SELECT 1;"
+
+# Run the monitoring script
+cd /path/to/percona_operator/percona/scripts/monitoring
+./monitor-pxc-load-test.sh -h 2.3.4.5 -u root -p
+```
+
+**WSL Notes:**
+- The script will automatically check if `mysql` client is installed
+- Storage monitoring (PVC) features require `kubectl` and `jq` (optional)
+- Color output works in Windows Terminal, WSL Terminal, and most modern terminals
+- The script uses standard bash features compatible with WSL's bash
+- For complete WSL setup instructions, see: [WSL_SETUP.md](../../on-prem/WSL_SETUP.md)
 
 ### On-Prem / Local MySQL
 
@@ -196,12 +250,42 @@ When you press **Ctrl+C**, the script generates a comprehensive final report and
 ## Troubleshooting
 
 ### Connection Issues
-```bash
-# Test MySQL connection
-mysql -h 127.0.0.1 -P 3306 -u root -p -e "SELECT 1;"
 
+If you see `[ERROR] Cannot connect to MySQL`, the script now shows the actual MySQL error to help debug:
+
+```bash
+# Test MySQL connection manually
+mysql -h 2.3.4.5 -P 3306 -u root -p -e "SELECT 1;"
+
+# Check if MySQL is running on the host
+telnet 2.3.4.5 3306
+# or
+nc -zv 2.3.4.5 3306
+
+# Common issues:
+# 1. MySQL server not running
+# 2. Firewall blocking port 3306
+# 3. MySQL not configured to accept remote connections
+# 4. Wrong password
+# 5. User not granted access from your IP
+```
+
+**Password Options:**
+The script supports multiple ways to provide passwords (like MySQL client):
+- `-p` alone: Prompts for password securely
+- `-p PASSWORD`: Password with space
+- `-pPASSWORD`: Password without space (MySQL style)
+- `--password PASSWORD`: Long form with required argument
+
+```bash
 # Check if Performance Schema is enabled
 mysql -u root -p -e "SHOW VARIABLES LIKE 'performance_schema';"
+
+# Grant remote access if needed (run on MySQL server)
+mysql -u root -p
+CREATE USER 'root'@'%' IDENTIFIED BY 'yourpassword';
+GRANT ALL PRIVILEGES ON *.* TO 'root'@'%' WITH GRANT OPTION;
+FLUSH PRIVILEGES;
 ```
 
 ### Performance Schema Disabled
