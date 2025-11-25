@@ -34,6 +34,7 @@ htmlcov/
 # IDE
 .vscode/
 .idea/
+.cursorrules
 
 # Secrets and credentials
 secrets/

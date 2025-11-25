@@ -1,0 +1,90 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Database Emergency Kit</title>
+    <link rel="stylesheet" href="/static/styles.css">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700;800&display=swap" rel="stylesheet">
+</head>
+<body>
+    <div class="gradient-bg"></div>
+    
+    <div class="container">
+        <header class="header">
+            <div class="header-content">
+                <h1 class="title">
+                    <span>Database Emergency Kit</span>
+                </h1>
+                <div class="on-call-info">
+                    <div class="on-call-label">Emergency On-call Contact</div>
+                    <div class="on-call-name">Craig Glendenning</div>
+                    <div class="on-call-phone">+1 (555) 123-4567</div>
+                </div>
+            </div>
+            
+            <div class="environment-switcher">
+                <button class="env-btn active" data-env="eks">
+                    EKS
+                </button>
+                <button class="env-btn" data-env="on-prem">
+                    On-Prem
+                </button>
+            </div>
+        </header>
+
+        <div class="unknown-scenario-section">
+            <div class="scenario-card unknown-scenario">
+                <div class="scenario-header" onclick="toggleScenario('unknown')">
+                    <div class="expand-arrow" id="arrow-unknown">▶</div>
+                    <div class="scenario-summary">
+                        <h3 class="scenario-title">
+                            I don't know which scenario is true below, I just know it's down
+                        </h3>
+                        <div class="scenario-meta">
+                            <span class="badge badge-critical">DIAGNOSTIC TOOL</span>
+                        </div>
+                    </div>
+                </div>
+                <div class="recovery-content" id="content-unknown">
+                    <div class="recovery-inner">
+                        <div class="diagnostic-info">
+                            <p><strong>Run this diagnostic script to automatically detect which scenario is occurring:</strong></p>
+                        </div>
+                        <div class="code-block">
+                            <div class="code-header">
+                                <span>detect-scenario.py</span>
+                                <button class="copy-btn" onclick="copyToClipboard('diagnostic-script')" title="Copy to clipboard">
+                                    Copy
+                                </button>
+                            </div>
+                            <pre id="diagnostic-script"><code>curl -fsSL http://localhost:8080/static/detect-scenario.py | python3</code></pre>
+                        </div>
+                        <div class="diagnostic-note">
+                            <strong>What it does:</strong>
+                            <ul>
+                                <li>Checks pod status, cluster health, and node availability</li>
+                                <li>Tests API server connectivity and service endpoints</li>
+                                <li>Identifies matching disaster scenarios</li>
+                                <li>Provides direct links to recovery procedures</li>
+                            </ul>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <div class="scenarios-container" id="scenarios-container">
+            <div class="loading">
+                <div class="spinner"></div>
+                <p>Loading emergency procedures...</p>
+            </div>
+        </div>
+    </div>
+
+    <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+    <script src="/static/app.js"></script>
+</body>
+</html>
