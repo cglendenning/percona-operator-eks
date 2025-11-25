@@ -12,6 +12,14 @@ MYSQL_USER="${MYSQL_USER:-root}"
 MYSQL_PASSWORD="${MYSQL_PASSWORD:-}"
 INTERVAL="${INTERVAL:-5}"  # seconds between checks
 OUTPUT_DIR="${OUTPUT_DIR:-pxc-monitoring-$(date +%Y%m%d-%H%M%S)}"
+DASHBOARD_MODE="${DASHBOARD_MODE:-1}"  # 1 for dashboard mode, 0 for scrolling mode
+
+# Get terminal dimensions
+get_terminal_width() {
+    tput cols 2>/dev/null || echo 80
+}
+
+TERM_WIDTH=$(get_terminal_width)
 
 # Colors for output
 RED='\033[0;31m'
@@ -124,14 +132,47 @@ run_query() {
 
     echo "=== $title ==="
     if ! mysql $MYSQL_OPTS -e "$query" 2>/dev/null; then
-        echo "Query failed"
+        echo "Query failed or no data"
     fi
+    echo
+}
+
+# Print a horizontal separator line
+print_separator() {
+    local char="${1:--}"
+    printf '%*s\n' "$TERM_WIDTH" '' | tr ' ' "$char"
+}
+
+# Print centered text
+print_centered() {
+    local text="$1"
+    local width=$TERM_WIDTH
+    local padding=$(( (width - ${#text}) / 2 ))
+    printf '%*s%s\n' $padding '' "$text"
+}
+
+# Clear screen for dashboard mode
+clear_screen() {
+    if [ "$DASHBOARD_MODE" = "1" ]; then
+        clear
+    fi
+}
+
+# Dashboard header
+print_dashboard_header() {
+    local timestamp=$(date +'%Y-%m-%d %H:%M:%S')
+    print_separator '='
+    print_centered "PERCONA XtraDB CLUSTER MONITORING DASHBOARD"
+    print_centered "$MYSQL_HOST:$MYSQL_PORT | User: $MYSQL_USER | $timestamp"
+    print_separator '='
     echo
 }
 
 # Monitor cluster status
 monitor_cluster_status() {
-    log "Monitoring Cluster Status..."
+    if [ "$DASHBOARD_MODE" != "1" ]; then
+        log "Monitoring Cluster Status..."
+    fi
 
     # Cluster overview
     run_query "
@@ -192,7 +233,9 @@ monitor_cluster_status() {
 
 # Monitor performance metrics
 monitor_performance() {
-    log "Monitoring Performance Metrics..."
+    if [ "$DASHBOARD_MODE" != "1" ]; then
+        log "Monitoring Performance Metrics..."
+    fi
 
     # Connections
     run_query "
@@ -220,29 +263,32 @@ monitor_performance() {
     FROM information_schema.processlist
     WHERE COMMAND NOT IN ('Sleep', 'Connect');" "QUERY ACTIVITY"
 
-    # InnoDB status
+    # InnoDB status - calculate buffer pool hit rate manually if not available
     run_query "
     SELECT
         'Buffer Pool Hit Rate (%)' as Metric,
-        ROUND(VARIABLE_VALUE, 2) as Value,
+        ROUND(100.0 * (1.0 - (
+            (SELECT VARIABLE_VALUE FROM performance_schema.global_status WHERE VARIABLE_NAME = 'Innodb_buffer_pool_reads') /
+            (SELECT VARIABLE_VALUE FROM performance_schema.global_status WHERE VARIABLE_NAME = 'Innodb_buffer_pool_read_requests')
+        )), 2) as Value,
         CASE
-            WHEN CAST(VARIABLE_VALUE AS DECIMAL) > 95 THEN '✅ EXCELLENT'
-            WHEN CAST(VARIABLE_VALUE AS DECIMAL) > 90 THEN '⚠️  GOOD'
+            WHEN (100.0 * (1.0 - (
+                (SELECT VARIABLE_VALUE FROM performance_schema.global_status WHERE VARIABLE_NAME = 'Innodb_buffer_pool_reads') /
+                (SELECT VARIABLE_VALUE FROM performance_schema.global_status WHERE VARIABLE_NAME = 'Innodb_buffer_pool_read_requests')
+            ))) > 95 THEN '✅ EXCELLENT'
+            WHEN (100.0 * (1.0 - (
+                (SELECT VARIABLE_VALUE FROM performance_schema.global_status WHERE VARIABLE_NAME = 'Innodb_buffer_pool_reads') /
+                (SELECT VARIABLE_VALUE FROM performance_schema.global_status WHERE VARIABLE_NAME = 'Innodb_buffer_pool_read_requests')
+            ))) > 90 THEN '⚠️  GOOD'
             ELSE '❌ POOR'
-        END as Status
-    FROM performance_schema.global_status
-    WHERE VARIABLE_NAME = 'Innodb_buffer_pool_hit_rate'
-    UNION ALL
-    SELECT
-        'Lock Waits',
-        COUNT(*),
-        CASE WHEN COUNT(*) > 0 THEN '⚠️  ACTIVE WAITS' ELSE '✅ NO WAITS' END
-    FROM information_schema.innodb_lock_waits;" "INNODB PERFORMANCE"
+        END as Status;" "INNODB PERFORMANCE"
 }
 
 # Monitor system resources
 monitor_resources() {
-    log "Monitoring System Resources..."
+    if [ "$DASHBOARD_MODE" != "1" ]; then
+        log "Monitoring System Resources..."
+    fi
 
     run_query "
     SELECT
@@ -250,25 +296,30 @@ monitor_resources() {
         ROUND(@@innodb_buffer_pool_size / 1024 / 1024, 0) as Allocated
     UNION ALL
     SELECT
-        'Current Memory Usage (MB)',
-        ROUND((SELECT SUM(current_alloc)
-               FROM sys.memory_by_thread_by_current_bytes
-               WHERE thread_id IN (
-                   SELECT thread_id
-                   FROM performance_schema.threads
-                   WHERE PROCESSLIST_STATE IS NOT NULL
-               )) / 1024 / 1024, 0);" "MEMORY USAGE"
+        'Max Connections',
+        @@max_connections
+    UNION ALL
+    SELECT
+        'Current Connections',
+        (SELECT COUNT(*) FROM information_schema.processlist);" "MEMORY & CONNECTIONS"
 
     run_query "
     SELECT
         VARIABLE_NAME as 'I/O Metric',
-        VARIABLE_VALUE as 'Value'
+        ROUND(VARIABLE_VALUE / 1024 / 1024, 2) as 'Value (MB)'
+    FROM performance_schema.global_status
+    WHERE VARIABLE_NAME IN (
+        'Innodb_data_read',
+        'Innodb_data_written'
+    )
+    UNION ALL
+    SELECT
+        VARIABLE_NAME,
+        VARIABLE_VALUE
     FROM performance_schema.global_status
     WHERE VARIABLE_NAME IN (
         'Innodb_data_reads',
-        'Innodb_data_writes',
-        'Innodb_data_read',
-        'Innodb_data_written'
+        'Innodb_data_writes'
     );" "I/O STATISTICS"
 }
 
@@ -281,17 +332,25 @@ monitor_storage() {
 
     # Try to detect namespace from MySQL host if it contains a service name
     local namespace=""
-    if [[ "$MYSQL_HOST" =~ ^[^.]+\. ]]; then
+    # Check if host looks like a Kubernetes service (contains letters and dots, not just IP)
+    if [[ "$MYSQL_HOST" =~ ^[a-zA-Z][a-zA-Z0-9-]*\.[a-zA-Z] ]]; then
         # Extract namespace from service FQDN (e.g., mysql.default.svc.cluster.local)
         namespace=$(echo "$MYSQL_HOST" | cut -d. -f2)
     fi
     
-    # If no namespace detected, try common ones or get from context
+    # If no namespace detected, try to get from context
     if [ -z "$namespace" ]; then
-        namespace=$(kubectl config view --minify -o jsonpath='{..namespace}' 2>/dev/null || echo "default")
+        namespace=$(kubectl config view --minify -o jsonpath='{..namespace}' 2>/dev/null)
+    fi
+    
+    # Default to "default" if still empty
+    if [ -z "$namespace" ]; then
+        namespace="default"
     fi
 
-    log "Monitoring Storage (PVCs in namespace: $namespace)..."
+    if [ "$DASHBOARD_MODE" != "1" ]; then
+        log "Monitoring Storage (PVCs in namespace: $namespace)..."
+    fi
 
     # Get PVC information for the namespace
     local pvc_output
@@ -522,35 +581,54 @@ main() {
     info "Host: $MYSQL_HOST:$MYSQL_PORT"
     info "Interval: $INTERVAL seconds"
     info "Output directory: $OUTPUT_DIR"
+    info "Dashboard mode: $([ "$DASHBOARD_MODE" = "1" ] && echo "enabled" || echo "disabled (scrolling)")"
     echo
 
     check_mysql_client
     check_mysql_connection
 
-    log "Initial cluster health check..."
-    monitor_cluster_status
-    monitor_performance
-    monitor_resources
-    monitor_storage
-
     if [ "$INTERVAL" -gt 0 ]; then
-        info "Starting continuous monitoring (Ctrl+C to stop)..."
-        echo "Press Ctrl+C to stop monitoring and generate final report"
-        echo
+        if [ "$DASHBOARD_MODE" = "1" ]; then
+            info "Starting dashboard monitoring (refreshing every $INTERVAL seconds)..."
+            info "Press Ctrl+C to stop monitoring and generate final report"
+            sleep 2  # Give user time to read
+        else
+            info "Starting continuous monitoring (Ctrl+C to stop)..."
+            echo "Press Ctrl+C to stop monitoring and generate final report"
+            echo
+        fi
 
-        trap 'echo; log "Stopping monitoring..."; generate_report; exit 0' INT
+        trap 'clear; echo; log "Stopping monitoring..."; generate_report; exit 0' INT
 
         while true; do
-            sleep "$INTERVAL"
-            echo "================================================================="
+            if [ "$DASHBOARD_MODE" = "1" ]; then
+                clear_screen
+                print_dashboard_header
+            else
+                echo "================================================================="
+            fi
+            
             monitor_cluster_status
             monitor_performance
             monitor_resources
             monitor_storage
-            echo "================================================================="
+            
+            if [ "$DASHBOARD_MODE" = "1" ]; then
+                print_separator '='
+                echo -e "${CYAN}Next refresh in $INTERVAL seconds... (Ctrl+C to stop)${NC}"
+            else
+                echo "================================================================="
+            fi
+            
+            sleep "$INTERVAL"
         done
     else
         log "Single monitoring run completed"
+        print_dashboard_header
+        monitor_cluster_status
+        monitor_performance
+        monitor_resources
+        monitor_storage
         generate_report
     fi
 }
@@ -573,6 +651,7 @@ OPTIONS:
     -i, --interval SEC       Monitoring interval in seconds (default: 5)
                                Use 0 for single run only
     -o, --output DIR         Output directory (default: auto-generated)
+    -s, --scroll             Disable dashboard mode (use scrolling output)
     --help                   Show this help
 
 ENVIRONMENT VARIABLES:
@@ -582,6 +661,7 @@ ENVIRONMENT VARIABLES:
     MYSQL_PASSWORD           Same as --password
     INTERVAL                 Same as --interval
     OUTPUT_DIR               Same as --output
+    DASHBOARD_MODE           Set to 0 to disable dashboard (default: 1)
     DEBUG                    Set to 1 to enable debug output (default: 0)
 
 FEATURES:
@@ -593,8 +673,11 @@ FEATURES:
     - Comprehensive final report generation
 
 EXAMPLES:
-    # Monitor every 5 seconds - prompt for password
+    # Dashboard mode (default) - refreshing display
     $0 -h 2.3.4.5 -u root -p
+
+    # Scrolling mode - old behavior
+    $0 -h 2.3.4.5 -u root -p --scroll
 
     # Provide password directly (with space)
     $0 -h 2.3.4.5 -u root -p mypassword
@@ -602,17 +685,20 @@ EXAMPLES:
     # Provide password directly (no space, MySQL style)
     $0 -h 2.3.4.5 -u root -pmypassword
 
-    # Single report only
+    # Single report only (no continuous monitoring)
     $0 -i 0 -u admin -p
 
-    # Custom host and port with password prompt
-    $0 -h mysql-cluster.example.com -P 3307 -u admin -p
+    # Custom refresh interval (10 seconds)
+    $0 -h mysql-cluster.example.com -P 3307 -u admin -p -i 10
 
     # On-prem with local MySQL
     $0 -h 127.0.0.1 -u root -p
 
     # Debug mode - shows detailed connection info
     DEBUG=1 $0 -h 2.3.4.5 -u root -p
+
+    # Disable dashboard with environment variable
+    DASHBOARD_MODE=0 $0 -h 2.3.4.5 -u root -p
 
 KUBERNETES ENVIRONMENTS:
     When running in Kubernetes (kubectl available), the script will
@@ -694,6 +780,10 @@ while [[ $# -gt 0 ]]; do
             fi
             OUTPUT_DIR="$2"
             shift 2
+            ;;
+        -s|--scroll)
+            DASHBOARD_MODE=0
+            shift
             ;;
         --help)
             show_help

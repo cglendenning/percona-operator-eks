@@ -13,14 +13,20 @@ This directory contains tools to monitor your Percona XtraDB Cluster (PXC) durin
 ### Option 1: Automated Monitoring Script (Recommended)
 
 ```bash
-# Real-time monitoring every 5 seconds (prompts for password)
+# Dashboard mode (default) - single screen that refreshes in place
 ./monitoring/monitor-pxc-load-test.sh -h 2.3.4.5 -u root -p
+
+# Scrolling mode - traditional output that scrolls
+./monitoring/monitor-pxc-load-test.sh -h 2.3.4.5 -u root -p --scroll
 
 # Provide password directly - with space
 ./monitoring/monitor-pxc-load-test.sh -h 2.3.4.5 -u root -p mypassword
 
 # Provide password directly - MySQL style (no space)
 ./monitoring/monitor-pxc-load-test.sh -h 2.3.4.5 -u root -pmypassword
+
+# Custom refresh interval (10 seconds instead of 5)
+./monitoring/monitor-pxc-load-test.sh -h 2.3.4.5 -u root -p -i 10
 
 # Single report only (no continuous monitoring)
 ./monitoring/monitor-pxc-load-test.sh -i 0 -u root -p
@@ -39,13 +45,16 @@ mysql -h 127.0.0.1 -P 3306 -u root -p < pxc-load-test-queries.sql
 
 ## Features
 
+- **Dashboard Mode**: Single-screen refreshing display (like `top` or `htop`) - default behavior
+- **Scrolling Mode**: Traditional scrolling output available with `--scroll` flag
 - **Real-time Monitoring**: Continuous monitoring with configurable refresh intervals (default: 5 seconds)
-- **Daemon Mode**: Runs as a background daemon process until interrupted
+- **Daemon Mode**: Runs as a continuous process until interrupted (Ctrl+C)
 - **Cluster Health**: Monitor Galera cluster status, node synchronization, and flow control
 - **Performance Metrics**: Track connections, queries, InnoDB performance, and buffer pool efficiency
 - **Resource Monitoring**: Memory usage, I/O statistics, and system resources
 - **Storage Monitoring**: PVC usage and capacity (Kubernetes environments)
 - **Comprehensive Reports**: Generate detailed reports on demand or when stopping monitoring
+- **Responsive Layout**: Automatically adapts to terminal width (tested up to 170 columns)
 
 ## What to Monitor During Load Testing
 
@@ -230,6 +239,32 @@ kubectl config current-context
 kubectl get pvc -n <your-namespace>
 ```
 
+### Dashboard vs Scrolling Mode
+
+**Dashboard Mode (Default):**
+- Clears screen and refreshes in place (like `top` or `htop`)
+- Clean, organized single-screen view
+- Shows header with connection info and timestamp
+- Automatically adapts to terminal width
+- Best for real-time monitoring
+
+**Scrolling Mode:**
+- Traditional output that scrolls down
+- Useful for logging or piping to files
+- Enable with `--scroll` or `-s` flag
+- Enable with `DASHBOARD_MODE=0` environment variable
+
+```bash
+# Dashboard mode (default)
+./monitor-pxc-load-test.sh -u root -p
+
+# Scrolling mode
+./monitor-pxc-load-test.sh -u root -p --scroll
+
+# Scrolling mode via environment variable
+DASHBOARD_MODE=0 ./monitor-pxc-load-test.sh -u root -p
+```
+
 ### Daemon Mode
 
 The script runs as a daemon by default, continuously monitoring at the specified interval:
@@ -245,7 +280,7 @@ The script runs as a daemon by default, continuously monitoring at the specified
 ./monitor-pxc-load-test.sh -i 0 -u root -p
 ```
 
-When you press **Ctrl+C**, the script generates a comprehensive final report and exits gracefully.
+When you press **Ctrl+C**, the script clears the screen, generates a comprehensive final report, and exits gracefully.
 
 ## Troubleshooting
 
