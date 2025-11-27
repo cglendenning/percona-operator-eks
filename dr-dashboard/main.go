@@ -61,8 +61,8 @@ func main() {
 		port = "8080"
 	}
 
-	log.Printf("🚨 Disaster Recovery Dashboard starting on port %s", port)
-	log.Printf("📍 Open http://localhost:%s in your browser", port)
+	log.Printf("Disaster Recovery Dashboard starting on port %s", port)
+	log.Printf("Open http://localhost:%s in your browser", port)
 	log.Fatal(http.ListenAndServe(":"+port, nil))
 }
 
