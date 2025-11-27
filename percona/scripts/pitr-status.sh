@@ -81,12 +81,13 @@ REQUIRED:
 
 OPTIONS:
     -c, --cluster CLUSTER_NAME   Cluster name (default: auto-detect)
+    --kubeconfig PATH             Path to kubeconfig file (optional)
     -v, --verbose                Show detailed debug information
     -d, --detailed               Show detailed binlog analysis
     -h, --help                   Show this help message
 
 ENVIRONMENT:
-    KUBECONFIG                   Path to kubeconfig file (optional)
+    KUBECONFIG                   Path to kubeconfig file (optional, overridden by --kubeconfig)
 
 EXAMPLES:
     # Basic status check
@@ -99,7 +100,7 @@ EXAMPLES:
     $0 -n craig-test -d
 
     # Using custom kubeconfig
-    KUBECONFIG=~/.kube/prod-config $0 -n percona
+    $0 -n percona --kubeconfig ~/.kube/prod-config
 
 EOF
     exit 1
@@ -114,6 +115,10 @@ while [[ $# -gt 0 ]]; do
             ;;
         -c|--cluster)
             CLUSTER_NAME="$2"
+            shift 2
+            ;;
+        --kubeconfig)
+            KUBECONFIG="$2"
             shift 2
             ;;
         -v|--verbose)
