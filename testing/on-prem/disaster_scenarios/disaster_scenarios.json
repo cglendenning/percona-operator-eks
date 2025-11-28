@@ -1,11 +1,11 @@
 {
   "scenarios": [
     {
-    "scenario": "Single MySQL pod failure (container crash / OOM)",
-    "primary_recovery_method": "K8s restarts pod; Percona Operator re\u2011joins PXC node automatically",
-    "alternate_fallback": "Manual pod delete; ensure liveness/readiness probes healthy",
-    "detection_signals": "Pod CrashLoopBackOff; PXC node missing; HAProxy/ProxySQL health check fails",
-    "rto_target": "10 minutes",
+    "scenario": "Single PXC or HAProxy pod failure",
+    "primary_recovery_method": "K8s restarts pod; Percona Operator re\u2011joins PXC or HAProxy node automatically",
+    "alternate_fallback": "Manually delete the pod if it exists and is in a non-Running state, and verify that it re-spawns ", 
+    "detection_signals": "PXC or HAProxy liveness probe fails on individual pods",
+    "rto_target": "2 minutes",
     "rpo_target": "0 (no data loss)",
     "mttr_expected": "10\u201320 minutes",
     "expected_data_loss": "None (Galera sync)",

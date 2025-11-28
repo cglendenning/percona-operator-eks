@@ -79,7 +79,7 @@ Restore latest backup to Secondary if replica is stale/unhealthy
 5. Promote to primary
 
 ## Recovery Targets
-- **Service Restored Time Objective**: 120 minutes
+- **Restore Time Objective**: 120 minutes
 - **Recovery Point Objective**: 120 seconds
 - **Full Repair Time Objective**: 2-6 hours (site), but service restored on secondary in ≤2 hours
 
@@ -132,7 +132,7 @@ Once primary DC is restored:
 1. **Root cause analysis** with facilities team
 2. **Review power/cooling redundancy**
 3. **Test failback procedures** when primary restored
-4. **Update Service Restored Time Objective and Recovery Point Objective** based on actual performance
+4. **Update Restore Time Objective and Recovery Point Objective** based on actual performance
 5. **Schedule failover drills** more frequently
 6. **Document lessons learned**
 7. **Review insurance and contracts** for site outages

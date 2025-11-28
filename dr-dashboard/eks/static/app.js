@@ -177,7 +177,7 @@ function renderScenarios(scenarios) {
                         
                         <div class="scenario-info">
                             <div class="info-item">
-                                <span>Service Restored Time Objective: ${scenario.rto_target}</span>
+                                <span>Restore Time Objective: ${scenario.rto_target}</span>
                             </div>
                             <div class="info-item">
                                 <span>Recovery Point Objective: ${scenario.rpo_target}</span>
