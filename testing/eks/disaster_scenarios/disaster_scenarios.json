@@ -93,6 +93,24 @@
     "test_file": "test_dr_percona_operator_crd_misconfiguration.py"
   },
   {
+    "scenario": "Schema change or DDL blocks writes",
+    "primary_recovery_method": "Kill blocking DDL process if safe; wait for completion if near end; rollback DDL if possible",
+    "alternate_fallback": "If DDL cannot be killed safely, failover to replica; restore from backup if DDL corrupted schema",
+    "detection_signals": "Writes blocked; 'Waiting for table metadata lock' errors; DDL process running long; application timeouts on writes",
+    "rto_target": "30 minutes",
+    "rpo_target": "0",
+    "mttr_expected": "15-60 minutes",
+    "expected_data_loss": "None if handled correctly; potential data loss if DDL is killed mid-operation",
+    "likelihood": "medium",
+    "likelihood_justification": "Medium likelihood due to long-running DDL operations (ALTER TABLE on large tables, CREATE INDEX, etc.), unexpected DDL operations during peak hours, or DDL operations that deadlock with application transactions. More common with large tables or when DDL is not properly planned.",
+    "business_impact": "high",
+    "affected_components": "Database schema, table locks, write operations, application transactions",
+    "notes_assumptions": "DDL operations are monitored; ability to identify and kill DDL processes safely; replica available for failover if needed; backup available if schema corruption occurs.",
+    "test_enabled": true,
+    "test_description": "Test creates table, inserts data, starts uncommitted transaction, runs DDL to create blocking, then verifies killing DDL unblocks writes",
+    "test_file": "test_dr_schema_change_or_ddl_blocks_writes.py"
+  },
+  {
     "scenario": "Cluster loses quorum (multiple PXC pods down)",
     "primary_recovery_method": "Recover majority; bootstrap from most advanced node; follow Percona PXC bootstrap runbook",
     "alternate_fallback": "Promote secondary DC replica to primary; redirect traffic",
@@ -283,18 +301,18 @@
     "test_file": null
   },
   {
-    "scenario": "Ingress/VIP failure (HAProxy/ProxySQL service unreachable)",
-    "primary_recovery_method": "Fail traffic to alternate service/ingress; fix Service/Endpoints",
-    "alternate_fallback": "Clients connect via read/write split endpoints directly",
-    "detection_signals": "Health checks fail; 502/503; service endpoints empty",
+    "scenario": "HAProxy endpoints inaccessible",
+    "primary_recovery_method": "Fix K8s Service/Endpoints configuration; restore ingress/DNS routing; verify network connectivity",
+    "alternate_fallback": "Clients connect via read/write split endpoints directly to PXC (bypass HAProxy)",
+    "detection_signals": "Health checks fail; 502/503 errors; service endpoints empty; HAProxy pods healthy but unreachable from applications",
     "rto_target": "30 minutes",
     "rpo_target": "0",
     "mttr_expected": "30\u201360 minutes",
     "expected_data_loss": "None",
     "likelihood": "medium",
     "business_impact": "high",
-    "affected_components": "K8s Service, HAProxy/ProxySQL, DNS/ingress",
-    "notes_assumptions": "Dual ingress paths; Service monitors; out\u2011of\u2011band jump path.",
+    "affected_components": "K8s Service endpoints, DNS/ingress routing, network connectivity (HAProxy pods remain healthy)",
+    "notes_assumptions": "HAProxy pods are running and healthy; issue is with Service endpoints, ingress, DNS, or network routing preventing application access.",
     "test_enabled": true,
     "chaos_type": "pod-delete",
     "target_label": "app.kubernetes.io/component=proxysql",
@@ -380,24 +398,6 @@
     "test_file": null
   },
   {
-    "scenario": "Multiple infrastructure failures occurring simultaneously",
-    "primary_recovery_method": "Prioritize by business impact; address critical path first; coordinate recovery efforts",
-    "alternate_fallback": "Failover to secondary DC if available; restore from backups; rebuild infrastructure",
-    "detection_signals": "Multiple alerts across systems; cascading failures; service degradation across multiple components",
-    "rto_target": "6 hours",
-    "rpo_target": "60 seconds",
-    "mttr_expected": "6-24 hours",
-    "expected_data_loss": "Depends on specific failures; up to RPO of most critical component",
-    "likelihood": "low",
-    "likelihood_justification": "Low likelihood but represents worst-case scenario. Can occur during natural disasters, major infrastructure events, or coordinated attacks. Requires comprehensive incident response.",
-    "business_impact": "critical",
-    "affected_components": "Multiple infrastructure components, network, storage, compute",
-    "notes_assumptions": "Incident response procedures documented; escalation paths defined; secondary DC available as last resort.",
-    "test_enabled": false,
-    "test_description": "Multi-failure scenarios require complex orchestration beyond automated testing",
-    "test_file": null
-  },
-  {
     "scenario": "Audit log corruption or loss (compliance violation)",
     "primary_recovery_method": "Restore audit logs from backup; regenerate from binlogs if possible; document gap for auditors",
     "alternate_fallback": "Reconstruct audit trail from application logs; implement compensating controls",
@@ -408,7 +408,7 @@
     "expected_data_loss": "Audit trail gaps (compliance risk)",
     "likelihood": "low",
     "likelihood_justification": "Low likelihood due to audit log protection mechanisms, but can occur due to storage corruption, EBS failures, or misconfiguration. Critical for SOX, ISO 27001, and SOC 2 compliance.",
-    "business_impact": "high",
+    "business_impact": "low",
     "affected_components": "Audit logs, compliance reporting, regulatory requirements",
     "notes_assumptions": "Audit logs backed up separately; integrity checks enabled; compliance team notified immediately.",
     "test_enabled": false,
@@ -438,6 +438,10 @@
     {
       "scenario": "Secondary DC failure during primary DC recovery",
       "reason": "No recovery process documentation created - scenario represents cascading failure requiring complex multi-DC coordination beyond standard recovery procedures"
+    },
+    {
+      "scenario": "Multiple infrastructure failures occurring simultaneously",
+      "reason": "No recovery process documentation created - scenario represents worst-case cascading failure scenario requiring complex multi-system coordination and incident response beyond standard database recovery procedures. Recovery depends on specific combination of failures and requires comprehensive incident management rather than a single recovery playbook."
     }
   ]
 }
