@@ -146,6 +146,17 @@ function formatDescription(text) {
     return text.split(';').map(item => item.trim()).filter(item => item).join('<br>');
 }
 
+function formatRPO(rpo) {
+    if (!rpo) return 'N/A';
+    // Check if RPO is 0 or indicates no data loss
+    const rpoLower = rpo.toLowerCase().trim();
+    // Match: "0", "0 (no data loss)", "0 (no failover)", or any string starting with "0 "
+    if (rpo === '0' || rpoLower === '0' || rpoLower.startsWith('0 ') || rpoLower.startsWith('0(')) {
+        return 'up-to-date';
+    }
+    return rpo;
+}
+
 function renderScenarios(scenarios) {
     const container = document.getElementById('scenarios-container');
     
@@ -180,7 +191,7 @@ function renderScenarios(scenarios) {
                                 <span>Restore Time Objective: ${scenario.rto_target}</span>
                             </div>
                             <div class="info-item">
-                                <span>Recovery Point Objective: ${scenario.rpo_target}</span>
+                                <span>Recovery Point Objective: ${formatRPO(scenario.rpo_target)}</span>
                             </div>
                             <div class="info-item">
                                 <span>Full Repair Time Objective: ${scenario.mttr_expected}</span>

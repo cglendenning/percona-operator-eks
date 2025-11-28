@@ -1,43 +1,109 @@
-# Sustained High Load Causing Performance Degradation Recovery Process
+# Increased API Call Volume Causes Performance Degradation Recovery Process
 
 ## Primary Recovery Method
 
-1. **Identify the performance issue**
+1. **Identify performance degradation from increased API volume**
    ```bash
    # Check CPU and memory usage
-   kubectl top pods -n <namespace> | grep pxc
+   kubectl top pods -n <namespace> | grep -E 'pxc|haproxy'
    
-   # Check slow query log
-   kubectl exec -n <namespace> <pod> -- mysql -uroot -p<pass> -e "SHOW VARIABLES LIKE 'slow_query_log';"
-   kubectl exec -n <namespace> <pod> -- mysql -uroot -p<pass> -e "SHOW VARIABLES LIKE 'long_query_time';"
-   kubectl exec -n <namespace> <pod> -- tail -100 /var/lib/mysql/slow-query.log
+   # Check current cluster size
+   kubectl get perconaxtradbcluster -n <namespace> <cluster-name> -o jsonpath='{.spec.pxc.size}'
+   kubectl get perconaxtradbcluster -n <namespace> <cluster-name> -o jsonpath='{.spec.haproxy.size}'
    
-   # Check current running queries
-   kubectl exec -n <namespace> <pod> -- mysql -uroot -p<pass> -e "SELECT ID, USER, HOST, DB, COMMAND, TIME, STATE, LEFT(INFO, 100) as QUERY FROM information_schema.processlist WHERE COMMAND != 'Sleep' ORDER BY TIME DESC;"
+   # Check CloudWatch metrics for API call volume
+   aws cloudwatch get-metric-statistics \
+     --namespace Application \
+     --metric-name RequestCount \
+     --start-time $(date -u -d '1 hour ago' +%Y-%m-%dT%H:%M:%S) \
+     --end-time $(date -u +%Y-%m-%dT%H:%M:%S) \
+     --period 300 \
+     --statistics Sum
    
-   # Check replication lag
-   kubectl exec -n <namespace> <pod> -- mysql -uroot -p<pass> -e "SHOW SLAVE STATUS\G" | grep Seconds_Behind_Master
+   # Check application metrics for API call volume
+   # Review application logs and metrics dashboards
+   # Verify increased API traffic is the root cause
    ```
 
-2. **Scale up resources**
+2. **Scale up PXC cluster size**
    ```bash
-   # Check current resource limits
-   kubectl get perconaxtradbcluster -n <namespace> <cluster-name> -o yaml | grep -A 10 resources
-   
-   # Update PerconaXtraDBCluster CR to increase resources
+   # Get current PerconaXtraDBCluster CR
    kubectl get perconaxtradbcluster -n <namespace> <cluster-name> -o yaml > cluster-backup.yaml
-   # Edit cluster-backup.yaml to increase:
-   # spec.pxc.resources.requests.cpu
-   # spec.pxc.resources.requests.memory
-   # spec.pxc.resources.limits.cpu
-   # spec.pxc.resources.limits.memory
+   
+   # Edit cluster-backup.yaml to increase PXC size
+   # Change: spec.pxc.size from current value (e.g., 3) to larger value (e.g., 5)
+   # Example:
+   # spec:
+   #   pxc:
+   #     size: 5
+   
+   # Apply the change
    kubectl apply -f cluster-backup.yaml
    
-   # Wait for pods to restart with new resources
-   kubectl get pods -n <namespace> -w
+   # Monitor pod scaling
+   kubectl get pods -n <namespace> -l app.kubernetes.io/component=pxc -w
+   
+   # Wait for new pods to be ready and join cluster
+   kubectl wait --for=condition=ready pod -n <namespace> -l app.kubernetes.io/component=pxc --timeout=600s
    ```
 
-3. **Optimize slow queries**
+3. **Scale up HAProxy size if needed**
+   ```bash
+   # If HAProxy is the bottleneck, scale it up
+   # Edit cluster-backup.yaml to increase HAProxy size
+   # Change: spec.haproxy.size from current value to larger value
+   # Example:
+   # spec:
+   #   haproxy:
+   #     size: 3
+   
+   # Apply the change
+   kubectl apply -f cluster-backup.yaml
+   
+   # Monitor HAProxy pod scaling
+   kubectl get pods -n <namespace> -l app.kubernetes.io/component=haproxy -w
+   ```
+
+4. **Push changes to appropriate branch (GitOps workflow)**
+   ```bash
+   # If using GitOps (Fleet/Rancher), commit and push changes
+   # Navigate to GitOps repository
+   cd <gitops-repo>
+   
+   # Commit the cluster configuration change
+   git add <path-to-cluster-config>
+   git commit -m "Scale up PXC/HAProxy cluster for increased API volume"
+   git push origin <appropriate-branch>
+   
+   # Verify GitOps sync picks up the change
+   # Monitor Fleet/Rancher for deployment status
+   ```
+
+5. **Verify performance is restored**
+   ```bash
+   # Monitor resource usage after scaling
+   kubectl top pods -n <namespace> | grep -E 'pxc|haproxy'
+   
+   # Check CloudWatch metrics
+   aws cloudwatch get-metric-statistics \
+     --namespace Kubernetes \
+     --metric-name pod_cpu_usage \
+     --start-time $(date -u -d '10 minutes ago' +%Y-%m-%dT%H:%M:%S) \
+     --end-time $(date -u +%Y-%m-%dT%H:%M:%S) \
+     --period 60 \
+     --statistics Average
+   
+   # Check cluster status
+   kubectl exec -n <namespace> <pxc-pod> -- mysql -e "SHOW STATUS LIKE 'wsrep_cluster_size';"
+   
+   # Monitor application response times
+   # Check API response time metrics
+   # Verify performance degradation is resolved
+   ```
+
+## Alternate/Fallback Method
+
+1. **If scaling reveals query or data model inefficiencies**
    ```bash
    # Identify slow queries
    kubectl exec -n <namespace> <pod> -- mysql -uroot -p<pass> -e "SELECT sql_text, exec_count, avg_timer_wait/1000000000000 as avg_time_sec, sum_timer_wait/1000000000000 as total_time_sec FROM performance_schema.events_statements_summary_by_digest ORDER BY sum_timer_wait DESC LIMIT 10;"
@@ -45,27 +111,21 @@
    # Check for missing indexes
    kubectl exec -n <namespace> <pod> -- mysql -uroot -p<pass> -e "SELECT TABLE_SCHEMA, TABLE_NAME, INDEX_NAME, CARDINALITY FROM information_schema.STATISTICS WHERE TABLE_SCHEMA NOT IN ('information_schema', 'mysql', 'performance_schema', 'sys') ORDER BY CARDINALITY;"
    
-   # Analyze and optimize queries
-   # Use EXPLAIN to analyze query plans
+   # Analyze query execution plans
    kubectl exec -n <namespace> <pod> -- mysql -uroot -p<pass> -e "EXPLAIN <problematic-query>;"
-   ```
-
-4. **Add read replicas if available**
-   ```bash
-   # Check current replica count
-   kubectl get perconaxtradbcluster -n <namespace> <cluster-name> -o yaml | grep replicas
    
-   # Scale up replicas in PerconaXtraDBCluster CR
-   kubectl get perconaxtradbcluster -n <namespace> <cluster-name> -o yaml > cluster-backup.yaml
-   # Edit cluster-backup.yaml to increase:
-   # spec.pxc.size (if using PXC replicas)
-   # Or configure read replicas if supported
-   kubectl apply -f cluster-backup.yaml
+   # Add missing indexes
+   kubectl exec -n <namespace> <pod> -- mysql -uroot -p<pass> -e "CREATE INDEX <index-name> ON <table-name>(<column-name>);"
+   
+   # Optimize data model if needed
+   # Review table structures and relationships
+   # Consider denormalization or partitioning for high-volume tables
    ```
 
-5. **Implement query throttling**
+2. **Implement query throttling if needed**
    ```bash
-   # Enable query throttling via PerconaXtraDBCluster CR
+   # If query optimization is not sufficient
+   # Update PerconaXtraDBCluster CR to add query throttling
    kubectl get perconaxtradbcluster -n <namespace> <cluster-name> -o yaml > cluster-backup.yaml
    # Edit cluster-backup.yaml to add:
    # spec.pxc.configuration: |
@@ -73,39 +133,6 @@
    #   max_connections = <appropriate-limit>
    #   thread_pool_size = <appropriate-size>
    kubectl apply -f cluster-backup.yaml
-   
-   # Or use ProxySQL/HAProxy to implement connection throttling
-   ```
-
-6. **Verify performance is restored**
-   ```bash
-   # Monitor resource usage
-   kubectl top pods -n <namespace> | grep pxc
-   
-   # Check query response times
-   kubectl exec -n <namespace> <pod> -- mysql -uroot -p<pass> -e "SELECT AVG(TIMER_WAIT)/1000000000000 as avg_time_sec FROM performance_schema.events_statements_summary_by_digest WHERE COUNT_STAR > 0;"
-   
-   # Test application response times
-   # Monitor application metrics and logs
-   ```
-
-## Alternate/Fallback Method
-
-1. **Enable read-only mode temporarily**
-   ```bash
-   # Set database to read-only (emergency measure)
-   kubectl exec -n <namespace> <pod> -- mysql -uroot -p<pass> -e "SET GLOBAL read_only = ON;"
-   kubectl exec -n <namespace> <pod> -- mysql -uroot -p<pass> -e "SET GLOBAL super_read_only = ON;"
-   
-   # This allows reads but blocks writes
-   # Use only if writes can be temporarily suspended
-   ```
-
-2. **Failover to secondary DC if available**
-   ```bash
-   # If secondary DC has lower load, promote it to primary
-   # Follow secondary DC promotion procedures
-   # Update application connections to point to secondary DC
    ```
 
 ## Recovery Targets
