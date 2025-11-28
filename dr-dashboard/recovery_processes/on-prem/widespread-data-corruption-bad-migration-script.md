@@ -28,11 +28,11 @@ PITR to pre-change timestamp on clean environment; validate; cutover
 
 4. **Restore backup to pre-corruption time**
    ```bash
-   # Find backup before the bad change
-   aws s3 ls s3://<backup-bucket>/backups/ --recursive | grep "<date-before-corruption>"
+   # Find backup before the bad change from MinIO
+   kubectl exec -n minio-operator <minio-pod> -- mc ls local/<backup-bucket>/backups/ --recursive | grep "<date-before-corruption>"
    
    # Download backup
-   aws s3 sync s3://<backup-bucket>/backups/<backup-name>/ /tmp/restore/ --delete
+   kubectl exec -n minio-operator <minio-pod> -- mc cp local/<backup-bucket>/backups/<backup-name>/ /tmp/restore/ --recursive
    
    # Restore to clean environment
    xtrabackup --prepare --target-dir=/tmp/restore
@@ -41,8 +41,8 @@ PITR to pre-change timestamp on clean environment; validate; cutover
 
 5. **Apply PITR using binlogs**
    ```bash
-   # Download binlogs from S3
-   aws s3 sync s3://<backup-bucket>/binlogs/ /tmp/binlogs/ --exclude "*" --include "mysql-bin.*"
+   # Download binlogs from MinIO
+   kubectl exec -n minio-operator <minio-pod> -- mc cp local/<backup-bucket>/binlogs/ /tmp/binlogs/ --recursive
    
    # Apply binlogs up to BEFORE corruption
    mysqlbinlog --stop-datetime="<timestamp-before-corruption>" /tmp/binlogs/mysql-bin.* | mysql -uroot -p<pass> -h<restore-host>

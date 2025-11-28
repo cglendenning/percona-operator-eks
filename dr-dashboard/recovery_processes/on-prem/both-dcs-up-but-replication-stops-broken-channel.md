@@ -84,7 +84,7 @@ Fix replication (purge relay logs; CHANGE MASTER to correct coordinates; GTID re
    ```
 
 ## Alternate/Fallback Method
-If diverged, rebuild replica from S3 backup + binlogs
+If diverged, rebuild replica from MinIO backup + binlogs
 
 ### Steps
 
@@ -95,11 +95,11 @@ If diverged, rebuild replica from S3 backup + binlogs
 
 2. **Restore from backup**
    ```bash
-   # Get latest backup from S3
-   aws s3 ls s3://<backup-bucket>/backups/ --recursive | sort | tail -1
+   # Get latest backup from MinIO
+   kubectl exec -n minio-operator <minio-pod> -- mc ls local/<backup-bucket>/backups/ --recursive | sort | tail -1
    
    # Download and restore
-   aws s3 sync s3://<backup-bucket>/backups/<backup-name>/ /tmp/restore/ --delete
+   kubectl exec -n minio-operator <minio-pod> -- mc cp local/<backup-bucket>/backups/<backup-name>/ /tmp/restore/ --recursive
    xtrabackup --prepare --target-dir=/tmp/restore
    xtrabackup --copy-back --target-dir=/tmp/restore --datadir=/var/lib/mysql
    ```

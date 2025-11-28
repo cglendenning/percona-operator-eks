@@ -1,7 +1,7 @@
-# Credential Compromise (DB or S3 Keys) Recovery Process
+# Credential Compromise (DB or MinIO Keys) Recovery Process
 
 ## Primary Recovery Method
-Rotate credentials; revoke sessions; rotate S3/IAM; audit access
+Rotate credentials; revoke sessions; rotate MinIO credentials; audit access
 
 ### Steps
 
@@ -41,24 +41,24 @@ Rotate credentials; revoke sessions; rotate S3/IAM; audit access
    " | tail -1 | kubectl exec -n percona <pod> -- mysql -uroot -p<new-pass>
    ```
 
-3. **Rotate IAM/S3 credentials**
+3. **Rotate MinIO credentials**
    ```bash
-   # Deactivate old access keys
-   aws iam list-access-keys --user-name <compromised-user>
-   aws iam update-access-key --access-key-id <old-key> --status Inactive --user-name <user>
+   # Create new MinIO user
+   kubectl exec -n minio-operator <minio-pod> -- mc admin user add local <new-user> <new-password>
+   kubectl exec -n minio-operator <minio-pod> -- mc admin policy attach local readwrite --user <new-user>
    
-   # Create new access keys
-   aws iam create-access-key --user-name <user>
+   # Remove old user or deactivate
+   kubectl exec -n minio-operator <minio-pod> -- mc admin user remove local <old-user>
    
    # Update Kubernetes secret
-   kubectl create secret generic s3-credentials \
-     --from-literal=AWS_ACCESS_KEY_ID=<new-key> \
-     --from-literal=AWS_SECRET_ACCESS_KEY=<new-secret> \
+   kubectl create secret generic minio-credentials \
+     --from-literal=AWS_ACCESS_KEY_ID=<new-user> \
+     --from-literal=AWS_SECRET_ACCESS_KEY=<new-password> \
      -n percona \
      --dry-run=client -o yaml | kubectl apply -f -
    
-   # Delete old access keys
-   aws iam delete-access-key --access-key-id <old-key> --user-name <user>
+   # Restart backup pods to pick up new credentials
+   kubectl rollout restart deployment <backup-deployment> -n percona
    ```
 
 4. **Update application configurations**

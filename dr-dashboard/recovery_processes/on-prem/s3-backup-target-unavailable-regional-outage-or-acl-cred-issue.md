@@ -1,7 +1,7 @@
-# S3 Backup Target Unavailable Recovery Process
+# MinIO Backup Target Unavailable Recovery Process
 
 ## Primary Recovery Method
-Buffer locally; failover to secondary S3 bucket; rotate IAM credentials
+Buffer locally; failover to secondary MinIO instance; rotate credentials
 
 ### Steps
 
@@ -10,11 +10,11 @@ Buffer locally; failover to secondary S3 bucket; rotate IAM credentials
    # Check backup pod logs
    kubectl logs -n percona <backup-pod> --tail=100
    
-   # Test S3 connectivity
-   kubectl exec -n percona <backup-pod> -- aws s3 ls s3://<bucket-name>/ 2>&1
+   # Test MinIO connectivity
+   kubectl exec -n minio-operator <minio-pod> -- mc ls local/<bucket-name>/ 2>&1
    
-   # Check IAM credentials
-   kubectl get secret -n percona <s3-secret> -o yaml
+   # Check MinIO credentials
+   kubectl get secret -n percona <minio-secret> -o yaml
    ```
 
 2. **Immediate action: Buffer backups locally**
@@ -38,15 +38,16 @@ Buffer locally; failover to secondary S3 bucket; rotate IAM credentials
    kubectl edit perconaxtradbcluster -n percona <cluster-name>
    ```
 
-3. **If credential issue: Rotate IAM credentials**
+3. **If credential issue: Rotate MinIO credentials**
    ```bash
-   # Create new IAM access keys
-   aws iam create-access-key --user-name <backup-user>
+   # Create new MinIO access keys
+   kubectl exec -n minio-operator <minio-pod> -- mc admin user add local <new-user> <new-password>
+   kubectl exec -n minio-operator <minio-pod> -- mc admin policy attach local readwrite --user <new-user>
    
    # Update Kubernetes secret
-   kubectl create secret generic s3-credentials \
-     --from-literal=AWS_ACCESS_KEY_ID=<new-key> \
-     --from-literal=AWS_SECRET_ACCESS_KEY=<new-secret> \
+   kubectl create secret generic minio-credentials \
+     --from-literal=AWS_ACCESS_KEY_ID=<new-user> \
+     --from-literal=AWS_SECRET_ACCESS_KEY=<new-password> \
      -n percona \
      --dry-run=client -o yaml | kubectl apply -f -
    
@@ -54,29 +55,36 @@ Buffer locally; failover to secondary S3 bucket; rotate IAM credentials
    kubectl rollout restart deployment <backup-deployment> -n percona
    ```
 
-4. **If regional outage: Failover to secondary bucket**
+4. **If MinIO service issue: Restart or failover**
    ```bash
-   # Update backup configuration to secondary bucket/region
+   # Check MinIO pod status
+   kubectl get pods -n minio-operator
+   
+   # Restart MinIO if needed
+   kubectl rollout restart statefulset <minio-sts> -n minio-operator
+   
+   # Or failover to secondary MinIO instance if available
+   # Update backup configuration to point to secondary MinIO
    kubectl patch perconaxtradbcluster <cluster-name> -n percona --type=merge -p '
    spec:
      backup:
        storages:
-         s3:
-           bucket: <secondary-bucket-name>
-           region: <secondary-region>
+         minio:
+           s3:
+             endpointUrl: https://<secondary-minio-endpoint>:9000
    '
    ```
 
-5. **If ACL issue: Fix bucket permissions**
+5. **If bucket issue: Fix bucket permissions**
    ```bash
-   # Check bucket policy
-   aws s3api get-bucket-policy --bucket <bucket-name>
+   # Check bucket exists
+   kubectl exec -n minio-operator <minio-pod> -- mc ls local/<bucket-name>
    
-   # Update bucket policy to allow backup IAM user
-   aws s3api put-bucket-policy --bucket <bucket-name> --policy file://bucket-policy.json
+   # Create bucket if missing
+   kubectl exec -n minio-operator <minio-pod> -- mc mb local/<bucket-name>
    
-   # Verify permissions
-   aws s3api head-bucket --bucket <bucket-name>
+   # Set bucket policy
+   kubectl exec -n minio-operator <minio-pod> -- mc anonymous set download local/<bucket-name>
    ```
 
 6. **Verify service is restored**
@@ -106,10 +114,12 @@ Temporarily write backups to secondary DC object store/NAS
    spec:
      backup:
        storages:
-         s3-compatible:
-           bucket: <alternative-bucket>
-           endpointUrl: https://<minio-endpoint>
-           region: us-east-1
+         minio-secondary:
+           type: s3
+           s3:
+             bucket: <alternative-bucket>
+             endpointUrl: https://<secondary-minio-endpoint>:9000
+             region: us-east-1
    '
    ```
 

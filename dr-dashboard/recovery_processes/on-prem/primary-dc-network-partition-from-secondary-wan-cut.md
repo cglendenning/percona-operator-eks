@@ -1,19 +1,10 @@
 # Primary DC Network Partition from Secondary (WAN Cut) Recovery Process
 
-## Scenario
-Primary DC network partition from Secondary (WAN cut)
-
-## Detection Signals
-- Replication IO thread error
-- Ping loss between datacenters
-- WAN monitoring alerts
-- Replication lag increasing rapidly
-- Network connectivity tests failing
-
 ## Primary Recovery Method
 Stay primary in current DC; queue async replication; monitor lag
 
 ### Steps
+
 1. **Verify the partition**
    ```bash
    # Check replication status
@@ -31,22 +22,12 @@ Stay primary in current DC; queue async replication; monitor lag
    kubectl exec -n <namespace> <pod-name> -- mysql -uroot -p<password> -e "SHOW STATUS LIKE 'wsrep_cluster_status';"
    ```
 
-3. **Monitor replication lag**
-   ```bash
-   kubectl exec -n <namespace> <pod-name> -- mysql -uroot -p<password> -e "SHOW SLAVE STATUS\G" | grep Seconds_Behind_Master
-   ```
-
-4. **Continue accepting writes in primary DC**
+3. **Continue accepting writes in primary DC**
    - Application continues normal operation
    - Transactions are queued for replication
    - Monitor binlog accumulation
 
-5. **Alert operations team**
-   - Notify that secondary DC is out of sync
-   - Coordinate with network/infrastructure teams
-   - Monitor WAN circuit status
-
-6. **When WAN connectivity is restored**
+4. **When WAN connectivity is restored**
    ```bash
    # Verify replication resumes
    kubectl exec -n <namespace> <pod-name> -- mysql -uroot -p<password> -e "SHOW SLAVE STATUS\G"
@@ -55,18 +36,49 @@ Stay primary in current DC; queue async replication; monitor lag
    watch -n 5 "kubectl exec -n <namespace> <pod-name> -- mysql -uroot -p<password> -e 'SHOW SLAVE STATUS\G' | grep Seconds_Behind_Master"
    ```
 
+5. **Verify service is restored**
+   ```bash
+   # Verify replication is caught up
+   kubectl exec -n <namespace> <pod-name> -- mysql -uroot -p<password> -e "SHOW SLAVE STATUS\G" | grep Seconds_Behind_Master
+   
+   # Test write operations from application
+   ```
+
 ## Alternate/Fallback Method
 If app tier in secondary is hot-standby, execute app failover if primary DC instability persists
 
-## Recovery Targets
-- **RTO**: 0 (no failover by default)
-- **RPO**: N/A (stays primary)
-- **MTTR**: 30-120 minutes (provider repair)
+### Steps
 
-## Expected Data Loss
-None (no role change)
+1. **Assess primary DC stability**
+   - If primary DC is experiencing cascading failures
+   - If partition is due to primary DC network issues
+   - If prolonged outage is expected
 
-## Related Scenarios
-- Primary DC power/cooling outage
-- Both DCs up but replication stops
-- Credential compromise
+2. **Prepare secondary DC for promotion**
+   ```bash
+   # Verify secondary DC health
+   kubectl --context=secondary-dc get pods -n percona
+   kubectl --context=secondary-dc exec -n percona <pod> -- mysql -uroot -p<pass> -e "SELECT 1;"
+   ```
+
+3. **Stop writes to primary**
+   - Put application in read-only mode
+   - Drain in-flight transactions
+
+4. **Promote secondary to primary**
+   ```bash
+   # Stop replication on secondary
+   kubectl --context=secondary-dc exec -n percona <pod> -- mysql -uroot -p<pass> -e "STOP SLAVE; RESET SLAVE ALL;"
+   
+   # Update DNS/ingress to point to secondary DC
+   # Reconfigure application to use secondary
+   # Enable writes on secondary
+   ```
+
+5. **Verify service is restored**
+   ```bash
+   # Test write operations on secondary DC
+   kubectl --context=secondary-dc exec -n percona <pod> -- mysql -uroot -p<pass> -e "CREATE DATABASE IF NOT EXISTS failover_test; USE failover_test; CREATE TABLE IF NOT EXISTS test (id INT); INSERT INTO test VALUES (1);"
+   
+   # Verify application connectivity
+   ```

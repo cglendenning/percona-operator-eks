@@ -17,18 +17,7 @@ Restore control plane VMs; failover etcd; use Rancher to re-provision
    curl -k https://<api-server>:6443/healthz
    ```
 
-2. **For managed Kubernetes (EKS):**
-   ```bash
-   # Check AWS service health
-   aws eks describe-cluster --name <cluster-name>
-   
-   # Check CloudWatch logs
-   aws logs tail /aws/eks/<cluster-name>/cluster --follow
-   
-   # Open AWS support ticket if needed
-   ```
-
-3. **For self-managed Kubernetes:**
+2. **For on-prem Kubernetes:**
    
    **Option A: Restart control plane components**
    ```bash
@@ -64,7 +53,7 @@ Restore control plane VMs; failover etcd; use Rancher to re-provision
    - Join to existing etcd cluster
    - Restore etcd data if needed
 
-4. **Verify service is restored**
+3. **Verify service is restored**
    ```bash
    # Test kubectl access
    kubectl cluster-info

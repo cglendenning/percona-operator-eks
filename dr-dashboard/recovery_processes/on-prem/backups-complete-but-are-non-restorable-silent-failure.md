@@ -9,8 +9,8 @@ Detect via scheduled restore drills; fix pipeline; re-run full backup
 
 1. **Validate current backups immediately**
    ```bash
-   # Download latest backup
-   aws s3 cp s3://<bucket>/backups/<latest>/ /tmp/verify-backup/ --recursive
+   # Download latest backup from MinIO
+   kubectl exec -n minio-operator <minio-pod> -- mc cp local/<bucket>/backups/<latest>/ /tmp/verify-backup/ --recursive
    
    # Attempt to prepare backup
    xtrabackup --prepare --target-dir=/tmp/verify-backup
@@ -22,12 +22,12 @@ Detect via scheduled restore drills; fix pipeline; re-run full backup
 2. **Find last known good backup**
    ```bash
    # List all recent backups
-   aws s3 ls s3://<bucket>/backups/ --recursive | grep xtrabackup_checkpoints
+   kubectl exec -n minio-operator <minio-pod> -- mc ls local/<bucket>/backups/ --recursive | grep xtrabackup_checkpoints
    
    # Test each backup going backwards in time
-   for backup in $(aws s3 ls s3://<bucket>/backups/ | awk '{print $2}' | tail -10); do
+   for backup in $(kubectl exec -n minio-operator <minio-pod> -- mc ls local/<bucket>/backups/ | awk '{print $5}' | tail -10); do
      echo "Testing backup: $backup"
-     aws s3 cp s3://<bucket>/backups/${backup}/ /tmp/test-${backup}/ --recursive
+     kubectl exec -n minio-operator <minio-pod> -- mc cp local/<bucket>/backups/${backup}/ /tmp/test-${backup}/ --recursive
      xtrabackup --prepare --target-dir=/tmp/test-${backup}
      if [ $? -eq 0 ]; then
        echo "Valid backup found: $backup"
@@ -45,7 +45,7 @@ Detect via scheduled restore drills; fix pipeline; re-run full backup
    
    **Common issues:**
    - Insufficient disk space during backup
-   - Network interruption during S3 upload
+   - Network interruption during MinIO upload
    - Wrong xtrabackup version
    - Corrupted source database
    - Clock skew causing issues
@@ -63,8 +63,8 @@ Detect via scheduled restore drills; fix pipeline; re-run full backup
    # Check network policies
    kubectl get networkpolicies -n percona
    
-   # Verify S3 connectivity
-   kubectl exec -n percona <backup-pod> -- aws s3 ls s3://<bucket>/
+   # Verify MinIO connectivity
+   kubectl exec -n percona <backup-pod> -- mc ls local/<bucket>/
    ```
    
    **If version mismatch:**
@@ -88,7 +88,7 @@ Detect via scheduled restore drills; fix pipeline; re-run full backup
 6. **Verify service is restored**
    ```bash
    # Download new backup
-   aws s3 sync s3://<bucket>/backups/<new-backup>/ /tmp/verify-new/ --delete
+   kubectl exec -n minio-operator <minio-pod> -- mc sync local/<bucket>/backups/<new-backup>/ /tmp/verify-new/ --delete
    
    # Prepare and verify
    xtrabackup --prepare --target-dir=/tmp/verify-new
@@ -109,8 +109,8 @@ Use previous verified backup then roll forward via binlogs
 
 2. **Restore from last verified backup**
    ```bash
-   # Download verified backup
-   aws s3 sync s3://<bucket>/backups/<verified-backup>/ /tmp/restore/ --delete
+   # Download verified backup from MinIO
+   kubectl exec -n minio-operator <minio-pod> -- mc sync local/<bucket>/backups/<verified-backup>/ /tmp/restore/ --delete
    
    # Prepare backup
    xtrabackup --prepare --target-dir=/tmp/restore
@@ -119,7 +119,7 @@ Use previous verified backup then roll forward via binlogs
 3. **Apply binlogs for point-in-time recovery**
    ```bash
    # Download binlogs from verified backup time to now
-   aws s3 sync s3://<bucket>/binlogs/ /tmp/binlogs/ --exclude "*" --include "mysql-bin.*"
+   kubectl exec -n minio-operator <minio-pod> -- mc sync local/<bucket>/binlogs/ /tmp/binlogs/ --exclude "*" --include "mysql-bin.*"
    
    # Apply binlogs
    mysqlbinlog --start-datetime="<backup-time>" /tmp/binlogs/mysql-bin.* | mysql -uroot -p<pass>

@@ -1,18 +1,7 @@
 # Accidental DROP/DELETE/TRUNCATE (Logical Data Loss) Recovery Process
 
-## Scenario
-Accidental DROP/DELETE/TRUNCATE (logical data loss)
-
-## Detection Signals
-- Application errors (missing data, constraint violations)
-- Missing rows or tables
-- Audit logs showing unexpected DROP/DELETE/TRUNCATE
-- Sudden database or table size drops
-- User reports of missing data
-- Monitoring alerts on table/row counts
-
 ## Primary Recovery Method
-Point-in-time restore from S3 backup + binlogs to side instance; recover affected tables via mysqlpump/mydumper
+Point-in-time restore from MinIO backup + binlogs to side instance; recover affected tables via mysqlpump/mydumper
 
 ### Steps
 
@@ -32,44 +21,82 @@ Point-in-time restore from S3 backup + binlogs to side instance; recover affecte
 
 3. **Locate the most recent backup before the incident**
    ```bash
-   # List available backups
-   aws s3 ls s3://<backup-bucket>/backups/ --recursive
+   # List available backups from MinIO
+   kubectl exec -n minio-operator <minio-pod> -- mc ls local/<backup-bucket>/backups/ --recursive
    ```
 
 4. **Restore backup to a SIDE INSTANCE (not production!)**
    ```bash
    # Create a temporary restore environment
-   xtrabackup --copy-back --target-dir=/path/to/backup
+   # Download backup from MinIO
+   kubectl exec -n minio-operator <minio-pod> -- mc cp local/<backup-bucket>/backups/<backup-name>/ /tmp/restore/ --recursive
+   
+   # Prepare backup
+   xtrabackup --prepare --target-dir=/tmp/restore
+   
+   # Copy back to temporary MySQL instance
+   xtrabackup --copy-back --target-dir=/tmp/restore --datadir=/tmp/restore-mysql
    ```
 
-5. **Verify data exists on side instance**
-
-6. **Export the recovered data**
+5. **Apply point-in-time recovery using binlogs**
    ```bash
-   # Use mydumper for large tables
-   mydumper --host=<side-instance> --user=root --password=<pass> \
-     --database=<database> --tables-list=<table> \
-     --outputdir=/tmp/recovery
+   # Download binlogs from MinIO
+   kubectl exec -n minio-operator <minio-pod> -- mc cp local/<backup-bucket>/binlogs/ /tmp/binlogs/ --recursive
+   
+   # Apply binlogs up to BEFORE the destructive operation
+   mysqlbinlog --stop-datetime="<timestamp-before-loss>" /tmp/binlogs/mysql-bin.* | mysql -uroot -p<password> -h<restore-host>
    ```
 
-7. **Import recovered data to production**
+6. **Extract affected tables/data**
    ```bash
-   myloader --host=<prod-host> --user=root --password=<pass> \
-     --database=<database> --directory=/tmp/recovery \
-     --overwrite-tables
+   # Use mysqldump or mydumper to extract only the affected tables
+   mysqldump -uroot -p<password> -h<restore-host> <database> <table> > restored_table.sql
+   
+   # Or use mydumper for parallel extraction
+   mydumper -u root -p <password> -h <restore-host> -B <database> -T <table> -o /tmp/restored_data
    ```
 
-8. **Verify data integrity and re-enable writes**
+7. **Restore to production**
+   ```bash
+   # Import the restored table/data
+   kubectl exec -n <namespace> <pod-name> -- mysql -uroot -p<password> <database> < restored_table.sql
+   
+   # Or using mydumper output
+   myloader -u root -p <password> -h <production-host> -d /tmp/restored_data
+   ```
 
-## Recovery Targets
-- **RTO**: 1-4 hours
-- **RPO**: ≤ 5 minutes
-- **MTTR**: 2-8 hours
+8. **Verify service is restored**
+   ```bash
+   # Verify data is restored
+   kubectl exec -n <namespace> <pod-name> -- mysql -uroot -p<password> -e "SELECT COUNT(*) FROM <database>.<table>;"
+   
+   # Re-enable writes
+   kubectl exec -n <namespace> <pod-name> -- mysql -uroot -p<password> -e "SET GLOBAL read_only = OFF;"
+   
+   # Test write operations from application
+   ```
 
-## Expected Data Loss
-Up to RPO (5-15 minutes typical)
+## Alternate/Fallback Method
+If using Percona Backup for MySQL (PBM physical), do tablespace-level restore where possible
 
-## Related Scenarios
-- Widespread data corruption
-- S3 backup target unavailable
-- Backups complete but non-restorable
+### Steps
+
+1. **Restore specific tablespaces from PBM backup**
+   ```bash
+   # Use PBM to restore specific tablespaces
+   kubectl exec -n <namespace> <backup-pod> -- pbm restore --backup=<backup-name> --tablespaces=<database>.<table>
+   ```
+
+2. **Import tablespaces**
+   ```bash
+   kubectl exec -n <namespace> <pod-name> -- mysql -uroot -p<password> -e \
+     "ALTER TABLE <database>.<table> IMPORT TABLESPACE;"
+   ```
+
+3. **Verify service is restored**
+   ```bash
+   # Verify data is restored
+   kubectl exec -n <namespace> <pod-name> -- mysql -uroot -p<password> -e "SELECT COUNT(*) FROM <database>.<table>;"
+   
+   # Test write operations from application
+   ```

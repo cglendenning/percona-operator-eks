@@ -1,16 +1,5 @@
 # Accidental DROP/DELETE/TRUNCATE (Logical Data Loss) Recovery Process
 
-## Scenario
-Accidental DROP/DELETE/TRUNCATE (logical data loss)
-
-## Detection Signals
-- Application errors (missing data, constraint violations)
-- Missing rows or tables
-- Audit logs showing unexpected DROP/DELETE/TRUNCATE
-- Sudden database or table size drops
-- User reports of missing data
-- Monitoring alerts on table/row counts
-
 ## Primary Recovery Method
 Point-in-time restore from S3 backup + binlogs to side instance; recover affected tables via mysqlpump/mydumper
 
@@ -48,187 +37,75 @@ Point-in-time restore from S3 backup + binlogs to side instance; recover affecte
 4. **Restore backup to a SIDE INSTANCE (not production!)**
    ```bash
    # Create a temporary restore environment
-   # Use a separate namespace or cluster
+   # Download backup from S3
+   aws s3 sync s3://<backup-bucket>/backups/<backup-name>/ /tmp/restore/
    
-   # Restore from S3
-   xtrabackup --copy-back --target-dir=/path/to/backup
+   # Prepare backup
+   xtrabackup --prepare --target-dir=/tmp/restore
    
-   # Start MySQL on side instance
-   # Apply binlogs up to the point BEFORE the data loss
-   mysqlbinlog --stop-datetime="2024-01-15 14:30:00" /path/to/binlogs/* | mysql -uroot -p
+   # Copy back to temporary MySQL instance
+   xtrabackup --copy-back --target-dir=/tmp/restore --datadir=/tmp/restore-mysql
    ```
 
-5. **Verify data exists on side instance**
+5. **Apply point-in-time recovery using binlogs**
    ```bash
-   # Connect to side instance
-   mysql -h <side-instance> -uroot -p
+   # Download binlogs from S3
+   aws s3 sync s3://<backup-bucket>/binlogs/ /tmp/binlogs/ --exclude "*" --include "mysql-bin.*"
    
-   # Verify affected tables/rows exist
-   USE <database>;
-   SELECT COUNT(*) FROM <affected_table>;
-   SELECT * FROM <affected_table> WHERE <conditions> LIMIT 10;
+   # Apply binlogs up to BEFORE the destructive operation
+   mysqlbinlog --stop-datetime="<timestamp-before-loss>" /tmp/binlogs/mysql-bin.* | mysql -uroot -p<password> -h<restore-host>
    ```
 
-6. **Export the recovered data**
+6. **Extract affected tables/data**
    ```bash
-   # Use mydumper for large tables
-   mydumper --host=<side-instance> --user=root --password=<pass> \
-     --database=<database> --tables-list=<table> \
-     --outputdir=/tmp/recovery
+   # Use mysqldump or mydumper to extract only the affected tables
+   mysqldump -uroot -p<password> -h<restore-host> <database> <table> > restored_table.sql
    
-   # Or use mysqldump for smaller datasets
-   mysqldump -h <side-instance> -uroot -p<pass> <database> <table> > recovered_data.sql
+   # Or use mydumper for parallel extraction
+   mydumper -u root -p <password> -h <restore-host> -B <database> -T <table> -o /tmp/restored_data
    ```
 
-7. **Prepare production for data import**
+7. **Restore to production**
    ```bash
-   # If table was dropped, recreate it (get DDL from side instance)
-   kubectl exec -n <namespace> <pod-name> -- mysql -uroot -p<password> -e "SHOW CREATE TABLE <database>.<table>;"
+   # Import the restored table/data
+   mysql -uroot -p<password> -h<production-host> <database> < restored_table.sql
    
-   # If needed, create the table structure
-   kubectl exec -n <namespace> <pod-name> -- mysql -uroot -p<password> <database> < create_table.sql
+   # Or using mydumper output
+   myloader -u root -p <password> -h <production-host> -d /tmp/restored_data
    ```
 
-8. **Import recovered data to production**
+8. **Verify service is restored**
    ```bash
-   # Load data using myloader
-   myloader --host=<prod-host> --user=root --password=<pass> \
-     --database=<database> --directory=/tmp/recovery \
-     --overwrite-tables
+   # Verify data is restored
+   kubectl exec -n <namespace> <pod-name> -- mysql -uroot -p<password> -e "SELECT COUNT(*) FROM <database>.<table>;"
    
-   # Or use mysql command
-   kubectl exec -i -n <namespace> <pod-name> -- mysql -uroot -p<password> <database> < recovered_data.sql
+   # Re-enable writes
+   kubectl exec -n <namespace> <pod-name> -- mysql -uroot -p<password> -e "SET GLOBAL read_only = OFF;"
+   
+   # Test write operations from application
    ```
-
-9. **Verify data integrity**
-   ```bash
-   # Check row counts match
-   # Verify sample data
-   # Run application smoke tests
-   # Check referential integrity
-   ```
-
-10. **Re-enable writes**
-    ```bash
-    kubectl exec -n <namespace> <pod-name> -- mysql -uroot -p<password> -e "SET GLOBAL read_only = OFF;"
-    ```
 
 ## Alternate/Fallback Method
 If using Percona Backup for MySQL (PBM physical), do tablespace-level restore where possible
 
 ### Steps
-1. **Use PBM for tablespace restore**
+
+1. **Restore specific tablespaces from PBM backup**
    ```bash
-   # List available backups
-   kubectl exec -n <namespace> <backup-pod> -- pbm list
-   
-   # Restore specific tablespace
-   kubectl exec -n <namespace> <backup-pod> -- pbm restore --time="2024-01-15T14:30:00Z" \
-     --database=<database> --table=<table>
+   # Use PBM to restore specific tablespaces
+   kubectl exec -n <namespace> <backup-pod> -- pbm restore --backup=<backup-name> --tablespaces=<database>.<table>
    ```
 
-2. **Import tablespace into production**
+2. **Import tablespaces**
    ```bash
-   # Discard current tablespace
-   kubectl exec -n <namespace> <pod-name> -- mysql -uroot -p<password> -e \
-     "ALTER TABLE <database>.<table> DISCARD TABLESPACE;"
-   
-   # Copy restored .ibd file
-   kubectl cp <backup-pod>:/restore/<table>.ibd <prod-pod>:/var/lib/mysql/<database>/<table>.ibd
-   
-   # Import tablespace
    kubectl exec -n <namespace> <pod-name> -- mysql -uroot -p<password> -e \
      "ALTER TABLE <database>.<table> IMPORT TABLESPACE;"
    ```
 
-## Recovery Targets
-- **RTO**: 1-4 hours (depends on dataset size)
-- **RPO**: ≤ 5 minutes
-- **MTTR**: 2-8 hours
-
-## Expected Data Loss
-Up to RPO (5-15 minutes typical)
-
-## Affected Components
-- Data layer (specific tables/databases)
-- Backups
-- Binary logs
-- Application data access layer
-
-## Assumptions & Prerequisites
-- Frequent binlog backups to S3
-- Tested PITR (Point-In-Time Recovery) runbooks
-- Separate restore host/environment available
-- Sufficient storage for side instance restore
-- Backup retention covers the incident timeframe
-- Binlog retention >= MTTR
-
-## Verification Steps
-1. **Data completeness check**
+3. **Verify service is restored**
    ```bash
-   # Compare row counts
-   # Before (from side instance):
-   mysql -h <side-instance> -uroot -p -e "SELECT COUNT(*) FROM <database>.<table>;"
-   
-   # After (from production):
+   # Verify data is restored
    kubectl exec -n <namespace> <pod-name> -- mysql -uroot -p<password> -e "SELECT COUNT(*) FROM <database>.<table>;"
+   
+   # Test write operations from application
    ```
-
-2. **Data integrity check**
-   ```bash
-   # Run checksums on sample data
-   # Verify primary keys and foreign keys
-   kubectl exec -n <namespace> <pod-name> -- mysql -uroot -p<password> -e \
-     "CHECK TABLE <database>.<table>;"
-   ```
-
-3. **Application smoke tests**
-   - Test critical workflows
-   - Verify reports and dashboards
-   - Check data export functionality
-
-4. **Audit trail verification**
-   - Review binlogs to ensure no other changes during recovery
-   - Document all recovery actions taken
-
-## Rollback Procedure
-If the import causes issues:
-1. Put database back in read-only mode
-2. Drop the imported data
-3. Re-assess recovery strategy
-4. Consider restoring entire cluster if corruption spreads
-
-## Post-Recovery Actions
-1. **Root cause analysis**
-   - Who executed the destructive operation?
-   - What process failed?
-   - How did it bypass safeguards?
-
-2. **Implement safeguards**
-   - Add confirmation prompts for DROP/DELETE/TRUNCATE
-   - Implement soft-delete patterns where appropriate
-   - Require explicit `--confirm` flags for destructive operations
-   - Use database-level triggers to log destructive operations
-
-3. **Improve access controls**
-   - Audit who has DELETE/DROP privileges
-   - Implement principle of least privilege
-   - Require approval for schema changes
-   - Use separate read-only credentials for analytics
-
-4. **Enhance monitoring**
-   - Alert on sudden table size changes
-   - Monitor row count deltas
-   - Track schema changes
-   - Set up audit log analysis
-
-5. **Update runbooks**
-   - Document this specific recovery
-   - Update PITR procedures
-   - Schedule regular restore drills
-
-## Related Scenarios
-- Widespread data corruption
-- S3 backup target unavailable
-- Backups complete but non-restorable
-- Credential compromise
