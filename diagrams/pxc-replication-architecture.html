@@ -233,49 +233,37 @@
             
             elements: [
                 // Data Center Containers
-                { data: { id: 'siteA', label: 'Site A', type: 'datacenter', dc: 'primary' } },
-                { data: { id: 'siteB', label: 'Site B', type: 'datacenter', dc: 'secondary' } },
+                { data: { id: 'slc', label: 'SLC', type: 'datacenter', dc: 'primary' } },
+                { data: { id: 'den', label: 'DEN', type: 'datacenter', dc: 'secondary' } },
                 
                 // Primary Data Center - HAProxy
-                { data: { id: 'haproxy1', label: 'HAProxy\nLoad Balancer', type: 'haproxy', dc: 'primary', parent: 'siteA' } },
+                { data: { id: 'haproxy1', label: 'HAProxy\nLoad Balancer', type: 'haproxy', dc: 'primary', parent: 'slc' } },
                 
                 // Primary Data Center - PXC Nodes
-                { data: { id: 'pxc1_1', label: 'PXC Node 1\nPrimary', type: 'pxc', dc: 'primary', parent: 'siteA' } },
-                { data: { id: 'pxc1_2', label: 'PXC Node 2\nPrimary', type: 'pxc', dc: 'primary', parent: 'siteA' } },
-                { data: { id: 'pxc1_3', label: 'PXC Node 3\nPrimary', type: 'pxc', dc: 'primary', parent: 'siteA' } },
+                { data: { id: 'pxc1_0', label: 'PXC Node 0\nPrimary', type: 'pxc', dc: 'primary', parent: 'slc' } },
+                { data: { id: 'pxc1_1', label: 'PXC Node 1\nPrimary', type: 'pxc', dc: 'primary', parent: 'slc' } },
+                { data: { id: 'pxc1_2', label: 'PXC Node 2\nPrimary', type: 'pxc', dc: 'primary', parent: 'slc' } },
                 
                 // Secondary Data Center - HAProxy
-                { data: { id: 'haproxy2', label: 'HAProxy\nLoad Balancer', type: 'haproxy', dc: 'secondary', parent: 'siteB' } },
+                { data: { id: 'haproxy2', label: 'HAProxy\nLoad Balancer', type: 'haproxy', dc: 'secondary', parent: 'den' } },
                 
                 // Secondary Data Center - PXC Nodes
-                { data: { id: 'pxc2_1', label: 'PXC Node 1\nReplica', type: 'pxc', dc: 'secondary', parent: 'siteB' } },
-                { data: { id: 'pxc2_2', label: 'PXC Node 2\nReplica', type: 'pxc', dc: 'secondary', parent: 'siteB' } },
-                { data: { id: 'pxc2_3', label: 'PXC Node 3\nReplica', type: 'pxc', dc: 'secondary', parent: 'siteB' } },
+                { data: { id: 'pxc2_0', label: 'PXC Node 0\nReplica', type: 'pxc', dc: 'secondary', parent: 'den' } },
+                { data: { id: 'pxc2_1', label: 'PXC Node 1\nReplica', type: 'pxc', dc: 'secondary', parent: 'den' } },
+                { data: { id: 'pxc2_2', label: 'PXC Node 2\nReplica', type: 'pxc', dc: 'secondary', parent: 'den' } },
                 
                 // HAProxy to PXC connections (Primary)
-                { data: { id: 'e1', source: 'haproxy1', target: 'pxc1_1', type: 'haproxy' } },
-                { data: { id: 'e2', source: 'haproxy1', target: 'pxc1_2', type: 'haproxy' } },
-                { data: { id: 'e3', source: 'haproxy1', target: 'pxc1_3', type: 'haproxy' } },
+                { data: { id: 'e1', source: 'haproxy1', target: 'pxc1_0', type: 'haproxy' } },
+                { data: { id: 'e2', source: 'haproxy1', target: 'pxc1_1', type: 'haproxy' } },
+                { data: { id: 'e3', source: 'haproxy1', target: 'pxc1_2', type: 'haproxy' } },
                 
                 // HAProxy to PXC connections (Secondary)
-                { data: { id: 'e4', source: 'haproxy2', target: 'pxc2_1', type: 'haproxy' } },
-                { data: { id: 'e5', source: 'haproxy2', target: 'pxc2_2', type: 'haproxy' } },
-                { data: { id: 'e6', source: 'haproxy2', target: 'pxc2_3', type: 'haproxy' } },
-                
-                // Galera synchronous replication (Primary)
-                { data: { id: 'g1', source: 'pxc1_1', target: 'pxc1_2', type: 'galera', label: 'Galera Sync' } },
-                { data: { id: 'g2', source: 'pxc1_2', target: 'pxc1_3', type: 'galera', label: 'Galera Sync' } },
-                { data: { id: 'g3', source: 'pxc1_3', target: 'pxc1_1', type: 'galera', label: 'Galera Sync' } },
-                
-                // Galera synchronous replication (Secondary)
-                { data: { id: 'g4', source: 'pxc2_1', target: 'pxc2_2', type: 'galera', label: 'Galera Sync' } },
-                { data: { id: 'g5', source: 'pxc2_2', target: 'pxc2_3', type: 'galera', label: 'Galera Sync' } },
-                { data: { id: 'g6', source: 'pxc2_3', target: 'pxc2_1', type: 'galera', label: 'Galera Sync' } },
+                { data: { id: 'e4', source: 'haproxy2', target: 'pxc2_0', type: 'haproxy' } },
+                { data: { id: 'e5', source: 'haproxy2', target: 'pxc2_1', type: 'haproxy' } },
+                { data: { id: 'e6', source: 'haproxy2', target: 'pxc2_2', type: 'haproxy' } },
                 
                 // Asynchronous replication between DCs
-                { data: { id: 'a1', source: 'pxc1_1', target: 'pxc2_1', type: 'async', label: 'Async Replication' } },
-                { data: { id: 'a2', source: 'pxc1_2', target: 'pxc2_2', type: 'async', label: 'Async Replication' } },
-                { data: { id: 'a3', source: 'pxc1_3', target: 'pxc2_3', type: 'async', label: 'Async Replication' } }
+                { data: { id: 'a1', source: 'pxc1_0', target: 'pxc2_0', type: 'async', label: 'Async Replication' } },
             ],
             
             style: [
