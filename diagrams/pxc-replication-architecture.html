@@ -1,0 +1,292 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Percona XtraDB Cluster Replication Architecture</title>
+    <script type="module">
+        import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.esm.min.mjs';
+        mermaid.initialize({ 
+            startOnLoad: true,
+            theme: 'dark',
+            themeVariables: {
+                primaryColor: '#6366f1',
+                primaryTextColor: '#ffffff',
+                primaryBorderColor: '#818cf8',
+                lineColor: '#a5b4fc',
+                secondaryColor: '#4f46e5',
+                tertiaryColor: '#312e81',
+                background: 'transparent',
+                mainBkg: 'rgba(99, 102, 241, 0.1)',
+                secondBkg: 'rgba(79, 70, 229, 0.1)',
+                textColor: '#e0e7ff',
+                border1: '#6366f1',
+                border2: '#818cf8',
+                noteBkgColor: 'rgba(99, 102, 241, 0.2)',
+                noteTextColor: '#e0e7ff',
+                noteBorderColor: '#6366f1',
+                actorBorder: '#818cf8',
+                actorBkg: 'rgba(99, 102, 241, 0.15)',
+                actorTextColor: '#e0e7ff',
+                actorLineColor: '#a5b4fc',
+                signalColor: '#a5b4fc',
+                signalTextColor: '#e0e7ff',
+                labelBoxBkgColor: 'rgba(99, 102, 241, 0.2)',
+                labelBoxBorderColor: '#818cf8',
+                labelTextColor: '#e0e7ff',
+                loopTextColor: '#e0e7ff',
+                activationBorderColor: '#818cf8',
+                activationBkgColor: 'rgba(99, 102, 241, 0.3)',
+                sequenceNumberColor: '#ffffff'
+            }
+        });
+    </script>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+            background: linear-gradient(135deg, #0f172a 0%, #1e293b 50%, #0f172a 100%);
+            min-height: 100vh;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            padding: 2rem;
+            color: #e0e7ff;
+            position: relative;
+            overflow-x: hidden;
+        }
+
+        body::before {
+            content: '';
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background: 
+                radial-gradient(circle at 20% 50%, rgba(99, 102, 241, 0.15) 0%, transparent 50%),
+                radial-gradient(circle at 80% 50%, rgba(139, 92, 246, 0.15) 0%, transparent 50%);
+            pointer-events: none;
+            z-index: 0;
+        }
+
+        .container {
+            position: relative;
+            z-index: 1;
+            width: 100%;
+            max-width: 1400px;
+            background: rgba(30, 41, 59, 0.4);
+            backdrop-filter: blur(20px);
+            border: 1px solid rgba(99, 102, 241, 0.3);
+            border-radius: 24px;
+            padding: 3rem;
+            box-shadow: 
+                0 8px 32px rgba(0, 0, 0, 0.3),
+                inset 0 1px 0 rgba(255, 255, 255, 0.1);
+        }
+
+        h1 {
+            font-size: 2.5rem;
+            font-weight: 700;
+            background: linear-gradient(135deg, #a5b4fc 0%, #818cf8 50%, #6366f1 100%);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
+            text-align: center;
+            margin-bottom: 0.5rem;
+            letter-spacing: -0.02em;
+        }
+
+        .subtitle {
+            text-align: center;
+            color: #94a3b8;
+            font-size: 1.1rem;
+            margin-bottom: 3rem;
+            font-weight: 400;
+        }
+
+        .diagram-container {
+            background: rgba(15, 23, 42, 0.6);
+            border-radius: 16px;
+            padding: 2rem;
+            border: 1px solid rgba(99, 102, 241, 0.2);
+            margin-top: 2rem;
+            overflow-x: auto;
+        }
+
+        .mermaid {
+            display: flex;
+            justify-content: center;
+            align-items: center;
+        }
+
+        .legend {
+            margin-top: 2rem;
+            padding: 1.5rem;
+            background: rgba(99, 102, 241, 0.1);
+            border-radius: 12px;
+            border: 1px solid rgba(99, 102, 241, 0.3);
+        }
+
+        .legend h2 {
+            font-size: 1.2rem;
+            color: #a5b4fc;
+            margin-bottom: 1rem;
+            font-weight: 600;
+        }
+
+        .legend-items {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+            gap: 1rem;
+        }
+
+        .legend-item {
+            display: flex;
+            align-items: center;
+            gap: 0.75rem;
+            padding: 0.5rem;
+            border-radius: 8px;
+            transition: background 0.2s ease;
+        }
+
+        .legend-item:hover {
+            background: rgba(99, 102, 241, 0.1);
+        }
+
+        .legend-color {
+            width: 20px;
+            height: 20px;
+            border-radius: 4px;
+            border: 1px solid rgba(99, 102, 241, 0.5);
+        }
+
+        .legend-color.primary {
+            background: linear-gradient(135deg, #6366f1 0%, #818cf8 100%);
+        }
+
+        .legend-color.secondary {
+            background: linear-gradient(135deg, #4f46e5 0%, #6366f1 100%);
+        }
+
+        .legend-color.replication {
+            background: linear-gradient(135deg, #a5b4fc 0%, #c7d2fe 100%);
+        }
+
+        .legend-text {
+            color: #cbd5e1;
+            font-size: 0.95rem;
+        }
+
+        @media (max-width: 768px) {
+            .container {
+                padding: 1.5rem;
+            }
+
+            h1 {
+                font-size: 2rem;
+            }
+
+            .diagram-container {
+                padding: 1rem;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>Percona XtraDB Cluster Replication Architecture</h1>
+        <p class="subtitle">Asynchronous Replication Between Data Centers</p>
+        
+        <div class="diagram-container">
+            <div class="mermaid">
+graph TB
+    subgraph DC1["Primary Data Center"]
+        direction TB
+        HAProxy1["HAProxy Load Balancer"]
+        
+        PXC1_1["PXC Node 1 Primary"]
+        PXC1_2["PXC Node 2 Primary"]
+        PXC1_3["PXC Node 3 Primary"]
+        
+        HAProxy1 --> PXC1_1
+        HAProxy1 --> PXC1_2
+        HAProxy1 --> PXC1_3
+        
+        PXC1_1 <-->|Galera Sync| PXC1_2
+        PXC1_2 <-->|Galera Sync| PXC1_3
+        PXC1_3 <-->|Galera Sync| PXC1_1
+    end
+    
+    subgraph DC2["Secondary Data Center"]
+        direction TB
+        HAProxy2["HAProxy Load Balancer"]
+        
+        PXC2_1["PXC Node 1 Replica"]
+        PXC2_2["PXC Node 2 Replica"]
+        PXC2_3["PXC Node 3 Replica"]
+        
+        HAProxy2 --> PXC2_1
+        HAProxy2 --> PXC2_2
+        HAProxy2 --> PXC2_3
+        
+        PXC2_1 <-->|Galera Sync| PXC2_2
+        PXC2_2 <-->|Galera Sync| PXC2_3
+        PXC2_3 <-->|Galera Sync| PXC2_1
+    end
+    
+    PXC1_1 -.->|Async Replication| PXC2_1
+    PXC1_2 -.->|Async Replication| PXC2_2
+    PXC1_3 -.->|Async Replication| PXC2_3
+    
+    style DC1 fill:#6366f1,stroke:#818cf8,stroke-width:3px,color:#ffffff
+    style DC2 fill:#4f46e5,stroke:#6366f1,stroke-width:3px,color:#ffffff
+    style PXC1_1 fill:#818cf8,stroke:#a5b4fc,stroke-width:2px,color:#ffffff
+    style PXC1_2 fill:#818cf8,stroke:#a5b4fc,stroke-width:2px,color:#ffffff
+    style PXC1_3 fill:#818cf8,stroke:#a5b4fc,stroke-width:2px,color:#ffffff
+    style PXC2_1 fill:#6366f1,stroke:#818cf8,stroke-width:2px,color:#ffffff
+    style PXC2_2 fill:#6366f1,stroke:#818cf8,stroke-width:2px,color:#ffffff
+    style PXC2_3 fill:#6366f1,stroke:#818cf8,stroke-width:2px,color:#ffffff
+    style HAProxy1 fill:#a78bfa,stroke:#c4b5fd,stroke-width:2px,color:#ffffff
+    style HAProxy2 fill:#a78bfa,stroke:#c4b5fd,stroke-width:2px,color:#ffffff
+            </div>
+        </div>
+        
+        <div class="legend">
+            <h2>Architecture Components</h2>
+            <div class="legend-items">
+                <div class="legend-item">
+                    <div class="legend-color primary"></div>
+                    <span class="legend-text">Primary Data Center PXC Nodes (3-node Galera cluster)</span>
+                </div>
+                <div class="legend-item">
+                    <div class="legend-color secondary"></div>
+                    <span class="legend-text">Secondary Data Center PXC Nodes (3-node Galera cluster)</span>
+                </div>
+                <div class="legend-item">
+                    <div class="legend-color replication"></div>
+                    <span class="legend-text">Asynchronous Replication (MySQL Replication)</span>
+                </div>
+                <div class="legend-item">
+                    <div class="legend-color" style="background: linear-gradient(135deg, #a78bfa 0%, #c4b5fd 100%);"></div>
+                    <span class="legend-text">HAProxy Load Balancer</span>
+                </div>
+                <div class="legend-item">
+                    <div class="legend-color" style="background: linear-gradient(135deg, #818cf8 0%, #a5b4fc 100%); border-style: dashed;"></div>
+                    <span class="legend-text">Asynchronous Replication (dashed lines)</span>
+                </div>
+                <div class="legend-item">
+                    <div class="legend-color" style="background: linear-gradient(135deg, #6366f1 0%, #818cf8 100%);"></div>
+                    <span class="legend-text">Galera Synchronous Replication (solid lines)</span>
+                </div>
+            </div>
+        </div>
+    </div>
+</body>
+</html>
