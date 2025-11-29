@@ -205,11 +205,11 @@
             <div class="legend-items">
                 <div class="legend-item">
                     <div class="legend-color primary"></div>
-                    <span class="legend-text">Site A PXC Nodes (3-node Galera cluster)</span>
+                    <span class="legend-text">SLC PXC Nodes (3-node Galera cluster)</span>
                 </div>
                 <div class="legend-item">
                     <div class="legend-color secondary"></div>
-                    <span class="legend-text">Site B PXC Nodes (3-node Galera cluster)</span>
+                    <span class="legend-text">DEN PXC Nodes (3-node Galera cluster)</span>
                 </div>
                 <div class="legend-item">
                     <div class="legend-color haproxy"></div>
@@ -289,6 +289,12 @@
                         'text-outline-width': 3,
                         'text-outline-opacity': 0.9,
                         'text-margin-y': 15
+                    }
+                },
+                {
+                    selector: 'node[type="datacenter"][id="den"]',
+                    style: {
+                        'border-color': '#6366f1'
                     }
                 },
                 {
@@ -409,21 +415,21 @@
                 name: 'preset',
                 positions: function(node) {
                     const positions = {
-                        'siteA': { x: 200, y: 300 },
-                        'siteB': { x: 800, y: 300 },
+                        'slc': { x: 200, y: 300 },
+                        'den': { x: 900, y: 300 },
                         'haproxy1': { x: 200, y: 150 },
-                        'pxc1_1': { x: 100, y: 300 },
-                        'pxc1_2': { x: 200, y: 400 },
-                        'pxc1_3': { x: 300, y: 300 },
-                        'haproxy2': { x: 800, y: 150 },
-                        'pxc2_1': { x: 700, y: 300 },
-                        'pxc2_2': { x: 800, y: 400 },
-                        'pxc2_3': { x: 900, y: 300 }
+                        'pxc1_0': { x: 100, y: 300 },
+                        'pxc1_1': { x: 200, y: 400 },
+                        'pxc1_2': { x: 300, y: 300 },
+                        'haproxy2': { x: 900, y: 150 },
+                        'pxc2_0': { x: 800, y: 300 },
+                        'pxc2_1': { x: 900, y: 400 },
+                        'pxc2_2': { x: 1000, y: 300 }
                     };
                     return positions[node.id()] || { x: 0, y: 0 };
                 },
                 fit: true,
-                padding: 100,
+                padding: 150,
                 animate: true,
                 animationDuration: 1000,
                 animationEasing: 'ease-out'
