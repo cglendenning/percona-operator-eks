@@ -4,43 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Percona XtraDB Cluster Replication Architecture</title>
-    <script type="module">
-        import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.esm.min.mjs';
-        mermaid.initialize({ 
-            startOnLoad: true,
-            theme: 'dark',
-            themeVariables: {
-                primaryColor: '#6366f1',
-                primaryTextColor: '#ffffff',
-                primaryBorderColor: '#818cf8',
-                lineColor: '#a5b4fc',
-                secondaryColor: '#4f46e5',
-                tertiaryColor: '#312e81',
-                background: 'transparent',
-                mainBkg: 'rgba(99, 102, 241, 0.1)',
-                secondBkg: 'rgba(79, 70, 229, 0.1)',
-                textColor: '#e0e7ff',
-                border1: '#6366f1',
-                border2: '#818cf8',
-                noteBkgColor: 'rgba(99, 102, 241, 0.2)',
-                noteTextColor: '#e0e7ff',
-                noteBorderColor: '#6366f1',
-                actorBorder: '#818cf8',
-                actorBkg: 'rgba(99, 102, 241, 0.15)',
-                actorTextColor: '#e0e7ff',
-                actorLineColor: '#a5b4fc',
-                signalColor: '#a5b4fc',
-                signalTextColor: '#e0e7ff',
-                labelBoxBkgColor: 'rgba(99, 102, 241, 0.2)',
-                labelBoxBorderColor: '#818cf8',
-                labelTextColor: '#e0e7ff',
-                loopTextColor: '#e0e7ff',
-                activationBorderColor: '#818cf8',
-                activationBkgColor: 'rgba(99, 102, 241, 0.3)',
-                sequenceNumberColor: '#ffffff'
-            }
-        });
-    </script>
+    <script src="https://unpkg.com/cytoscape@3.26.0/dist/cytoscape.min.js"></script>
     <style>
         * {
             margin: 0;
@@ -80,7 +44,7 @@
             position: relative;
             z-index: 1;
             width: 100%;
-            max-width: 1400px;
+            max-width: 1600px;
             background: rgba(30, 41, 59, 0.4);
             backdrop-filter: blur(20px);
             border: 1px solid rgba(99, 102, 241, 0.3);
@@ -117,13 +81,14 @@
             padding: 2rem;
             border: 1px solid rgba(99, 102, 241, 0.2);
             margin-top: 2rem;
-            overflow-x: auto;
+            height: 800px;
+            position: relative;
         }
 
-        .mermaid {
-            display: flex;
-            justify-content: center;
-            align-items: center;
+        #cy {
+            width: 100%;
+            height: 100%;
+            border-radius: 12px;
         }
 
         .legend {
@@ -161,10 +126,11 @@
         }
 
         .legend-color {
-            width: 20px;
-            height: 20px;
-            border-radius: 4px;
+            width: 24px;
+            height: 24px;
+            border-radius: 6px;
             border: 1px solid rgba(99, 102, 241, 0.5);
+            flex-shrink: 0;
         }
 
         .legend-color.primary {
@@ -179,9 +145,34 @@
             background: linear-gradient(135deg, #a5b4fc 0%, #c7d2fe 100%);
         }
 
+        .legend-color.haproxy {
+            background: linear-gradient(135deg, #a78bfa 0%, #c4b5fd 100%);
+        }
+
         .legend-text {
             color: #cbd5e1;
             font-size: 0.95rem;
+        }
+
+        .legend-line {
+            width: 40px;
+            height: 2px;
+            border-radius: 1px;
+            flex-shrink: 0;
+        }
+
+        .legend-line.solid {
+            background: linear-gradient(90deg, #818cf8 0%, #a5b4fc 100%);
+        }
+
+        .legend-line.dashed {
+            background: repeating-linear-gradient(
+                90deg,
+                #a5b4fc 0px,
+                #a5b4fc 8px,
+                transparent 8px,
+                transparent 16px
+            );
         }
 
         @media (max-width: 768px) {
@@ -195,6 +186,7 @@
 
             .diagram-container {
                 padding: 1rem;
+                height: 600px;
             }
         }
     </style>
@@ -205,57 +197,7 @@
         <p class="subtitle">Asynchronous Replication Between Data Centers</p>
         
         <div class="diagram-container">
-            <div class="mermaid">
-graph TB
-    subgraph DC1["Primary Data Center"]
-        direction TB
-        HAProxy1["HAProxy Load Balancer"]
-        
-        PXC1_1["PXC Node 1 Primary"]
-        PXC1_2["PXC Node 2 Primary"]
-        PXC1_3["PXC Node 3 Primary"]
-        
-        HAProxy1 --> PXC1_1
-        HAProxy1 --> PXC1_2
-        HAProxy1 --> PXC1_3
-        
-        PXC1_1 <-->|Galera Sync| PXC1_2
-        PXC1_2 <-->|Galera Sync| PXC1_3
-        PXC1_3 <-->|Galera Sync| PXC1_1
-    end
-    
-    subgraph DC2["Secondary Data Center"]
-        direction TB
-        HAProxy2["HAProxy Load Balancer"]
-        
-        PXC2_1["PXC Node 1 Replica"]
-        PXC2_2["PXC Node 2 Replica"]
-        PXC2_3["PXC Node 3 Replica"]
-        
-        HAProxy2 --> PXC2_1
-        HAProxy2 --> PXC2_2
-        HAProxy2 --> PXC2_3
-        
-        PXC2_1 <-->|Galera Sync| PXC2_2
-        PXC2_2 <-->|Galera Sync| PXC2_3
-        PXC2_3 <-->|Galera Sync| PXC2_1
-    end
-    
-    PXC1_1 -.->|Async Replication| PXC2_1
-    PXC1_2 -.->|Async Replication| PXC2_2
-    PXC1_3 -.->|Async Replication| PXC2_3
-    
-    style DC1 fill:#6366f1,stroke:#818cf8,stroke-width:3px,color:#ffffff
-    style DC2 fill:#4f46e5,stroke:#6366f1,stroke-width:3px,color:#ffffff
-    style PXC1_1 fill:#818cf8,stroke:#a5b4fc,stroke-width:2px,color:#ffffff
-    style PXC1_2 fill:#818cf8,stroke:#a5b4fc,stroke-width:2px,color:#ffffff
-    style PXC1_3 fill:#818cf8,stroke:#a5b4fc,stroke-width:2px,color:#ffffff
-    style PXC2_1 fill:#6366f1,stroke:#818cf8,stroke-width:2px,color:#ffffff
-    style PXC2_2 fill:#6366f1,stroke:#818cf8,stroke-width:2px,color:#ffffff
-    style PXC2_3 fill:#6366f1,stroke:#818cf8,stroke-width:2px,color:#ffffff
-    style HAProxy1 fill:#a78bfa,stroke:#c4b5fd,stroke-width:2px,color:#ffffff
-    style HAProxy2 fill:#a78bfa,stroke:#c4b5fd,stroke-width:2px,color:#ffffff
-            </div>
+            <div id="cy"></div>
         </div>
         
         <div class="legend">
@@ -263,30 +205,267 @@ graph TB
             <div class="legend-items">
                 <div class="legend-item">
                     <div class="legend-color primary"></div>
-                    <span class="legend-text">Primary Data Center PXC Nodes (3-node Galera cluster)</span>
+                    <span class="legend-text">Site A PXC Nodes (3-node Galera cluster)</span>
                 </div>
                 <div class="legend-item">
                     <div class="legend-color secondary"></div>
-                    <span class="legend-text">Secondary Data Center PXC Nodes (3-node Galera cluster)</span>
+                    <span class="legend-text">Site B PXC Nodes (3-node Galera cluster)</span>
                 </div>
                 <div class="legend-item">
-                    <div class="legend-color replication"></div>
-                    <span class="legend-text">Asynchronous Replication (MySQL Replication)</span>
-                </div>
-                <div class="legend-item">
-                    <div class="legend-color" style="background: linear-gradient(135deg, #a78bfa 0%, #c4b5fd 100%);"></div>
+                    <div class="legend-color haproxy"></div>
                     <span class="legend-text">HAProxy Load Balancer</span>
                 </div>
                 <div class="legend-item">
-                    <div class="legend-color" style="background: linear-gradient(135deg, #818cf8 0%, #a5b4fc 100%); border-style: dashed;"></div>
-                    <span class="legend-text">Asynchronous Replication (dashed lines)</span>
+                    <div class="legend-line solid"></div>
+                    <span class="legend-text">Galera Synchronous Replication (solid lines)</span>
                 </div>
                 <div class="legend-item">
-                    <div class="legend-color" style="background: linear-gradient(135deg, #6366f1 0%, #818cf8 100%);"></div>
-                    <span class="legend-text">Galera Synchronous Replication (solid lines)</span>
+                    <div class="legend-line dashed"></div>
+                    <span class="legend-text">Asynchronous Replication (dashed lines)</span>
                 </div>
             </div>
         </div>
     </div>
+
+    <script>
+        const cy = cytoscape({
+            container: document.getElementById('cy'),
+            
+            elements: [
+                // Data Center Containers
+                { data: { id: 'siteA', label: 'Site A', type: 'datacenter', dc: 'primary' } },
+                { data: { id: 'siteB', label: 'Site B', type: 'datacenter', dc: 'secondary' } },
+                
+                // Primary Data Center - HAProxy
+                { data: { id: 'haproxy1', label: 'HAProxy\nLoad Balancer', type: 'haproxy', dc: 'primary', parent: 'siteA' } },
+                
+                // Primary Data Center - PXC Nodes
+                { data: { id: 'pxc1_1', label: 'PXC Node 1\nPrimary', type: 'pxc', dc: 'primary', parent: 'siteA' } },
+                { data: { id: 'pxc1_2', label: 'PXC Node 2\nPrimary', type: 'pxc', dc: 'primary', parent: 'siteA' } },
+                { data: { id: 'pxc1_3', label: 'PXC Node 3\nPrimary', type: 'pxc', dc: 'primary', parent: 'siteA' } },
+                
+                // Secondary Data Center - HAProxy
+                { data: { id: 'haproxy2', label: 'HAProxy\nLoad Balancer', type: 'haproxy', dc: 'secondary', parent: 'siteB' } },
+                
+                // Secondary Data Center - PXC Nodes
+                { data: { id: 'pxc2_1', label: 'PXC Node 1\nReplica', type: 'pxc', dc: 'secondary', parent: 'siteB' } },
+                { data: { id: 'pxc2_2', label: 'PXC Node 2\nReplica', type: 'pxc', dc: 'secondary', parent: 'siteB' } },
+                { data: { id: 'pxc2_3', label: 'PXC Node 3\nReplica', type: 'pxc', dc: 'secondary', parent: 'siteB' } },
+                
+                // HAProxy to PXC connections (Primary)
+                { data: { id: 'e1', source: 'haproxy1', target: 'pxc1_1', type: 'haproxy' } },
+                { data: { id: 'e2', source: 'haproxy1', target: 'pxc1_2', type: 'haproxy' } },
+                { data: { id: 'e3', source: 'haproxy1', target: 'pxc1_3', type: 'haproxy' } },
+                
+                // HAProxy to PXC connections (Secondary)
+                { data: { id: 'e4', source: 'haproxy2', target: 'pxc2_1', type: 'haproxy' } },
+                { data: { id: 'e5', source: 'haproxy2', target: 'pxc2_2', type: 'haproxy' } },
+                { data: { id: 'e6', source: 'haproxy2', target: 'pxc2_3', type: 'haproxy' } },
+                
+                // Galera synchronous replication (Primary)
+                { data: { id: 'g1', source: 'pxc1_1', target: 'pxc1_2', type: 'galera', label: 'Galera Sync' } },
+                { data: { id: 'g2', source: 'pxc1_2', target: 'pxc1_3', type: 'galera', label: 'Galera Sync' } },
+                { data: { id: 'g3', source: 'pxc1_3', target: 'pxc1_1', type: 'galera', label: 'Galera Sync' } },
+                
+                // Galera synchronous replication (Secondary)
+                { data: { id: 'g4', source: 'pxc2_1', target: 'pxc2_2', type: 'galera', label: 'Galera Sync' } },
+                { data: { id: 'g5', source: 'pxc2_2', target: 'pxc2_3', type: 'galera', label: 'Galera Sync' } },
+                { data: { id: 'g6', source: 'pxc2_3', target: 'pxc2_1', type: 'galera', label: 'Galera Sync' } },
+                
+                // Asynchronous replication between DCs
+                { data: { id: 'a1', source: 'pxc1_1', target: 'pxc2_1', type: 'async', label: 'Async Replication' } },
+                { data: { id: 'a2', source: 'pxc1_2', target: 'pxc2_2', type: 'async', label: 'Async Replication' } },
+                { data: { id: 'a3', source: 'pxc1_3', target: 'pxc2_3', type: 'async', label: 'Async Replication' } }
+            ],
+            
+            style: [
+                {
+                    selector: 'node[type="datacenter"]',
+                    style: {
+                        'background-color': 'transparent',
+                        'border-width': 2,
+                        'border-color': '#818cf8',
+                        'border-opacity': 0.6,
+                        'border-style': 'solid',
+                        'shape': 'round-rectangle',
+                        'width': 400,
+                        'height': 350,
+                        'padding': '40px',
+                        'label': 'data(label)',
+                        'text-valign': 'top',
+                        'text-halign': 'center',
+                        'color': '#a5b4fc',
+                        'font-size': '22px',
+                        'font-weight': '700',
+                        'text-outline-color': '#1e293b',
+                        'text-outline-width': 3,
+                        'text-outline-opacity': 0.9,
+                        'text-margin-y': 15
+                    }
+                },
+                {
+                    selector: 'node[type="pxc"][dc="primary"]',
+                    style: {
+                        'background-color': '#818cf8',
+                        'background-opacity': 0.9,
+                        'border-width': 3,
+                        'border-color': '#a5b4fc',
+                        'border-opacity': 1,
+                        'width': 120,
+                        'height': 120,
+                        'shape': 'round-rectangle',
+                        'label': 'data(label)',
+                        'text-valign': 'center',
+                        'text-halign': 'center',
+                        'color': '#ffffff',
+                        'font-size': '14px',
+                        'font-weight': '600',
+                        'text-wrap': 'wrap',
+                        'text-max-width': '100px',
+                        'text-outline-color': '#1e293b',
+                        'text-outline-width': 2,
+                        'text-outline-opacity': 0.8
+                    }
+                },
+                {
+                    selector: 'node[type="pxc"][dc="secondary"]',
+                    style: {
+                        'background-color': '#6366f1',
+                        'background-opacity': 0.9,
+                        'border-width': 3,
+                        'border-color': '#818cf8',
+                        'border-opacity': 1,
+                        'width': 120,
+                        'height': 120,
+                        'shape': 'round-rectangle',
+                        'label': 'data(label)',
+                        'text-valign': 'center',
+                        'text-halign': 'center',
+                        'color': '#ffffff',
+                        'font-size': '14px',
+                        'font-weight': '600',
+                        'text-wrap': 'wrap',
+                        'text-max-width': '100px',
+                        'text-outline-color': '#1e293b',
+                        'text-outline-width': 2,
+                        'text-outline-opacity': 0.8
+                    }
+                },
+                {
+                    selector: 'node[type="haproxy"]',
+                    style: {
+                        'background-color': '#a78bfa',
+                        'background-opacity': 0.9,
+                        'border-width': 3,
+                        'border-color': '#c4b5fd',
+                        'border-opacity': 1,
+                        'width': 140,
+                        'height': 80,
+                        'shape': 'round-hexagon',
+                        'label': 'data(label)',
+                        'text-valign': 'center',
+                        'text-halign': 'center',
+                        'color': '#ffffff',
+                        'font-size': '14px',
+                        'font-weight': '600',
+                        'text-wrap': 'wrap',
+                        'text-max-width': '120px',
+                        'text-outline-color': '#1e293b',
+                        'text-outline-width': 2,
+                        'text-outline-opacity': 0.8
+                    }
+                },
+                {
+                    selector: 'edge[type="galera"]',
+                    style: {
+                        'width': 3,
+                        'line-color': '#a5b4fc',
+                        'target-arrow-color': '#a5b4fc',
+                        'target-arrow-shape': 'triangle',
+                        'curve-style': 'bezier',
+                        'opacity': 0.8,
+                        'arrow-scale': 1.2,
+                        'source-endpoint': 'outside-to-node',
+                        'target-endpoint': 'outside-to-node'
+                    }
+                },
+                {
+                    selector: 'edge[type="haproxy"]',
+                    style: {
+                        'width': 2,
+                        'line-color': '#c4b5fd',
+                        'target-arrow-color': '#c4b5fd',
+                        'target-arrow-shape': 'triangle',
+                        'curve-style': 'straight',
+                        'opacity': 0.6,
+                        'arrow-scale': 1
+                    }
+                },
+                {
+                    selector: 'edge[type="async"]',
+                    style: {
+                        'width': 2,
+                        'line-color': '#a5b4fc',
+                        'target-arrow-color': '#a5b4fc',
+                        'target-arrow-shape': 'triangle',
+                        'line-style': 'dashed',
+                        'line-dash-pattern': [8, 4],
+                        'curve-style': 'bezier',
+                        'opacity': 0.7,
+                        'arrow-scale': 1.2
+                    }
+                }
+            ],
+            
+            layout: {
+                name: 'preset',
+                positions: function(node) {
+                    const positions = {
+                        'siteA': { x: 200, y: 300 },
+                        'siteB': { x: 800, y: 300 },
+                        'haproxy1': { x: 200, y: 150 },
+                        'pxc1_1': { x: 100, y: 300 },
+                        'pxc1_2': { x: 200, y: 400 },
+                        'pxc1_3': { x: 300, y: 300 },
+                        'haproxy2': { x: 800, y: 150 },
+                        'pxc2_1': { x: 700, y: 300 },
+                        'pxc2_2': { x: 800, y: 400 },
+                        'pxc2_3': { x: 900, y: 300 }
+                    };
+                    return positions[node.id()] || { x: 0, y: 0 };
+                },
+                fit: true,
+                padding: 100,
+                animate: true,
+                animationDuration: 1000,
+                animationEasing: 'ease-out'
+            }
+        });
+
+        // Add hover effects
+        cy.on('ready', function() {
+            // Hover effects for PXC and HAProxy nodes
+            cy.nodes('[type="pxc"], [type="haproxy"]').on('mouseover', function(evt) {
+                evt.target.style('background-opacity', 1);
+                evt.target.style('border-width', 4);
+            });
+            
+            cy.nodes('[type="pxc"], [type="haproxy"]').on('mouseout', function(evt) {
+                evt.target.style('background-opacity', 0.9);
+                evt.target.style('border-width', 3);
+            });
+            
+            // Hover effects for datacenter containers
+            cy.nodes('[type="datacenter"]').on('mouseover', function(evt) {
+                evt.target.style('border-opacity', 0.9);
+                evt.target.style('border-width', 3);
+            });
+            
+            cy.nodes('[type="datacenter"]').on('mouseout', function(evt) {
+                evt.target.style('border-opacity', 0.6);
+                evt.target.style('border-width', 2);
+            });
+        });
+    </script>
 </body>
 </html>
