@@ -81,7 +81,7 @@
             padding: 2rem;
             border: 1px solid rgba(99, 102, 241, 0.2);
             margin-top: 2rem;
-            height: 800px;
+            height: 1600px;
             position: relative;
         }
 
@@ -232,41 +232,102 @@
             container: document.getElementById('cy'),
             
             elements: [
-                // Data Center Containers
-                { data: { id: 'slc', label: 'SLC', type: 'datacenter', dc: 'primary' } },
-                { data: { id: 'den', label: 'DEN', type: 'datacenter', dc: 'secondary' } },
+                // Environment Containers
+                { data: { id: 'dev', label: 'Dev', type: 'environment' } },
+                { data: { id: 'prod', label: 'Prod', type: 'environment' } },
                 
-                // Primary Data Center - HAProxy
-                { data: { id: 'haproxy1', label: 'HAProxy\nLoad Balancer', type: 'haproxy', dc: 'primary', parent: 'slc' } },
+                // Dev Environment - Data Center Containers
+                { data: { id: 'dev-slc', label: 'SLC', type: 'datacenter', dc: 'primary', parent: 'dev' } },
+                { data: { id: 'dev-den', label: 'DEN', type: 'datacenter', dc: 'secondary', parent: 'dev' } },
                 
-                // Primary Data Center - PXC Nodes
-                { data: { id: 'pxc1_0', label: 'PXC Node 0\nPrimary', type: 'pxc', dc: 'primary', parent: 'slc' } },
-                { data: { id: 'pxc1_1', label: 'PXC Node 1\nPrimary', type: 'pxc', dc: 'primary', parent: 'slc' } },
-                { data: { id: 'pxc1_2', label: 'PXC Node 2\nPrimary', type: 'pxc', dc: 'primary', parent: 'slc' } },
+                // Dev Environment - SLC HAProxy
+                { data: { id: 'dev-haproxy-slc', label: 'HAProxy\nLoad Balancer', type: 'haproxy', dc: 'primary', parent: 'dev-slc' } },
                 
-                // Secondary Data Center - HAProxy
-                { data: { id: 'haproxy2', label: 'HAProxy\nLoad Balancer', type: 'haproxy', dc: 'secondary', parent: 'den' } },
+                // Dev Environment - SLC PXC Nodes
+                { data: { id: 'dev-pxc-slc-0', label: 'PXC Node 0\nPrimary', type: 'pxc', dc: 'primary', parent: 'dev-slc' } },
+                { data: { id: 'dev-pxc-slc-1', label: 'PXC Node 1\nPrimary', type: 'pxc', dc: 'primary', parent: 'dev-slc' } },
+                { data: { id: 'dev-pxc-slc-2', label: 'PXC Node 2\nPrimary', type: 'pxc', dc: 'primary', parent: 'dev-slc' } },
                 
-                // Secondary Data Center - PXC Nodes
-                { data: { id: 'pxc2_0', label: 'PXC Node 0\nReplica', type: 'pxc', dc: 'secondary', parent: 'den' } },
-                { data: { id: 'pxc2_1', label: 'PXC Node 1\nReplica', type: 'pxc', dc: 'secondary', parent: 'den' } },
-                { data: { id: 'pxc2_2', label: 'PXC Node 2\nReplica', type: 'pxc', dc: 'secondary', parent: 'den' } },
+                // Dev Environment - DEN HAProxy
+                { data: { id: 'dev-haproxy-den', label: 'HAProxy\nLoad Balancer', type: 'haproxy', dc: 'secondary', parent: 'dev-den' } },
                 
-                // HAProxy to PXC connections (Primary)
-                { data: { id: 'e1', source: 'haproxy1', target: 'pxc1_0', type: 'haproxy' } },
-                { data: { id: 'e2', source: 'haproxy1', target: 'pxc1_1', type: 'haproxy' } },
-                { data: { id: 'e3', source: 'haproxy1', target: 'pxc1_2', type: 'haproxy' } },
+                // Dev Environment - DEN PXC Nodes
+                { data: { id: 'dev-pxc-den-0', label: 'PXC Node 0\nReplica', type: 'pxc', dc: 'secondary', parent: 'dev-den' } },
+                { data: { id: 'dev-pxc-den-1', label: 'PXC Node 1\nReplica', type: 'pxc', dc: 'secondary', parent: 'dev-den' } },
+                { data: { id: 'dev-pxc-den-2', label: 'PXC Node 2\nReplica', type: 'pxc', dc: 'secondary', parent: 'dev-den' } },
                 
-                // HAProxy to PXC connections (Secondary)
-                { data: { id: 'e4', source: 'haproxy2', target: 'pxc2_0', type: 'haproxy' } },
-                { data: { id: 'e5', source: 'haproxy2', target: 'pxc2_1', type: 'haproxy' } },
-                { data: { id: 'e6', source: 'haproxy2', target: 'pxc2_2', type: 'haproxy' } },
+                // Prod Environment - Data Center Containers
+                { data: { id: 'prod-slc', label: 'SLC', type: 'datacenter', dc: 'primary', parent: 'prod' } },
+                { data: { id: 'prod-den', label: 'DEN', type: 'datacenter', dc: 'secondary', parent: 'prod' } },
                 
-                // Asynchronous replication between DCs
-                { data: { id: 'a1', source: 'pxc1_0', target: 'pxc2_0', type: 'async', label: 'Async Replication' } },
+                // Prod Environment - SLC HAProxy
+                { data: { id: 'prod-haproxy-slc', label: 'HAProxy\nLoad Balancer', type: 'haproxy', dc: 'primary', parent: 'prod-slc' } },
+                
+                // Prod Environment - SLC PXC Nodes
+                { data: { id: 'prod-pxc-slc-0', label: 'PXC Node 0\nPrimary', type: 'pxc', dc: 'primary', parent: 'prod-slc' } },
+                { data: { id: 'prod-pxc-slc-1', label: 'PXC Node 1\nPrimary', type: 'pxc', dc: 'primary', parent: 'prod-slc' } },
+                { data: { id: 'prod-pxc-slc-2', label: 'PXC Node 2\nPrimary', type: 'pxc', dc: 'primary', parent: 'prod-slc' } },
+                
+                // Prod Environment - DEN HAProxy
+                { data: { id: 'prod-haproxy-den', label: 'HAProxy\nLoad Balancer', type: 'haproxy', dc: 'secondary', parent: 'prod-den' } },
+                
+                // Prod Environment - DEN PXC Nodes
+                { data: { id: 'prod-pxc-den-0', label: 'PXC Node 0\nReplica', type: 'pxc', dc: 'secondary', parent: 'prod-den' } },
+                { data: { id: 'prod-pxc-den-1', label: 'PXC Node 1\nReplica', type: 'pxc', dc: 'secondary', parent: 'prod-den' } },
+                { data: { id: 'prod-pxc-den-2', label: 'PXC Node 2\nReplica', type: 'pxc', dc: 'secondary', parent: 'prod-den' } },
+                
+                // Dev HAProxy to PXC connections (SLC)
+                { data: { id: 'dev-e1', source: 'dev-haproxy-slc', target: 'dev-pxc-slc-0', type: 'haproxy' } },
+                { data: { id: 'dev-e2', source: 'dev-haproxy-slc', target: 'dev-pxc-slc-1', type: 'haproxy' } },
+                { data: { id: 'dev-e3', source: 'dev-haproxy-slc', target: 'dev-pxc-slc-2', type: 'haproxy' } },
+                
+                // Dev HAProxy to PXC connections (DEN)
+                { data: { id: 'dev-e4', source: 'dev-haproxy-den', target: 'dev-pxc-den-0', type: 'haproxy' } },
+                { data: { id: 'dev-e5', source: 'dev-haproxy-den', target: 'dev-pxc-den-1', type: 'haproxy' } },
+                { data: { id: 'dev-e6', source: 'dev-haproxy-den', target: 'dev-pxc-den-2', type: 'haproxy' } },
+                
+                // Prod HAProxy to PXC connections (SLC)
+                { data: { id: 'prod-e1', source: 'prod-haproxy-slc', target: 'prod-pxc-slc-0', type: 'haproxy' } },
+                { data: { id: 'prod-e2', source: 'prod-haproxy-slc', target: 'prod-pxc-slc-1', type: 'haproxy' } },
+                { data: { id: 'prod-e3', source: 'prod-haproxy-slc', target: 'prod-pxc-slc-2', type: 'haproxy' } },
+                
+                // Prod HAProxy to PXC connections (DEN)
+                { data: { id: 'prod-e4', source: 'prod-haproxy-den', target: 'prod-pxc-den-0', type: 'haproxy' } },
+                { data: { id: 'prod-e5', source: 'prod-haproxy-den', target: 'prod-pxc-den-1', type: 'haproxy' } },
+                { data: { id: 'prod-e6', source: 'prod-haproxy-den', target: 'prod-pxc-den-2', type: 'haproxy' } },
+                
+                // Dev Asynchronous replication between DCs
+                { data: { id: 'dev-a1', source: 'dev-pxc-slc-0', target: 'dev-pxc-den-0', type: 'async', label: 'Async Replication' } },
+                
+                // Prod Asynchronous replication between DCs
+                { data: { id: 'prod-a1', source: 'prod-pxc-slc-0', target: 'prod-pxc-den-0', type: 'async', label: 'Async Replication' } },
             ],
             
             style: [
+                {
+                    selector: 'node[type="environment"]',
+                    style: {
+                        'background-color': 'transparent',
+                        'border-width': 3,
+                        'border-color': '#10b981',
+                        'border-opacity': 0.7,
+                        'border-style': 'solid',
+                        'shape': 'round-rectangle',
+                        'width': 900,
+                        'height': 500,
+                        'padding': '50px',
+                        'label': 'data(label)',
+                        'text-valign': 'top',
+                        'text-halign': 'center',
+                        'color': '#34d399',
+                        'font-size': '28px',
+                        'font-weight': '700',
+                        'text-outline-color': '#1e293b',
+                        'text-outline-width': 3,
+                        'text-outline-opacity': 0.9,
+                        'text-margin-y': 20
+                    }
+                },
                 {
                     selector: 'node[type="datacenter"]',
                     style: {
@@ -292,7 +353,7 @@
                     }
                 },
                 {
-                    selector: 'node[type="datacenter"][id="den"]',
+                    selector: 'node[type="datacenter"][dc="secondary"]',
                     style: {
                         'border-color': '#6366f1'
                     }
@@ -415,16 +476,41 @@
                 name: 'preset',
                 positions: function(node) {
                     const positions = {
-                        'slc': { x: 200, y: 300 },
-                        'den': { x: 900, y: 300 },
-                        'haproxy1': { x: 200, y: 150 },
-                        'pxc1_0': { x: 100, y: 300 },
-                        'pxc1_1': { x: 200, y: 400 },
-                        'pxc1_2': { x: 300, y: 300 },
-                        'haproxy2': { x: 900, y: 150 },
-                        'pxc2_0': { x: 800, y: 300 },
-                        'pxc2_1': { x: 900, y: 400 },
-                        'pxc2_2': { x: 1000, y: 300 }
+                        // Environments
+                        'dev': { x: 500, y: 400 },
+                        'prod': { x: 500, y: 1100 },
+                        
+                        // Dev Data Centers
+                        'dev-slc': { x: 200, y: 300 },
+                        'dev-den': { x: 800, y: 300 },
+                        
+                        // Dev SLC nodes
+                        'dev-haproxy-slc': { x: 200, y: 150 },
+                        'dev-pxc-slc-0': { x: 100, y: 300 },
+                        'dev-pxc-slc-1': { x: 200, y: 400 },
+                        'dev-pxc-slc-2': { x: 300, y: 300 },
+                        
+                        // Dev DEN nodes
+                        'dev-haproxy-den': { x: 800, y: 150 },
+                        'dev-pxc-den-0': { x: 700, y: 300 },
+                        'dev-pxc-den-1': { x: 800, y: 400 },
+                        'dev-pxc-den-2': { x: 900, y: 300 },
+                        
+                        // Prod Data Centers
+                        'prod-slc': { x: 200, y: 1000 },
+                        'prod-den': { x: 800, y: 1000 },
+                        
+                        // Prod SLC nodes
+                        'prod-haproxy-slc': { x: 200, y: 850 },
+                        'prod-pxc-slc-0': { x: 100, y: 1000 },
+                        'prod-pxc-slc-1': { x: 200, y: 1100 },
+                        'prod-pxc-slc-2': { x: 300, y: 1000 },
+                        
+                        // Prod DEN nodes
+                        'prod-haproxy-den': { x: 800, y: 850 },
+                        'prod-pxc-den-0': { x: 700, y: 1000 },
+                        'prod-pxc-den-1': { x: 800, y: 1100 },
+                        'prod-pxc-den-2': { x: 900, y: 1000 }
                     };
                     return positions[node.id()] || { x: 0, y: 0 };
                 },
@@ -458,6 +544,17 @@
             cy.nodes('[type="datacenter"]').on('mouseout', function(evt) {
                 evt.target.style('border-opacity', 0.6);
                 evt.target.style('border-width', 2);
+            });
+            
+            // Hover effects for environment containers
+            cy.nodes('[type="environment"]').on('mouseover', function(evt) {
+                evt.target.style('border-opacity', 0.9);
+                evt.target.style('border-width', 4);
+            });
+            
+            cy.nodes('[type="environment"]').on('mouseout', function(evt) {
+                evt.target.style('border-opacity', 0.7);
+                evt.target.style('border-width', 3);
             });
         });
     </script>
