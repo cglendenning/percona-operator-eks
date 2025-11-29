@@ -205,11 +205,11 @@
             <div class="legend-items">
                 <div class="legend-item">
                     <div class="legend-color primary"></div>
-                    <span class="legend-text">SLC PXC Nodes (3-node Galera cluster)</span>
+                    <span class="legend-text">namespaceA PXC Nodes (3-node Galera cluster)</span>
                 </div>
                 <div class="legend-item">
                     <div class="legend-color secondary"></div>
-                    <span class="legend-text">DEN PXC Nodes (3-node Galera cluster)</span>
+                    <span class="legend-text">namespaceB PXC Nodes (3-node Galera cluster)</span>
                 </div>
                 <div class="legend-item">
                     <div class="legend-color haproxy"></div>
@@ -232,13 +232,13 @@
             container: document.getElementById('cy'),
             
             elements: [
-                // Environment Containers
-                { data: { id: 'dev', label: 'Dev', type: 'environment' } },
-                { data: { id: 'prod', label: 'Prod', type: 'environment' } },
+                // Kubernetes Cluster Containers
+                { data: { id: 'dev', label: 'k8s-development', type: 'environment' } },
+                { data: { id: 'prod', label: 'k8s-staging', type: 'environment' } },
                 
-                // Dev Environment - Data Center Containers
-                { data: { id: 'dev-slc', label: 'SLC', type: 'datacenter', dc: 'primary', parent: 'dev' } },
-                { data: { id: 'dev-den', label: 'DEN', type: 'datacenter', dc: 'secondary', parent: 'dev' } },
+                // Dev Kubernetes Cluster - Namespace Containers
+                { data: { id: 'dev-slc', label: 'namespaceA', type: 'datacenter', dc: 'primary', parent: 'dev' } },
+                { data: { id: 'dev-den', label: 'namespaceB', type: 'datacenter', dc: 'secondary', parent: 'dev' } },
                 
                 // Dev Environment - SLC HAProxy
                 { data: { id: 'dev-haproxy-slc', label: 'HAProxy\nLoad Balancer', type: 'haproxy', dc: 'primary', parent: 'dev-slc' } },
@@ -256,9 +256,9 @@
                 { data: { id: 'dev-pxc-den-1', label: 'PXC Node 1\nReplica', type: 'pxc', dc: 'secondary', parent: 'dev-den' } },
                 { data: { id: 'dev-pxc-den-2', label: 'PXC Node 2\nReplica', type: 'pxc', dc: 'secondary', parent: 'dev-den' } },
                 
-                // Prod Environment - Data Center Containers
-                { data: { id: 'prod-slc', label: 'SLC', type: 'datacenter', dc: 'primary', parent: 'prod' } },
-                { data: { id: 'prod-den', label: 'DEN', type: 'datacenter', dc: 'secondary', parent: 'prod' } },
+                // Prod Kubernetes Cluster - Namespace Containers
+                { data: { id: 'prod-slc', label: 'namespaceA', type: 'datacenter', dc: 'primary', parent: 'prod' } },
+                { data: { id: 'prod-den', label: 'namespaceB', type: 'datacenter', dc: 'secondary', parent: 'prod' } },
                 
                 // Prod Environment - SLC HAProxy
                 { data: { id: 'prod-haproxy-slc', label: 'HAProxy\nLoad Balancer', type: 'haproxy', dc: 'primary', parent: 'prod-slc' } },
@@ -296,11 +296,8 @@
                 { data: { id: 'prod-e5', source: 'prod-haproxy-den', target: 'prod-pxc-den-1', type: 'haproxy' } },
                 { data: { id: 'prod-e6', source: 'prod-haproxy-den', target: 'prod-pxc-den-2', type: 'haproxy' } },
                 
-                // Dev Asynchronous replication between DCs
-                { data: { id: 'dev-a1', source: 'dev-pxc-slc-0', target: 'dev-pxc-den-0', type: 'async', label: 'Async Replication' } },
-                
-                // Prod Asynchronous replication between DCs
-                { data: { id: 'prod-a1', source: 'prod-pxc-slc-0', target: 'prod-pxc-den-0', type: 'async', label: 'Async Replication' } },
+                // Asynchronous replication from k8s-dev namespaceA to k8s-prod namespaceB
+                { data: { id: 'dev-a1', source: 'dev-pxc-slc-0', target: 'prod-pxc-den-0', type: 'async', label: 'Async Replication' } },
             ],
             
             style: [
@@ -320,7 +317,7 @@
                         'text-valign': 'top',
                         'text-halign': 'center',
                         'color': '#34d399',
-                        'font-size': '28px',
+                        'font-size': '24px',
                         'font-weight': '700',
                         'text-outline-color': '#1e293b',
                         'text-outline-width': 3,
@@ -344,7 +341,7 @@
                         'text-valign': 'top',
                         'text-halign': 'center',
                         'color': '#a5b4fc',
-                        'font-size': '22px',
+                        'font-size': '20px',
                         'font-weight': '700',
                         'text-outline-color': '#1e293b',
                         'text-outline-width': 3,
