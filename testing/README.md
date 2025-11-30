@@ -75,7 +75,8 @@ pytest resiliency/ -v     # Resiliency tests only
 ### Run Specific Test
 ```bash
 pytest unit/test_xtrabackup_version.py -v
-pytest unit/test_smart_update_strategy.py -v
+pytest unit/test_smart_update_strategy.py::test_update_strategy_is_smart_update -v
+pytest unit/test_smart_update_strategy.py::test_upgrade_options_apply_is_disabled -v
 ```
 
 ## Critical Unit Tests
@@ -126,6 +127,31 @@ SmartUpdate is the Percona Operator's intelligent rolling update strategy that:
 - Prevents quorum loss during rolling updates
 - Guarantees data consistency during operator upgrades
 - Production best practice for PXC clusters
+
+### Upgrade Options Test
+
+The `test_smart_update_strategy.py` test also validates that `upgradeOptions.apply` is set to `disabled`.
+
+**How it works:**
+1. Loads Fleet-rendered manifest
+2. Finds PerconaXtraDBCluster resource
+3. Extracts `spec.upgradeOptions.apply`
+4. Validates it is set to `disabled`
+
+**What is upgradeOptions.apply?**
+Controls automatic version upgrades of PXC components:
+- `disabled` (recommended for production) - Manual upgrade control
+- `recommended` - Auto-apply recommended version updates
+- `latest` - Auto-apply latest version (not recommended)
+- `X.Y.Z` - Auto-upgrade to specific version
+
+**Why disabled matters:**
+- Prevents unexpected automatic upgrades
+- Ensures change management process is followed
+- Allows validation in lower environments first
+- Maintains version consistency across clusters
+- Prevents potential downtime from automatic upgrades
+- Critical for production stability and compliance
 
 ## Disaster Recovery Scenario Tests
 
