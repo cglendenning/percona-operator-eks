@@ -382,25 +382,32 @@ else
             log_success "(found)"
             VERIFIED_BACKUPS=$((VERIFIED_BACKUPS + 1))
             
-            # Count files by type - use grep -c for reliable counting
+            # Count files by type - use simple loop counting for reliability
             TOTAL_FILES=0
             XTRABACKUP_FILES=0
             METADATA_FILES=0
             BINLOG_FILES=0
             
             if [ -n "$BACKUP_FILES" ]; then
-                TOTAL_FILES=$(echo "$BACKUP_FILES" | grep -v "^$" | grep -c . || echo "0")
-                XTRABACKUP_FILES=$(echo "$BACKUP_FILES" | grep -cE "\.(qp|xbstream|tar\.gz|tar)$" || echo "0")
-                METADATA_FILES=$(echo "$BACKUP_FILES" | grep -cE "(xtrabackup_info|xtrabackup_checkpoints|backup-my\.cnf|stream-metadata)" || echo "0")
-                BINLOG_FILES=$(echo "$BACKUP_FILES" | grep -cE "mysql-bin\." || echo "0")
+                while IFS= read -r line; do
+                    if [ -n "$line" ]; then
+                        TOTAL_FILES=$((TOTAL_FILES + 1))
+                        case "$line" in
+                            *\.qp|*\.xbstream|*\.tar\.gz|*\.tar)
+                                XTRABACKUP_FILES=$((XTRABACKUP_FILES + 1))
+                                ;;
+                            *xtrabackup_info*|*xtrabackup_checkpoints*|*backup-my\.cnf*|*stream-metadata*)
+                                METADATA_FILES=$((METADATA_FILES + 1))
+                                ;;
+                            *mysql-bin\.*)
+                                BINLOG_FILES=$((BINLOG_FILES + 1))
+                                ;;
+                        esac
+                    fi
+                done <<< "$BACKUP_FILES"
             fi
             
-            # Ensure all values are valid integers
-            TOTAL_FILES=$((TOTAL_FILES + 0))
-            XTRABACKUP_FILES=$((XTRABACKUP_FILES + 0))
-            METADATA_FILES=$((METADATA_FILES + 0))
-            BINLOG_FILES=$((BINLOG_FILES + 0))
-            
+            # Calculate other files
             OTHER_FILES=$((TOTAL_FILES - XTRABACKUP_FILES - METADATA_FILES - BINLOG_FILES))
             
             echo ""
