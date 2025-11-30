@@ -75,39 +75,57 @@ pytest resiliency/ -v     # Resiliency tests only
 ### Run Specific Test
 ```bash
 pytest unit/test_xtrabackup_version.py -v
+pytest unit/test_smart_update_strategy.py -v
 ```
 
-## XtraBackup Version Test
+## Critical Unit Tests
+
+### XtraBackup Version Test
 
 The `test_xtrabackup_version.py` test validates that XtraBackup version is pinned to `8.4.0-4`.
 
-### How It Works
+**How it works:**
+1. Loads Fleet-rendered manifest
+2. Finds PerconaXtraDBCluster resource
+3. Extracts `spec.backup.image`
+4. Validates version is `8.4.0-4`
 
-1. **Loads Fleet-rendered manifest** - Contains all Kubernetes resources
-2. **Finds PerconaXtraDBCluster resource** - Searches for `kind: PerconaXtraDBCluster`
-3. **Extracts backup image** - Locates `spec.backup.image`:
-   ```yaml
-   spec:
-     backup:
-       image: percona/percona-xtradb-cluster-operator:8.4.0-4-pxc8.4-backup
-   ```
-4. **Parses version** - Uses regex to extract `8.4.0-4` from tag
-5. **Validates** - Asserts version matches expected `8.4.0-4`
+**What is XtraBackup?**
+Percona XtraBackup is the backup tool used for hot backups, State Snapshot Transfer (SST), Point-in-Time Recovery (PITR), and incremental backups.
 
-### What is XtraBackup?
+**Why it matters:**
+- Compatibility with PXC MySQL 8.4.x
+- Security through version pinning
+- Compliance for audits
+- Reproducible backups
 
-Percona XtraBackup is the backup tool used for:
-- **Hot backups** - Creates consistent backups while MySQL is running
-- **State Snapshot Transfer (SST)** - Full data copy when nodes join the cluster
-- **Point-in-Time Recovery (PITR)** - Works with binary logs for precise recovery
-- **Incremental backups** - Saves storage and time
+### SmartUpdate Strategy Test
 
-### Why Version Pinning Matters
+The `test_smart_update_strategy.py` test validates that the PerconaXtraDBCluster updateStrategy is set to `SmartUpdate`.
 
-- **Compatibility** - XtraBackup 8.4.0-4 is tested with PXC MySQL 8.4.x
-- **Security** - Pinned versions prevent unexpected vulnerabilities
-- **Compliance** - Demonstrates version control for audits (ISO, SOC2, SOX)
-- **Reproducibility** - Guarantees backups use a known, validated tool
+**How it works:**
+1. Loads Fleet-rendered manifest
+2. Finds PerconaXtraDBCluster resource
+3. Extracts `spec.updateStrategy`
+4. Validates it is set to `SmartUpdate`
+
+**What is SmartUpdate?**
+SmartUpdate is the Percona Operator's intelligent rolling update strategy that:
+- Maintains cluster quorum during updates
+- Waits for Galera sync status before proceeding
+- Minimizes risk of data loss or downtime
+- Automatically handles node failures during updates
+
+**Valid updateStrategy values:**
+- `SmartUpdate` (recommended) - Operator-managed intelligent updates
+- `RollingUpdate` - Standard Kubernetes rolling update
+- `OnDelete` - Manual update control
+
+**Why it matters:**
+- Ensures zero-downtime updates
+- Prevents quorum loss during rolling updates
+- Guarantees data consistency during operator upgrades
+- Production best practice for PXC clusters
 
 ## Disaster Recovery Scenario Tests
 
