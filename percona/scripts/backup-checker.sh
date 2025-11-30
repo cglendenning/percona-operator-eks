@@ -3,6 +3,7 @@
 # Backup Checker Tool
 # Verifies that XtraBackup and PITR backups exist in MinIO storage
 # Works with on-prem MinIO deployments
+# READ-ONLY: This script only performs read operations (ls, stat) - no destructive operations
 
 set -euo pipefail
 
@@ -19,6 +20,8 @@ NAMESPACE=""
 SECRET_NAME=""
 KUBECONFIG="${KUBECONFIG:-}"
 VERBOSE=false
+MINIO_NAMESPACE=""
+MINIO_POD=""
 
 # kubectl wrapper function that always includes --kubeconfig if set
 kctl() {
@@ -27,6 +30,15 @@ kctl() {
     else
         kubectl "$@"
     fi
+}
+
+# Execute mc command inside MinIO pod
+mc_exec() {
+    if [ -z "$MINIO_POD" ] || [ -z "$MINIO_NAMESPACE" ]; then
+        log_error "MinIO pod not found"
+        return 1
+    fi
+    kctl exec -n "$MINIO_NAMESPACE" "$MINIO_POD" -- mc "$@"
 }
 
 # Logging functions
@@ -70,9 +82,13 @@ Verifies that XtraBackup and PITR backups exist in MinIO storage.
 This script:
   - Lists all PerconaXtraDBClusterBackup resources in the namespace
   - Extracts backup paths from backup status
-  - Verifies each backup exists in MinIO using mc
+  - Verifies each backup exists in MinIO using mc (executed in MinIO pod)
   - Checks PITR binlog files are present in MinIO
   - Reports any missing backups or binlogs
+
+READ-ONLY OPERATIONS:
+  This script only performs read operations (ls, stat) - no destructive operations.
+  All mc commands are executed inside the MinIO pod for security.
 
 REQUIRED:
     -n, --namespace NAMESPACE    Kubernetes namespace containing the PXC cluster
@@ -140,13 +156,6 @@ if ! command -v kubectl &> /dev/null; then
     exit 1
 fi
 
-# Check if mc is available
-if ! command -v mc &> /dev/null; then
-    log_error "mc (MinIO Client) is not installed or not in PATH"
-    log_error "Install from: https://min.io/docs/minio/linux/reference/minio-mc.html"
-    exit 1
-fi
-
 # Check if jq is available
 if ! command -v jq &> /dev/null; then
     log_error "jq is not installed or not in PATH"
@@ -206,8 +215,59 @@ fi
 log_info "MinIO Endpoint: $MINIO_ENDPOINT"
 log_info "MinIO Bucket: $MINIO_BUCKET"
 
-# Configure mc alias
-MC_ALIAS="backup-checker-$(date +%s)"
+# Extract MinIO namespace from endpoint (e.g., http://minio.minio.svc.cluster.local:9000 -> minio)
+# Try common patterns
+MINIO_NAMESPACE=$(echo "$MINIO_ENDPOINT" | sed -n 's|.*://[^.]*\.\([^.]*\)\.svc.*|\1|p' || echo "")
+
+# If we couldn't extract from endpoint, try common namespaces
+if [ -z "$MINIO_NAMESPACE" ]; then
+    for ns in minio minio-operator minio-system; do
+        if kctl get namespace "$ns" &> /dev/null; then
+            MINIO_NAMESPACE="$ns"
+            log_verbose "Using MinIO namespace: $ns"
+            break
+        fi
+    done
+fi
+
+if [ -z "$MINIO_NAMESPACE" ]; then
+    log_error "Could not determine MinIO namespace from endpoint: $MINIO_ENDPOINT"
+    log_error "Please ensure MinIO is installed and accessible"
+    exit 1
+fi
+
+log_info "MinIO Namespace: $MINIO_NAMESPACE"
+
+# Find MinIO pod
+log_header "Finding MinIO Pod"
+
+MINIO_POD=$(kctl get pods -n "$MINIO_NAMESPACE" -l app=minio -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || echo "")
+
+# Try alternative label selectors
+if [ -z "$MINIO_POD" ]; then
+    MINIO_POD=$(kctl get pods -n "$MINIO_NAMESPACE" -l app.kubernetes.io/name=minio -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || echo "")
+fi
+
+if [ -z "$MINIO_POD" ]; then
+    MINIO_POD=$(kctl get pods -n "$MINIO_NAMESPACE" --field-selector=status.phase=Running -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || echo "")
+fi
+
+if [ -z "$MINIO_POD" ]; then
+    log_error "No MinIO pod found in namespace '$MINIO_NAMESPACE'"
+    log_error "Available pods:"
+    kctl get pods -n "$MINIO_NAMESPACE" 2>/dev/null || true
+    exit 1
+fi
+
+log_success "Found MinIO pod: $MINIO_POD"
+
+# Verify pod is running
+POD_STATUS=$(kctl get pod "$MINIO_POD" -n "$MINIO_NAMESPACE" -o jsonpath='{.status.phase}' 2>/dev/null || echo "")
+if [ "$POD_STATUS" != "Running" ]; then
+    log_warn "MinIO pod is not in Running state (status: $POD_STATUS)"
+fi
+
+# Configure mc alias inside MinIO pod
 log_header "Configuring MinIO Client"
 
 # Remove http:// or https:// prefix for mc alias
@@ -225,11 +285,18 @@ else
     MC_ENDPOINT="http://${MINIO_HOST}:${MINIO_PORT}"
 fi
 
+# Use localhost from inside the pod if it's a service endpoint
+if echo "$MC_ENDPOINT" | grep -q "\.svc\.cluster\.local"; then
+    MC_ENDPOINT="http://localhost:9000"
+fi
+
+MC_ALIAS="backup-checker-$(date +%s)"
+
 log_verbose "Setting up mc alias: $MC_ALIAS -> $MC_ENDPOINT"
 
-# Configure mc alias (suppress output)
-if ! mc alias set "$MC_ALIAS" "$MC_ENDPOINT" "$AWS_ACCESS_KEY_ID" "$AWS_SECRET_ACCESS_KEY" &> /dev/null; then
-    log_error "Failed to configure mc alias"
+# Configure mc alias inside pod (suppress output)
+if ! mc_exec alias set "$MC_ALIAS" "$MC_ENDPOINT" "$AWS_ACCESS_KEY_ID" "$AWS_SECRET_ACCESS_KEY" &> /dev/null; then
+    log_error "Failed to configure mc alias inside MinIO pod"
     exit 1
 fi
 
@@ -238,15 +305,15 @@ log_success "MinIO client configured"
 # Cleanup function
 cleanup() {
     log_verbose "Cleaning up mc alias"
-    mc alias remove "$MC_ALIAS" &> /dev/null || true
+    mc_exec alias remove "$MC_ALIAS" &> /dev/null || true
 }
 
 trap cleanup EXIT
 
-# Verify bucket exists
+# Verify bucket exists (READ-ONLY: ls command)
 log_header "Verifying MinIO Bucket"
 
-if ! mc ls "$MC_ALIAS/$MINIO_BUCKET" &> /dev/null; then
+if ! mc_exec ls "$MC_ALIAS/$MINIO_BUCKET" &> /dev/null; then
     log_error "Bucket '$MINIO_BUCKET' does not exist or is not accessible"
     exit 1
 fi
@@ -296,9 +363,9 @@ else
         # Remove leading slash if present
         BACKUP_PATH=$(echo "$BACKUP_PATH" | sed 's|^/||')
 
-        # Check if backup exists in MinIO
-        if mc ls "$MC_ALIAS/$MINIO_BUCKET/$BACKUP_PATH" &> /dev/null || \
-           mc ls "$MC_ALIAS/$MINIO_BUCKET/$BACKUP_PATH/" &> /dev/null; then
+        # Check if backup exists in MinIO (READ-ONLY: ls command)
+        if mc_exec ls "$MC_ALIAS/$MINIO_BUCKET/$BACKUP_PATH" &> /dev/null || \
+           mc_exec ls "$MC_ALIAS/$MINIO_BUCKET/$BACKUP_PATH/" &> /dev/null; then
             log_success "(found)"
             VERIFIED_BACKUPS=$((VERIFIED_BACKUPS + 1))
         else
@@ -316,7 +383,7 @@ else
     fi
 fi
 
-# Check PITR binlogs
+# Check PITR binlogs (READ-ONLY: ls command)
 log_header "Checking PITR Binlog Files"
 
 # Get PITR pod to check binlog status
@@ -336,8 +403,8 @@ else
     
     log_info "Checking PITR binlog path: $MINIO_BUCKET/$PITR_BINLOG_PATH"
     
-    # List binlog files
-    BINLOG_COUNT=$(mc ls "$MC_ALIAS/$MINIO_BUCKET/$PITR_BINLOG_PATH/" 2>/dev/null | wc -l | tr -d ' ' || echo "0")
+    # List binlog files (READ-ONLY: ls command)
+    BINLOG_COUNT=$(mc_exec ls "$MC_ALIAS/$MINIO_BUCKET/$PITR_BINLOG_PATH/" 2>/dev/null | wc -l | tr -d ' ' || echo "0")
     
     if [ "$BINLOG_COUNT" -gt 0 ]; then
         log_success "Found $BINLOG_COUNT PITR binlog file(s)"
@@ -345,7 +412,7 @@ else
         if [ "$VERBOSE" = true ]; then
             echo ""
             log_info "Recent binlog files:"
-            mc ls "$MC_ALIAS/$MINIO_BUCKET/$PITR_BINLOG_PATH/" 2>/dev/null | tail -10 | while read -r line; do
+            mc_exec ls "$MC_ALIAS/$MINIO_BUCKET/$PITR_BINLOG_PATH/" 2>/dev/null | tail -10 | while read -r line; do
                 echo "    $line"
             done
         fi
@@ -362,6 +429,7 @@ echo "Namespace: $NAMESPACE"
 echo "PXC Cluster: $PXC_CLUSTER"
 echo "MinIO Bucket: $MINIO_BUCKET"
 echo "MinIO Endpoint: $MINIO_ENDPOINT"
+echo "MinIO Pod: $MINIO_POD (namespace: $MINIO_NAMESPACE)"
 echo ""
 
 if [ "$MISSING_BACKUPS" -gt 0 ]; then
