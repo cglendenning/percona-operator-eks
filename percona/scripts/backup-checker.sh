@@ -323,6 +323,12 @@ log_success "Bucket '$MINIO_BUCKET' is accessible"
 # Get all backups
 log_header "Checking XtraBackup Full Backups"
 
+# Show kubectl output first
+log_info "Backup resources in namespace '$NAMESPACE':"
+echo ""
+kctl get perconaxtradbclusterbackup -n "$NAMESPACE" -o wide 2>/dev/null || log_warn "No backup resources found"
+echo ""
+
 BACKUPS=$(kctl get perconaxtradbclusterbackup -n "$NAMESPACE" -o json 2>/dev/null || echo '{"items":[]}')
 
 BACKUP_COUNT=$(echo "$BACKUPS" | jq -r '.items | length' 2>/dev/null || echo "0")
@@ -410,14 +416,15 @@ else
             # Calculate other files
             OTHER_FILES=$((TOTAL_FILES - XTRABACKUP_FILES - METADATA_FILES - BINLOG_FILES))
             
+            # Calculate total size
+            TOTAL_SIZE=$(echo "$BACKUP_FILES" | awk '{sum += $3} END {print sum+0}' 2>/dev/null || echo "0")
+            
             echo ""
-            echo "    Files found: $TOTAL_FILES total"
-            if [ "$XTRABACKUP_FILES" -gt 0 ]; then
-                echo "      - XtraBackup files (.qp, .xbstream, .tar.gz, .tar): $XTRABACKUP_FILES"
-            fi
-            if [ "$METADATA_FILES" -gt 0 ]; then
-                echo "      - Metadata files (xtrabackup_info, checkpoints, etc.): $METADATA_FILES"
-            fi
+            echo "    Backup Details:"
+            echo "      - Total files: $TOTAL_FILES"
+            echo "      - Total size: $TOTAL_SIZE bytes"
+            echo "      - XtraBackup files: $XTRABACKUP_FILES"
+            echo "      - Metadata files: $METADATA_FILES"
             if [ "$BINLOG_FILES" -gt 0 ]; then
                 echo "      - Binlog files: $BINLOG_FILES"
             fi
@@ -463,10 +470,19 @@ else
     
     # List binlog files (READ-ONLY: ls command)
     BINLOG_LIST=$(mc_exec ls -r "$MC_ALIAS/$MINIO_BUCKET/$PITR_BINLOG_PATH/" 2>/dev/null || echo "")
-    BINLOG_COUNT=$(echo "$BINLOG_LIST" | grep -E "mysql-bin\." | wc -l | tr -d ' ' || echo "0")
     
-    if [ "$BINLOG_COUNT" -gt 0 ]; then
-        log_success "Found $BINLOG_COUNT PITR binlog file(s)"
+    # Count binlogs using loop to avoid integer issues
+    PITR_BINLOG_COUNT=0
+    if [ -n "$BINLOG_LIST" ]; then
+        while IFS= read -r line; do
+            if echo "$line" | grep -q "mysql-bin\."; then
+                PITR_BINLOG_COUNT=$((PITR_BINLOG_COUNT + 1))
+            fi
+        done <<< "$BINLOG_LIST"
+    fi
+    
+    if [ "$PITR_BINLOG_COUNT" -gt 0 ]; then
+        log_success "Found $PITR_BINLOG_COUNT PITR binlog file(s)"
         
         # Get oldest and newest binlog
         OLDEST_BINLOG=$(echo "$BINLOG_LIST" | grep "mysql-bin\." | head -1 | awk '{print $NF}' || echo "")
