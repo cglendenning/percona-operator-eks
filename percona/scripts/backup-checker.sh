@@ -371,10 +371,38 @@ else
 
         # Check if backup exists in MinIO (READ-ONLY: ls command)
         # Try both with and without trailing slash
-        if mc_exec ls "$MC_ALIAS/$MINIO_BUCKET/$BACKUP_PATH" &> /dev/null || \
-           mc_exec ls "$MC_ALIAS/$MINIO_BUCKET/$BACKUP_PATH/" &> /dev/null; then
+        BACKUP_FILES=""
+        if mc_exec ls "$MC_ALIAS/$MINIO_BUCKET/$BACKUP_PATH" &> /dev/null; then
+            BACKUP_FILES=$(mc_exec ls -r "$MC_ALIAS/$MINIO_BUCKET/$BACKUP_PATH" 2>/dev/null || echo "")
+        elif mc_exec ls "$MC_ALIAS/$MINIO_BUCKET/$BACKUP_PATH/" &> /dev/null; then
+            BACKUP_FILES=$(mc_exec ls -r "$MC_ALIAS/$MINIO_BUCKET/$BACKUP_PATH/" 2>/dev/null || echo "")
+        fi
+        
+        if [ -n "$BACKUP_FILES" ]; then
             log_success "(found)"
             VERIFIED_BACKUPS=$((VERIFIED_BACKUPS + 1))
+            
+            # Count files by type
+            TOTAL_FILES=$(echo "$BACKUP_FILES" | grep -v "^$" | wc -l | tr -d ' ' || echo "0")
+            XTRABACKUP_FILES=$(echo "$BACKUP_FILES" | grep -E "\.(qp|xbstream|tar\.gz|tar)$" | wc -l | tr -d ' ' || echo "0")
+            METADATA_FILES=$(echo "$BACKUP_FILES" | grep -E "(xtrabackup_info|xtrabackup_checkpoints|backup-my\.cnf|stream-metadata)" | wc -l | tr -d ' ' || echo "0")
+            BINLOG_FILES=$(echo "$BACKUP_FILES" | grep -E "mysql-bin\." | wc -l | tr -d ' ' || echo "0")
+            OTHER_FILES=$((TOTAL_FILES - XTRABACKUP_FILES - METADATA_FILES - BINLOG_FILES))
+            
+            echo ""
+            echo "    Files found: $TOTAL_FILES total"
+            if [ "$XTRABACKUP_FILES" -gt 0 ]; then
+                echo "      - XtraBackup files (.qp, .xbstream, .tar.gz, .tar): $XTRABACKUP_FILES"
+            fi
+            if [ "$METADATA_FILES" -gt 0 ]; then
+                echo "      - Metadata files (xtrabackup_info, checkpoints, etc.): $METADATA_FILES"
+            fi
+            if [ "$BINLOG_FILES" -gt 0 ]; then
+                echo "      - Binlog files: $BINLOG_FILES"
+            fi
+            if [ "$OTHER_FILES" -gt 0 ]; then
+                echo "      - Other files: $OTHER_FILES"
+            fi
         else
             log_error "(missing)"
             log_error "    Expected path: $MINIO_BUCKET/$BACKUP_PATH"
@@ -407,30 +435,46 @@ if [ -z "$PITR_POD" ]; then
 else
     log_info "Found PITR pod: $PITR_POD"
     
-    # Get cluster name from PITR pod labels
-    CLUSTER_NAME=$(kctl get pod "$PITR_POD" -n "$NAMESPACE" -o jsonpath='{.metadata.labels.app\.kubernetes\.io/instance}' 2>/dev/null || echo "$PXC_CLUSTER")
-    
-    # Expected PITR binlog path pattern
-    PITR_BINLOG_PATH="binlog_${CLUSTER_NAME}"
+    # PITR binlogs are stored in binlog/ directory (not binlog_${CLUSTER_NAME})
+    PITR_BINLOG_PATH="binlog"
     
     log_info "Checking PITR binlog path: $MINIO_BUCKET/$PITR_BINLOG_PATH"
     
     # List binlog files (READ-ONLY: ls command)
-    BINLOG_COUNT=$(mc_exec ls "$MC_ALIAS/$MINIO_BUCKET/$PITR_BINLOG_PATH/" 2>/dev/null | wc -l | tr -d ' ' || echo "0")
+    BINLOG_LIST=$(mc_exec ls -r "$MC_ALIAS/$MINIO_BUCKET/$PITR_BINLOG_PATH/" 2>/dev/null || echo "")
+    BINLOG_COUNT=$(echo "$BINLOG_LIST" | grep -E "mysql-bin\." | wc -l | tr -d ' ' || echo "0")
     
     if [ "$BINLOG_COUNT" -gt 0 ]; then
         log_success "Found $BINLOG_COUNT PITR binlog file(s)"
         
+        # Get oldest and newest binlog
+        OLDEST_BINLOG=$(echo "$BINLOG_LIST" | grep "mysql-bin\." | head -1 | awk '{print $NF}' || echo "")
+        NEWEST_BINLOG=$(echo "$BINLOG_LIST" | grep "mysql-bin\." | tail -1 | awk '{print $NF}' || echo "")
+        OLDEST_DATE=$(echo "$BINLOG_LIST" | grep "mysql-bin\." | head -1 | awk '{print $1" "$2}' || echo "")
+        NEWEST_DATE=$(echo "$BINLOG_LIST" | grep "mysql-bin\." | tail -1 | awk '{print $1" "$2}' || echo "")
+        
+        if [ -n "$OLDEST_BINLOG" ] && [ -n "$NEWEST_BINLOG" ]; then
+            echo ""
+            echo "    Binlog range:"
+            echo "      - Oldest: $OLDEST_BINLOG (uploaded: $OLDEST_DATE)"
+            echo "      - Newest: $NEWEST_BINLOG (uploaded: $NEWEST_DATE)"
+        fi
+        
         if [ "$VERBOSE" = true ]; then
             echo ""
-            log_info "Recent binlog files:"
-            mc_exec ls "$MC_ALIAS/$MINIO_BUCKET/$PITR_BINLOG_PATH/" 2>/dev/null | tail -10 | while read -r line; do
+            log_info "Recent binlog files (last 10):"
+            echo "$BINLOG_LIST" | grep "mysql-bin\." | tail -10 | while read -r line; do
                 echo "    $line"
             done
         fi
     else
         log_warn "No PITR binlog files found in $MINIO_BUCKET/$PITR_BINLOG_PATH"
         log_warn "This may indicate PITR is not running or binlogs are not being uploaded"
+        
+        if [ "$VERBOSE" = true ]; then
+            log_verbose "Listing contents of binlog directory:"
+            mc_exec ls "$MC_ALIAS/$MINIO_BUCKET/$PITR_BINLOG_PATH/" 2>/dev/null | head -20 || true
+        fi
     fi
 fi
 
