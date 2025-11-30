@@ -342,7 +342,9 @@ else
         
         BACKUP_NAME=$(echo "$BACKUP_JSON" | jq -r '.metadata.name' 2>/dev/null || echo "")
         BACKUP_STATUS=$(echo "$BACKUP_JSON" | jq -r '.status.state' 2>/dev/null || echo "")
-        BACKUP_PATH=$(echo "$BACKUP_JSON" | jq -r '.status.destination // .status.s3.path // ""' 2>/dev/null || echo "")
+        
+        # Try multiple possible path fields from backup status
+        BACKUP_PATH=$(echo "$BACKUP_JSON" | jq -r '.status.destination // .status.s3.path // .status.path // ""' 2>/dev/null || echo "")
         
         if [ -z "$BACKUP_NAME" ]; then
             continue
@@ -360,10 +362,15 @@ else
             BACKUP_PATH="$BACKUP_NAME"
         fi
 
-        # Remove leading slash if present
-        BACKUP_PATH=$(echo "$BACKUP_PATH" | sed 's|^/||')
+        # Normalize the path - remove s3:// prefix and bucket name if present
+        # Handle cases like: s3://bucket/path, bucket/path, /bucket/path, etc.
+        BACKUP_PATH=$(echo "$BACKUP_PATH" | sed 's|^s3://||' | sed "s|^${MINIO_BUCKET}/||" | sed 's|^/||' | sed 's|/$||')
+        
+        log_verbose "    Raw path from status: $(echo "$BACKUP_JSON" | jq -r '.status.destination // .status.s3.path // .status.path // "<not set>"' 2>/dev/null || echo "<error>")"
+        log_verbose "    Normalized path: $BACKUP_PATH"
 
         # Check if backup exists in MinIO (READ-ONLY: ls command)
+        # Try both with and without trailing slash
         if mc_exec ls "$MC_ALIAS/$MINIO_BUCKET/$BACKUP_PATH" &> /dev/null || \
            mc_exec ls "$MC_ALIAS/$MINIO_BUCKET/$BACKUP_PATH/" &> /dev/null; then
             log_success "(found)"
@@ -371,6 +378,11 @@ else
         else
             log_error "(missing)"
             log_error "    Expected path: $MINIO_BUCKET/$BACKUP_PATH"
+            if [ "$VERBOSE" = true ]; then
+                log_verbose "    Raw backup path from status: $(echo "$BACKUP_JSON" | jq -r '.status.destination // .status.s3.path // "<not set>"' 2>/dev/null || echo "<error>")"
+                log_verbose "    Attempting to list bucket contents..."
+                mc_exec ls "$MC_ALIAS/$MINIO_BUCKET/" 2>/dev/null | head -20 || true
+            fi
             MISSING_BACKUPS=$((MISSING_BACKUPS + 1))
         fi
     done < <(echo "$BACKUPS" | jq -r '.items[] | @base64' 2>/dev/null)
