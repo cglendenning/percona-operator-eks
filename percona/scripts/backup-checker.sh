@@ -382,11 +382,25 @@ else
             log_success "(found)"
             VERIFIED_BACKUPS=$((VERIFIED_BACKUPS + 1))
             
-            # Count files by type
-            TOTAL_FILES=$(echo "$BACKUP_FILES" | grep -v "^$" | wc -l | tr -d ' ' || echo "0")
-            XTRABACKUP_FILES=$(echo "$BACKUP_FILES" | grep -E "\.(qp|xbstream|tar\.gz|tar)$" | wc -l | tr -d ' ' || echo "0")
-            METADATA_FILES=$(echo "$BACKUP_FILES" | grep -E "(xtrabackup_info|xtrabackup_checkpoints|backup-my\.cnf|stream-metadata)" | wc -l | tr -d ' ' || echo "0")
-            BINLOG_FILES=$(echo "$BACKUP_FILES" | grep -E "mysql-bin\." | wc -l | tr -d ' ' || echo "0")
+            # Count files by type - use grep -c for reliable counting
+            TOTAL_FILES=0
+            XTRABACKUP_FILES=0
+            METADATA_FILES=0
+            BINLOG_FILES=0
+            
+            if [ -n "$BACKUP_FILES" ]; then
+                TOTAL_FILES=$(echo "$BACKUP_FILES" | grep -v "^$" | grep -c . || echo "0")
+                XTRABACKUP_FILES=$(echo "$BACKUP_FILES" | grep -cE "\.(qp|xbstream|tar\.gz|tar)$" || echo "0")
+                METADATA_FILES=$(echo "$BACKUP_FILES" | grep -cE "(xtrabackup_info|xtrabackup_checkpoints|backup-my\.cnf|stream-metadata)" || echo "0")
+                BINLOG_FILES=$(echo "$BACKUP_FILES" | grep -cE "mysql-bin\." || echo "0")
+            fi
+            
+            # Ensure all values are valid integers
+            TOTAL_FILES=$((TOTAL_FILES + 0))
+            XTRABACKUP_FILES=$((XTRABACKUP_FILES + 0))
+            METADATA_FILES=$((METADATA_FILES + 0))
+            BINLOG_FILES=$((BINLOG_FILES + 0))
+            
             OTHER_FILES=$((TOTAL_FILES - XTRABACKUP_FILES - METADATA_FILES - BINLOG_FILES))
             
             echo ""
