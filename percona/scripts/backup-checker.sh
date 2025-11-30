@@ -462,73 +462,201 @@ if [ -z "$PITR_POD" ]; then
     log_warn "Skipping PITR binlog verification"
 else
     log_info "Found PITR pod: $PITR_POD"
+    echo ""
     
-    # PITR binlogs are stored in binlog/ directory (not binlog_${CLUSTER_NAME})
-    PITR_BINLOG_PATH="binlog"
+    # Extract binlog information from PITR container logs
+    log_info "Checking PITR container logs for binlog status..."
+    PITR_LOGS=$(kctl logs "$PITR_POD" -n "$NAMESPACE" -c pitr --tail=200 2>/dev/null || echo "")
     
-    log_info "Checking PITR binlog path: $MINIO_BUCKET/$PITR_BINLOG_PATH"
+    if [ -n "$PITR_LOGS" ]; then
+        # Look for binlog upload information
+        LAST_BINLOG_UPLOADED=$(echo "$PITR_LOGS" | grep -i "upload\|binlog" | tail -5 || echo "")
+        
+        if [ -n "$LAST_BINLOG_UPLOADED" ]; then
+            log_verbose "Recent PITR activity:"
+            echo "$LAST_BINLOG_UPLOADED" | while read -r line; do
+                log_verbose "  $line"
+            done
+            echo ""
+        fi
+        
+        # Extract binlog file patterns from logs
+        EXPECTED_BINLOG_PATTERN=$(echo "$PITR_LOGS" | grep -oE "binlog_[^/[:space:]]+" | head -1 || echo "binlog_")
+        if [ -z "$EXPECTED_BINLOG_PATTERN" ]; then
+            EXPECTED_BINLOG_PATTERN="binlog_"
+        fi
+        log_verbose "Binlog file pattern from logs: $EXPECTED_BINLOG_PATTERN*"
+    else
+        log_warn "Could not retrieve PITR container logs"
+        EXPECTED_BINLOG_PATTERN="binlog_"
+    fi
     
-    # List binlog files (READ-ONLY: ls command)
-    BINLOG_LIST=$(mc_exec ls -r "$MC_ALIAS/$MINIO_BUCKET/$PITR_BINLOG_PATH/" 2>/dev/null || echo "")
+    # PITR binlogs are stored in root directory of bucket with binlog_ prefix
+    log_info "Checking for PITR binlogs in root of bucket: $MINIO_BUCKET/"
+    
+    # List all files in bucket root (READ-ONLY: ls command)
+    BUCKET_ROOT_LIST=$(mc_exec ls "$MC_ALIAS/$MINIO_BUCKET/" 2>/dev/null || echo "")
+    
+    # Extract binlog files from root
+    BINLOG_LIST=$(echo "$BUCKET_ROOT_LIST" | grep "binlog_" || echo "")
     
     # Count binlogs using loop to avoid integer issues
     PITR_BINLOG_COUNT=0
     if [ -n "$BINLOG_LIST" ]; then
         while IFS= read -r line; do
-            if echo "$line" | grep -q "mysql-bin\."; then
+            if echo "$line" | grep -q "binlog_"; then
                 PITR_BINLOG_COUNT=$((PITR_BINLOG_COUNT + 1))
             fi
         done <<< "$BINLOG_LIST"
     fi
     
     if [ "$PITR_BINLOG_COUNT" -gt 0 ]; then
-        log_success "Found $PITR_BINLOG_COUNT PITR binlog file(s)"
+        log_success "Found $PITR_BINLOG_COUNT PITR binlog file(s) in bucket root"
         
         # Get oldest and newest binlog
-        OLDEST_BINLOG=$(echo "$BINLOG_LIST" | grep "mysql-bin\." | head -1 | awk '{print $NF}' || echo "")
-        NEWEST_BINLOG=$(echo "$BINLOG_LIST" | grep "mysql-bin\." | tail -1 | awk '{print $NF}' || echo "")
-        OLDEST_DATE=$(echo "$BINLOG_LIST" | grep "mysql-bin\." | head -1 | awk '{print $1" "$2}' || echo "")
-        NEWEST_DATE=$(echo "$BINLOG_LIST" | grep "mysql-bin\." | tail -1 | awk '{print $1" "$2}' || echo "")
+        OLDEST_BINLOG=$(echo "$BINLOG_LIST" | grep "binlog_" | head -1 | awk '{print $NF}' || echo "")
+        NEWEST_BINLOG=$(echo "$BINLOG_LIST" | grep "binlog_" | tail -1 | awk '{print $NF}' || echo "")
+        OLDEST_DATE=$(echo "$BINLOG_LIST" | grep "binlog_" | head -1 | awk '{print $1" "$2}' || echo "")
+        NEWEST_DATE=$(echo "$BINLOG_LIST" | grep "binlog_" | tail -1 | awk '{print $1" "$2}' || echo "")
+        
+        # Calculate total binlog size
+        TOTAL_BINLOG_SIZE=$(echo "$BINLOG_LIST" | awk '{sum += $3} END {print sum+0}' 2>/dev/null || echo "0")
         
         if [ -n "$OLDEST_BINLOG" ] && [ -n "$NEWEST_BINLOG" ]; then
             echo ""
-            echo "    Binlog range:"
+            echo "    Binlog Details:"
+            echo "      - Count: $PITR_BINLOG_COUNT files"
+            echo "      - Total size: $TOTAL_BINLOG_SIZE bytes"
             echo "      - Oldest: $OLDEST_BINLOG (uploaded: $OLDEST_DATE)"
             echo "      - Newest: $NEWEST_BINLOG (uploaded: $NEWEST_DATE)"
         fi
         
         if [ "$VERBOSE" = true ]; then
             echo ""
-            log_info "Recent binlog files (last 10):"
-            echo "$BINLOG_LIST" | grep "mysql-bin\." | tail -10 | while read -r line; do
+            log_info "All PITR binlog files:"
+            echo "$BINLOG_LIST" | while read -r line; do
                 echo "    $line"
             done
         fi
     else
-        log_warn "No PITR binlog files found in $MINIO_BUCKET/$PITR_BINLOG_PATH"
+        log_warn "No PITR binlog files found in bucket root ($MINIO_BUCKET/)"
+        log_warn "Expected pattern: ${EXPECTED_BINLOG_PATTERN}*"
         log_warn "This may indicate PITR is not running or binlogs are not being uploaded"
         
         if [ "$VERBOSE" = true ]; then
-            log_verbose "Listing contents of binlog directory:"
-            mc_exec ls "$MC_ALIAS/$MINIO_BUCKET/$PITR_BINLOG_PATH/" 2>/dev/null | head -20 || true
+            log_verbose "Listing first 20 items in bucket root:"
+            echo "$BUCKET_ROOT_LIST" | head -20 | while read -r line; do
+                echo "    $line"
+            done
         fi
+    fi
+fi
+
+# Verbose bucket listing
+if [ "$VERBOSE" = true ]; then
+    log_header "Complete Bucket Contents (Verbose)"
+    
+    log_info "Full recursive listing of bucket: $MINIO_BUCKET"
+    echo ""
+    
+    # Get full recursive listing
+    FULL_LISTING=$(mc_exec ls -r "$MC_ALIAS/$MINIO_BUCKET/" 2>/dev/null || echo "")
+    
+    if [ -n "$FULL_LISTING" ]; then
+        # First, get all unique directories
+        ALL_DIRS=$(echo "$FULL_LISTING" | awk '{print $NF}' | grep "/" | sed 's|/[^/]*$||' | sort -u)
+        
+        # Also capture root-level files
+        ROOT_FILES=$(echo "$FULL_LISTING" | awk '{print $0 "\t" $NF}' | grep -v "/" | cut -f1)
+        
+        # Show root-level files first
+        if [ -n "$ROOT_FILES" ]; then
+            echo "  📁 ROOT (bucket root):"
+            echo "$ROOT_FILES" | while read -r line; do
+                echo "    $line"
+            done
+            echo ""
+        fi
+        
+        # Now show each directory
+        if [ -n "$ALL_DIRS" ]; then
+            echo "$ALL_DIRS" | while read -r dir; do
+                echo "  📁 $dir/:"
+                # Get all files in this directory (not subdirectories)
+                echo "$FULL_LISTING" | awk -v dir="$dir" '{
+                    path = $NF
+                    # Check if this file is directly in this directory
+                    if (index(path, dir "/") == 1) {
+                        # Remove the directory prefix to see what remains
+                        remainder = substr(path, length(dir) + 2)
+                        # If remainder has no slashes, it is directly in this dir
+                        if (index(remainder, "/") == 0) {
+                            print "    " $0
+                        }
+                    }
+                }'
+                
+                # Count files in directory
+                FILE_COUNT=$(echo "$FULL_LISTING" | awk -v dir="$dir" '{
+                    path = $NF
+                    if (index(path, dir "/") == 1) {
+                        remainder = substr(path, length(dir) + 2)
+                        if (index(remainder, "/") == 0) {
+                            count++
+                        }
+                    }
+                } END {print count+0}')
+                
+                if [ "$FILE_COUNT" -gt 0 ]; then
+                    echo "    (Total: $FILE_COUNT files)"
+                fi
+                echo ""
+            done
+        fi
+    else
+        log_warn "Could not retrieve bucket contents"
     fi
 fi
 
 # Summary
 log_header "Summary"
 
-echo "Namespace: $NAMESPACE"
-echo "PXC Cluster: $PXC_CLUSTER"
-echo "MinIO Bucket: $MINIO_BUCKET"
-echo "MinIO Endpoint: $MINIO_ENDPOINT"
-echo "MinIO Pod: $MINIO_POD (namespace: $MINIO_NAMESPACE)"
+echo "Cluster Information:"
+echo "  - Namespace: $NAMESPACE"
+echo "  - PXC Cluster: $PXC_CLUSTER"
+echo "  - MinIO Bucket: $MINIO_BUCKET"
+echo "  - MinIO Endpoint: $MINIO_ENDPOINT"
+echo "  - MinIO Pod: $MINIO_POD (namespace: $MINIO_NAMESPACE)"
 echo ""
 
-if [ "$MISSING_BACKUPS" -gt 0 ]; then
-    log_error "Some backups are missing from MinIO storage"
-    exit 1
-else
-    log_success "All backups verified successfully"
-    exit 0
+echo "Backup Status:"
+echo "  - Full Backups Found: $VERIFIED_BACKUPS"
+echo "  - Full Backups Missing: $MISSING_BACKUPS"
+if [ -n "$PITR_BINLOG_COUNT" ]; then
+    echo "  - PITR Binlog Files: $PITR_BINLOG_COUNT"
+    if [ -n "$TOTAL_BINLOG_SIZE" ] && [ "$TOTAL_BINLOG_SIZE" != "0" ]; then
+        # Convert to human readable
+        BINLOG_SIZE_MB=$((TOTAL_BINLOG_SIZE / 1024 / 1024))
+        echo "  - PITR Binlog Size: ${BINLOG_SIZE_MB} MB"
+    fi
 fi
+echo ""
+
+# Determine exit status
+OVERALL_STATUS=0
+
+if [ "$MISSING_BACKUPS" -gt 0 ]; then
+    log_error "⚠️  Some backups are missing from MinIO storage"
+    OVERALL_STATUS=1
+fi
+
+if [ -n "$PITR_BINLOG_COUNT" ] && [ "$PITR_BINLOG_COUNT" -eq 0 ] && [ -n "$PITR_POD" ]; then
+    log_warn "⚠️  PITR is configured but no binlog files found"
+    OVERALL_STATUS=1
+fi
+
+if [ "$OVERALL_STATUS" -eq 0 ]; then
+    log_success "✅ All backup verification checks passed"
+fi
+
+exit $OVERALL_STATUS
