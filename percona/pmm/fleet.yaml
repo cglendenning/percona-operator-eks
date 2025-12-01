@@ -1,48 +1,47 @@
 # Fleet Configuration for PMM with Custom Alerts
 #
-# This file shows how to deploy PMM with custom alert rules and PagerDuty notifications.
-# Place this in your Fleet repository or reference these files from your main fleet.yaml
+# This deploys PMM with custom alert rules and PagerDuty notifications
+# Alert rules and notification configs are git-managed via ConfigMaps
 ---
-# Apply PMM alert rules ConfigMap
-apiVersion: v1
-kind: ConfigMap
-metadata:
-  name: pmm-alert-rules
-  namespace: pmm
-data:
-  # ConfigMap will be created from pmm-alerts.yaml
----
-# Apply PMM notification configuration ConfigMap  
-apiVersion: v1
-kind: ConfigMap
-metadata:
-  name: pmm-alertmanager-config
-  namespace: pmm
-data:
-  # ConfigMap will be created from pmm-notifications.yaml
----
-# Patch PMM deployment to mount custom alerts
-apiVersion: apps/v1
-kind: Deployment
-metadata:
-  name: pmm-server
-  namespace: pmm
-spec:
-  template:
-    spec:
-      volumes:
-        - name: custom-alert-rules
-          configMap:
-            name: pmm-alert-rules
-        - name: custom-alertmanager-config
-          configMap:
-            name: pmm-alertmanager-config
-      containers:
-        - name: pmm-server
-          volumeMounts:
-            - name: custom-alert-rules
-              mountPath: /etc/grafana/provisioning/alerting/custom
-              readOnly: true
-            - name: custom-alertmanager-config
-              mountPath: /etc/alertmanager
-              readOnly: true
+defaultNamespace: pmm
+
+# Create ConfigMaps for alerts and notifications
+resources:
+  - pmm-alerts.yaml
+  - pmm-notifications.yaml
+
+# Deploy PMM Helm chart with custom values
+helm:
+  repo: https://percona.github.io/percona-helm-charts/
+  chart: pmm
+  releaseName: pmm
+  
+  # Base values for all environments
+  valuesFiles:
+    - values/pmm-base.yaml
+  
+  # Environment-specific overrides
+  targetCustomizations:
+    - name: dev
+      clusterSelector:
+        matchLabels:
+          environment: development
+      helm:
+        valuesFiles:
+          - values/pmm-dev.yaml
+    
+    - name: staging
+      clusterSelector:
+        matchLabels:
+          environment: staging
+      helm:
+        valuesFiles:
+          - values/pmm-staging.yaml
+    
+    - name: prod
+      clusterSelector:
+        matchLabels:
+          environment: production
+      helm:
+        valuesFiles:
+          - values/pmm-prod.yaml

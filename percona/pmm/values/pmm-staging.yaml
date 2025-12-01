@@ -1,0 +1,23 @@
+# Staging Environment Overrides
+---
+pmm:
+  server:
+    # Production-like resources for staging
+    resources:
+      requests:
+        memory: 2Gi
+        cpu: 1
+      limits:
+        memory: 4Gi
+        cpu: 2
+    
+    persistence:
+      size: 50Gi
+
+# Staging ingress
+ingress:
+  enabled: true
+  hosts:
+    - pmm-staging.your-domain.com
+  annotations:
+    kubernetes.io/ingress.class: nginx

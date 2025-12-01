@@ -9,6 +9,21 @@ Git-managed alert rules and notification channels for Percona Monitoring and Man
 - **`fleet.yaml`** - Example Fleet configuration for deployment
 - **`alert-rules/`** - Raw alert rule templates (for reference)
 
+## Structure
+
+```
+percona/pmm/
+├── fleet.yaml                    # Fleet deployment config
+├── pmm-alerts.yaml              # Alert rule ConfigMap
+├── pmm-notifications.yaml       # PagerDuty/notification ConfigMap
+├── values/
+│   ├── pmm-base.yaml           # Base config (all environments)
+│   ├── pmm-dev.yaml            # Dev overrides
+│   ├── pmm-staging.yaml        # Staging overrides
+│   └── pmm-prod.yaml           # Prod overrides
+└── alert-rules/                 # Raw templates (reference only)
+```
+
 ## Quick Start
 
 ### 1. Configure PagerDuty Integration
@@ -25,27 +40,43 @@ Get your integration key from PagerDuty:
 3. Choose "Prometheus" or "Events API V2"
 4. Copy the Integration Key
 
-### 2. Deploy with Fleet
+### 2. Customize Environment Values
 
-Reference these files in your main `fleet.yaml`:
+Edit files in `values/` directory:
+- `pmm-base.yaml` - Shared configuration
+- `pmm-dev.yaml` - Development overrides
+- `pmm-staging.yaml` - Staging overrides  
+- `pmm-prod.yaml` - Production overrides
 
-```yaml
-# In your fleet repository fleet.yaml
-resources:
-  - percona/pmm/pmm-alerts.yaml
-  - percona/pmm/pmm-notifications.yaml
-```
+Update ingress hostnames, resource limits, storage sizes, etc.
 
-Or use kubectl directly:
-```bash
-kubectl apply -f percona/pmm/pmm-alerts.yaml
-kubectl apply -f percona/pmm/pmm-notifications.yaml
-```
+### 3. Deploy with Fleet
 
-### 3. Restart PMM to Load Changes
+The `fleet.yaml` is ready to use. Just commit and push:
 
 ```bash
-kubectl rollout restart deployment pmm-server -n pmm
+git add percona/pmm/
+git commit -m "Add PMM with custom alerts"
+git push
+```
+
+Fleet will automatically:
+1. Create alert ConfigMaps
+2. Deploy PMM Helm chart with environment-specific values
+3. Mount alert rules into PMM
+4. Configure PagerDuty notifications
+
+### 4. Verify Deployment
+
+```bash
+# Check ConfigMaps created
+kubectl get cm -n pmm pmm-alert-rules pmm-alertmanager-config
+
+# Check PMM deployed
+kubectl get pods -n pmm
+
+# Check alerts loaded
+kubectl logs -n pmm deploy/pmm-server | grep provisioning
 ```
 
 ## Adding New Alerts
@@ -137,17 +168,35 @@ kubectl exec -n pmm deploy/pmm-server -- \
   curl http://localhost:9093/api/v1/status
 ```
 
-## Workflow
+## Deployment Flow
 
 ```
-1. Edit pmm-alerts.yaml or pmm-notifications.yaml
+1. Edit pmm-alerts.yaml or pmm-notifications.yaml (or values/*.yaml)
 2. Commit to git
 3. Push to repository
 4. CI/CD pipeline triggers
-5. Fleet applies changes
-6. PMM automatically reloads configuration
-7. New alerts/routing active
+5. Fleet applies to clusters based on targetCustomization labels
+6. PMM Helm chart deployed/upgraded with ConfigMaps
+7. PMM automatically loads alert rules and notification config
+8. New alerts/routing active
 ```
+
+## Environment Targeting
+
+Fleet uses cluster labels to target environments:
+
+- **Dev**: `environment: development`
+- **Staging**: `environment: staging`
+- **Prod**: `environment: production`
+
+Each environment gets:
+- Base values from `values/pmm-base.yaml`
+- Environment-specific overrides from `values/pmm-{env}.yaml`
+- Same alerts (from `pmm-alerts.yaml`)
+- Same notifications (from `pmm-notifications.yaml`)
+
+To use different PagerDuty keys per environment, add environment-specific 
+ConfigMaps or use secrets with different keys.
 
 ## Customization
 

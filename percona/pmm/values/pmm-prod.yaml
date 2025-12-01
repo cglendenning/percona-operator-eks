@@ -1,0 +1,34 @@
+# Production Environment Overrides
+---
+pmm:
+  server:
+    # Full production resources
+    resources:
+      requests:
+        memory: 4Gi
+        cpu: 2
+      limits:
+        memory: 8Gi
+        cpu: 4
+    
+    persistence:
+      size: 100Gi
+    
+    # High availability (if PMM supports it)
+    replicaCount: 1
+
+# Production ingress with TLS
+ingress:
+  enabled: true
+  hosts:
+    - pmm.your-domain.com
+  annotations:
+    kubernetes.io/ingress.class: nginx
+    cert-manager.io/cluster-issuer: letsencrypt-prod
+  tls:
+    - secretName: pmm-tls
+      hosts:
+        - pmm.your-domain.com
+
+# Production-specific alerting overrides (if needed)
+# Could point to different PagerDuty keys per environment

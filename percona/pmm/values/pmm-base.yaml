@@ -1,0 +1,47 @@
+# Base PMM Configuration
+# Shared across all environments
+---
+# Mount custom alert rules and notification configs
+pmm:
+  server:
+    # Additional volumes for custom alerts
+    extraVolumes:
+      - name: custom-alert-rules
+        configMap:
+          name: pmm-alert-rules
+      - name: custom-alertmanager-config
+        configMap:
+          name: pmm-alertmanager-config
+    
+    # Mount points for alert configuration
+    extraVolumeMounts:
+      - name: custom-alert-rules
+        mountPath: /srv/grafana/provisioning/alerting
+        readOnly: true
+      - name: custom-alertmanager-config
+        mountPath: /etc/alertmanager
+        readOnly: true
+    
+    # Resource requests/limits
+    resources:
+      requests:
+        memory: 2Gi
+        cpu: 1
+      limits:
+        memory: 4Gi
+        cpu: 2
+    
+    # Persistence
+    persistence:
+      enabled: true
+      storageClass: gp3
+      size: 50Gi
+
+# Service configuration
+service:
+  type: ClusterIP
+  port: 443
+
+# Ingress (configure per environment)
+ingress:
+  enabled: false

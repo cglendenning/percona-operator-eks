@@ -1,0 +1,24 @@
+# Development Environment Overrides
+---
+pmm:
+  server:
+    # Smaller resources for dev
+    resources:
+      requests:
+        memory: 1Gi
+        cpu: 500m
+      limits:
+        memory: 2Gi
+        cpu: 1
+    
+    # Smaller persistence for dev
+    persistence:
+      size: 20Gi
+
+# Dev ingress
+ingress:
+  enabled: true
+  hosts:
+    - pmm-dev.your-domain.com
+  annotations:
+    kubernetes.io/ingress.class: nginx
