@@ -1,0 +1,77 @@
+# PMM Alert Rules Configuration
+# Reference this file from your fleet.yaml to deploy custom alert rules to PMM
+#
+# Usage in fleet.yaml:
+#   valuesFiles:
+#     - percona/pmm/values-pmm-alerts.yaml
+
+# Create ConfigMap with custom alert rules
+alertRules:
+  enabled: true
+  
+  # ConfigMap containing alert rule files
+  configMap:
+    name: pmm-custom-alert-rules
+    
+    # Alert rule files to include
+    # These will be mounted to PMM Grafana's provisioning directory
+    rules:
+      mysql-disk-usage.yaml: |
+        groups:
+          - name: mysql_disk_usage
+            interval: 60s
+            rules:
+              - alert: MySQLDiskUsageHigh
+                expr: |
+                  (
+                    1 - (
+                      node_filesystem_avail_bytes{mountpoint=~"/var/lib/mysql|/data|/mysql-data"} 
+                      / 
+                      node_filesystem_size_bytes{mountpoint=~"/var/lib/mysql|/data|/mysql-data"}
+                    )
+                  ) * 100 > 75
+                for: 5m
+                labels:
+                  severity: warning
+                  component: mysql
+                  alert_group: disk
+                annotations:
+                  summary: "MySQL disk usage high on {{ $labels.instance }}"
+                  description: |
+                    MySQL disk usage on {{ $labels.instance }} (mount: {{ $labels.mountpoint }}) is at {{ $value | humanizePercentage }}.
+                    Current usage: {{ $value | printf "%.2f" }}%
+                    Threshold: 75%
+                    
+              - alert: MySQLDiskUsageCritical
+                expr: |
+                  (
+                    1 - (
+                      node_filesystem_avail_bytes{mountpoint=~"/var/lib/mysql|/data|/mysql-data"} 
+                      / 
+                      node_filesystem_size_bytes{mountpoint=~"/var/lib/mysql|/data|/mysql-data"}
+                    )
+                  ) * 100 > 90
+                for: 2m
+                labels:
+                  severity: critical
+                  component: mysql
+                  alert_group: disk
+                annotations:
+                  summary: "MySQL disk usage CRITICAL on {{ $labels.instance }}"
+                  description: |
+                    CRITICAL: MySQL disk usage on {{ $labels.instance }} is at {{ $value | humanizePercentage }}.
+                    DATABASE MAY BECOME READ-ONLY OR CRASH if disk fills completely!
+
+# PMM Server configuration to mount custom alert rules
+pmm:
+  server:
+    # Volume mounts for custom alert rules
+    extraVolumes:
+      - name: custom-alert-rules
+        configMap:
+          name: pmm-custom-alert-rules
+    
+    extraVolumeMounts:
+      - name: custom-alert-rules
+        mountPath: /etc/grafana/provisioning/alerting/custom
+        readOnly: true

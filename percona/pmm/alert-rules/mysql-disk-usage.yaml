@@ -1,0 +1,69 @@
+# MySQL Disk Usage Alert Rule
+# Fires when disk usage on any monitored MySQL host exceeds 75%
+#
+# This alert monitors the node_filesystem_avail_bytes metric which tracks
+# available disk space on the filesystem where MySQL data is stored.
+---
+groups:
+  - name: mysql_disk_usage
+    interval: 60s
+    rules:
+      - alert: MySQLDiskUsageHigh
+        expr: |
+          (
+            1 - (
+              node_filesystem_avail_bytes{mountpoint=~"/var/lib/mysql|/data|/mysql-data"} 
+              / 
+              node_filesystem_size_bytes{mountpoint=~"/var/lib/mysql|/data|/mysql-data"}
+            )
+          ) * 100 > 75
+        for: 5m
+        labels:
+          severity: warning
+          component: mysql
+          alert_group: disk
+        annotations:
+          summary: "MySQL disk usage high on {{ $labels.instance }}"
+          description: |
+            MySQL disk usage on {{ $labels.instance }} (mount: {{ $labels.mountpoint }}) is at {{ $value | humanizePercentage }}.
+            
+            Current usage: {{ $value | printf "%.2f" }}%
+            Threshold: 75%
+            
+            This may impact database operations if disk fills completely.
+            
+            Actions:
+            1. Check disk usage: df -h {{ $labels.mountpoint }}
+            2. Review large tables/databases
+            3. Consider cleanup of old binlogs or backups
+            4. Plan disk expansion if needed
+
+      - alert: MySQLDiskUsageCritical
+        expr: |
+          (
+            1 - (
+              node_filesystem_avail_bytes{mountpoint=~"/var/lib/mysql|/data|/mysql-data"} 
+              / 
+              node_filesystem_size_bytes{mountpoint=~"/var/lib/mysql|/data|/mysql-data"}
+            )
+          ) * 100 > 90
+        for: 2m
+        labels:
+          severity: critical
+          component: mysql
+          alert_group: disk
+        annotations:
+          summary: "MySQL disk usage CRITICAL on {{ $labels.instance }}"
+          description: |
+            CRITICAL: MySQL disk usage on {{ $labels.instance }} (mount: {{ $labels.mountpoint }}) is at {{ $value | humanizePercentage }}.
+            
+            Current usage: {{ $value | printf "%.2f" }}%
+            Threshold: 90%
+            
+            DATABASE MAY BECOME READ-ONLY OR CRASH if disk fills completely!
+            
+            IMMEDIATE ACTIONS REQUIRED:
+            1. Stop non-critical writes
+            2. Purge old binlogs: PURGE BINARY LOGS BEFORE NOW() - INTERVAL 3 DAY;
+            3. Delete old backups from data directory
+            4. Add disk space immediately
