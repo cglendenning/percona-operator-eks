@@ -68,6 +68,15 @@ Fleet will automatically:
 
 ### 4. Verify Deployment
 
+Run the verification script:
+
+```bash
+cd percona/pmm
+./verify-alerts.sh
+```
+
+Or manually check:
+
 ```bash
 # Check ConfigMaps created
 kubectl get cm -n pmm pmm-alert-rules pmm-alertmanager-config
