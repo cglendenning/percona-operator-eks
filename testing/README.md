@@ -77,6 +77,7 @@ pytest resiliency/ -v     # Resiliency tests only
 pytest unit/test_xtrabackup_version.py -v
 pytest unit/test_smart_update_strategy.py -v
 pytest unit/test_upgrade_options_disabled.py -v
+pytest unit/test_pitr_retention_incompatibility.py -v
 ```
 
 ## Critical Unit Tests
@@ -152,6 +153,33 @@ Controls automatic version upgrades of PXC components:
 - Maintains version consistency across clusters
 - Prevents potential downtime from automatic upgrades
 - Critical for production stability and compliance
+
+### PITR Retention Incompatibility Test
+
+The `test_pitr_retention_incompatibility.py` test validates that backup schedules do NOT have retention policies when PITR is enabled.
+
+**How it works:**
+1. Loads values configuration
+2. Checks if PITR is enabled at `backup.pitr.enabled`
+3. Examines all backup schedules at `backup.schedule[]`
+4. Verifies none of these retention keys are present:
+   - `keep`
+   - `retention.type`
+   - `retention.count`
+   - `retention.deleteFromStorage`
+
+**Why this matters:**
+Per Percona documentation: "Disable the retention policy as it is incompatible with point-in-time recovery"
+
+Retention policies can:
+- Purge binlogs before they're backed up
+- Break PITR by removing necessary logs
+- Cause gaps in recovery timeline
+
+**Correct approach:**
+- Remove all retention configuration from backup schedules
+- Use storage lifecycle policies (S3/MinIO) to manage retention
+- Let PITR manage binlog lifecycle independently
 
 ## Disaster Recovery Scenario Tests
 
