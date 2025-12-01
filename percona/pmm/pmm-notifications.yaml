@@ -1,0 +1,81 @@
+# PMM Notification Channels
+#
+# Configure alert routing and notification channels.
+# Edit this file to modify PagerDuty integration keys or add new channels.
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: pmm-alertmanager-config
+  namespace: pmm
+  labels:
+    app: pmm
+    component: alerting
+data:
+  alertmanager.yaml: |
+    global:
+      resolve_timeout: 5m
+    
+    # Define notification receivers
+    receivers:
+      - name: 'pagerduty-critical'
+        pagerduty_configs:
+          - routing_key: 'YOUR_PAGERDUTY_INTEGRATION_KEY_HERE'
+            service_key: 'YOUR_PAGERDUTY_INTEGRATION_KEY_HERE'
+            description: '{{ .GroupLabels.alertname }}: {{ .CommonAnnotations.summary }}'
+            details:
+              firing: '{{ template "pagerduty.default.instances" .Alerts.Firing }}'
+              resolved: '{{ template "pagerduty.default.instances" .Alerts.Resolved }}'
+              num_firing: '{{ .Alerts.Firing | len }}'
+              num_resolved: '{{ .Alerts.Resolved | len }}'
+            client: 'PMM Alerting'
+            client_url: '{{ template "pagerduty.default.clientURL" . }}'
+      
+      - name: 'pagerduty-warning'
+        pagerduty_configs:
+          - routing_key: 'YOUR_PAGERDUTY_INTEGRATION_KEY_HERE'
+            service_key: 'YOUR_PAGERDUTY_INTEGRATION_KEY_HERE'
+            severity: warning
+            description: '{{ .GroupLabels.alertname }}: {{ .CommonAnnotations.summary }}'
+            client: 'PMM Alerting'
+      
+      - name: 'null'
+        # Discard notifications (useful for testing)
+    
+    # Route alerts to appropriate receivers based on labels
+    route:
+      receiver: 'null'
+      group_by: ['alertname', 'cluster', 'service']
+      group_wait: 10s
+      group_interval: 10s
+      repeat_interval: 12h
+      
+      routes:
+        # Critical alerts go to PagerDuty immediately
+        - match:
+            severity: critical
+          receiver: pagerduty-critical
+          group_wait: 10s
+          repeat_interval: 5m
+        
+        # Warning alerts go to PagerDuty with longer delays
+        - match:
+            severity: warning
+          receiver: pagerduty-warning
+          group_wait: 5m
+          repeat_interval: 1h
+        
+        # MySQL-specific routing (example)
+        - match:
+            component: mysql
+          receiver: pagerduty-critical
+          continue: true
+    
+    # Inhibition rules - prevent notification spam
+    inhibit_rules:
+      # Don't send warning if critical is already firing for same alert
+      - source_match:
+          severity: 'critical'
+        target_match:
+          severity: 'warning'
+        equal: ['alertname', 'instance']

@@ -1,235 +1,226 @@
-# PMM Custom Alert Rules
+# PMM Alert Rules and Notifications
 
-This directory contains custom alert rules for Percona Monitoring and Management (PMM).
+Git-managed alert rules and notification channels for Percona Monitoring and Management.
 
-## Alert Rules
+## Files
 
-### MySQL Disk Usage Alert
+- **`pmm-alerts.yaml`** - Alert rule definitions (edit to add/modify alerts)
+- **`pmm-notifications.yaml`** - PagerDuty and notification routing configuration
+- **`fleet.yaml`** - Example Fleet configuration for deployment
+- **`alert-rules/`** - Raw alert rule templates (for reference)
 
-**File:** `alert-rules/mysql-disk-usage.yaml`
+## Quick Start
 
-Monitors disk usage on MySQL hosts and fires alerts when usage exceeds thresholds:
+### 1. Configure PagerDuty Integration
 
-- **Warning (75%)**: Fires after 5 minutes above threshold
-- **Critical (90%)**: Fires after 2 minutes above threshold
-
-**Monitored Mountpoints:**
-- `/var/lib/mysql` (default MySQL data directory)
-- `/data` (common alternative)
-- `/mysql-data` (Kubernetes persistent volume mount)
-
-**Metrics Used:**
-- `node_filesystem_avail_bytes` - Available disk space
-- `node_filesystem_size_bytes` - Total disk size
-
-## Deployment
-
-### Option 1: Using Fleet (Recommended)
-
-Add the alert values file to your Fleet configuration:
+Edit `pmm-notifications.yaml` and replace the placeholder:
 
 ```yaml
-# fleet.yaml
-helm:
-  chart: percona/pmm
-  valuesFiles:
-    - percona/pmm/values-pmm-alerts.yaml
+routing_key: 'YOUR_PAGERDUTY_INTEGRATION_KEY_HERE'
 ```
 
-Then apply with Fleet:
-```bash
-fleet apply
-```
+Get your integration key from PagerDuty:
+1. Go to PagerDuty → Services → Select your service
+2. Click Integrations → Add Integration
+3. Choose "Prometheus" or "Events API V2"
+4. Copy the Integration Key
 
-### Option 2: Direct Helm Values
+### 2. Deploy with Fleet
 
-Add to your existing PMM Helm values:
+Reference these files in your main `fleet.yaml`:
 
 ```yaml
-# values-pmm.yaml
-alertRules:
-  enabled: true
-  configMap:
-    name: pmm-custom-alert-rules
-
-pmm:
-  server:
-    extraVolumes:
-      - name: custom-alert-rules
-        configMap:
-          name: pmm-custom-alert-rules
-    extraVolumeMounts:
-      - name: custom-alert-rules
-        mountPath: /etc/grafana/provisioning/alerting/custom
-        readOnly: true
+# In your fleet repository fleet.yaml
+resources:
+  - percona/pmm/pmm-alerts.yaml
+  - percona/pmm/pmm-notifications.yaml
 ```
 
-Deploy:
+Or use kubectl directly:
 ```bash
-helm upgrade pmm percona/pmm -f values-pmm.yaml -n pmm
+kubectl apply -f percona/pmm/pmm-alerts.yaml
+kubectl apply -f percona/pmm/pmm-notifications.yaml
 ```
 
-### Option 3: Manual ConfigMap Creation
+### 3. Restart PMM to Load Changes
 
-Create ConfigMap directly from alert rule file:
-
-```bash
-kubectl create configmap pmm-custom-alert-rules \
-  --from-file=mysql-disk-usage.yaml=alert-rules/mysql-disk-usage.yaml \
-  -n pmm
-```
-
-Then patch PMM deployment to mount it:
-
-```bash
-kubectl patch deployment pmm-server -n pmm --patch '
-spec:
-  template:
-    spec:
-      volumes:
-      - name: custom-alert-rules
-        configMap:
-          name: pmm-custom-alert-rules
-      containers:
-      - name: pmm-server
-        volumeMounts:
-        - name: custom-alert-rules
-          mountPath: /etc/grafana/provisioning/alerting/custom
-          readOnly: true
-'
-```
-
-### Option 4: PMM API (Dynamic, Not Gitops)
-
-Export and import via PMM API:
-
-```bash
-# Export existing rules
-curl -H "Authorization: Bearer $PMM_API_KEY" \
-  http://pmm-server:3000/api/v1/provisioning/alert-rules > current-rules.json
-
-# Import new rules
-curl -X POST -H "Authorization: Bearer $PMM_API_KEY" \
-  -H "Content-Type: application/json" \
-  -d @alert-rules/mysql-disk-usage.yaml \
-  http://pmm-server:3000/api/v1/provisioning/alert-rules
-```
-
-## Verification
-
-After deployment, verify the alert rule is loaded:
-
-### 1. Check ConfigMap
-```bash
-kubectl get configmap pmm-custom-alert-rules -n pmm
-kubectl describe configmap pmm-custom-alert-rules -n pmm
-```
-
-### 2. Check PMM Pod Logs
-```bash
-kubectl logs -n pmm -l app.kubernetes.io/name=pmm -c pmm-server | grep -i alert
-```
-
-### 3. Verify in PMM UI
-1. Navigate to PMM web interface: `http://pmm-server/`
-2. Go to **Alerting** → **Alert rules**
-3. Search for "MySQLDiskUsage"
-4. You should see both "MySQLDiskUsageHigh" and "MySQLDiskUsageCritical" rules
-
-### 4. Test Alert Rule Query
-In PMM, go to **Explore** and run:
-```promql
-(
-  1 - (
-    node_filesystem_avail_bytes{mountpoint=~"/var/lib/mysql|/data|/mysql-data"} 
-    / 
-    node_filesystem_size_bytes{mountpoint=~"/var/lib/mysql|/data|/mysql-data"}
-  )
-) * 100
-```
-
-This should show current disk usage percentage for all MySQL hosts.
-
-## Customization
-
-### Adjust Thresholds
-
-Edit thresholds in `values-pmm-alerts.yaml`:
-
-```yaml
-expr: |
-  ... > 75  # Change warning threshold
-  ... > 90  # Change critical threshold
-```
-
-### Adjust Alert Duration
-
-Change how long condition must be true before firing:
-
-```yaml
-for: 5m   # Warning fires after 5 minutes
-for: 2m   # Critical fires after 2 minutes
-```
-
-### Add More Mountpoints
-
-Add additional MySQL data directory patterns:
-
-```yaml
-mountpoint=~"/var/lib/mysql|/data|/mysql-data|/custom/mysql"
-```
-
-### Modify Alert Channels
-
-Configure where alerts are sent in PMM:
-
-1. Go to **Alerting** → **Contact points**
-2. Add Slack, PagerDuty, email, etc.
-3. Create notification policy to route MySQL disk alerts
-
-## Troubleshooting
-
-### Alert Not Showing in PMM
-```bash
-# Check if ConfigMap exists
-kubectl get cm pmm-custom-alert-rules -n pmm
-
-# Check if volume is mounted
-kubectl describe pod -n pmm -l app.kubernetes.io/name=pmm | grep -A5 Volumes
-
-# Check Grafana logs
-kubectl logs -n pmm -l app.kubernetes.io/name=pmm -c pmm-server --tail=100 | grep provisioning
-```
-
-### Alert Not Firing
-```bash
-# Verify metric exists
-kubectl exec -n pmm -it $(kubectl get pod -n pmm -l app.kubernetes.io/name=pmm -o name) -- \
-  curl -s 'http://localhost:9090/api/v1/query?query=node_filesystem_avail_bytes' | jq
-
-# Check alert evaluation
-# In PMM UI: Alerting → Alert rules → Click on rule → View evaluation
-```
-
-### Restart PMM After Changes
 ```bash
 kubectl rollout restart deployment pmm-server -n pmm
 ```
 
-## Adding More Alert Rules
+## Adding New Alerts
 
-To add additional custom alerts:
+Edit `pmm-alerts.yaml` and add to the `data.mysql-alerts.yaml` section:
 
-1. Create new YAML file in `alert-rules/` directory
-2. Add the rule to `values-pmm-alerts.yaml` under `alertRules.configMap.rules`
-3. Update via Fleet or Helm
-4. Verify in PMM UI
+```yaml
+data:
+  mysql-alerts.yaml: |
+    groups:
+      - name: mysql_disk_usage
+        rules:
+          # ... existing rules ...
+          
+          # Add your new rule here
+          - alert: MySQLConnectionPoolHigh
+            expr: |
+              (mysql_global_status_threads_connected / mysql_global_variables_max_connections) * 100 > 80
+            for: 5m
+            labels:
+              severity: warning
+              component: mysql
+            annotations:
+              summary: "MySQL connection pool at {{ $value }}% on {{ $labels.instance }}"
+```
+
+Commit and push:
+```bash
+git add percona/pmm/pmm-alerts.yaml
+git commit -m "Add MySQL connection pool alert"
+git push
+```
+
+Your CI/CD pipeline will trigger Fleet to deploy the changes.
+
+## Current Alerts
+
+### MySQL Disk Usage High (Warning)
+- **Threshold**: 75% disk usage
+- **Duration**: 5 minutes
+- **Severity**: warning
+- **Action**: Review disk usage, plan cleanup or expansion
+
+### MySQL Disk Usage Critical
+- **Threshold**: 90% disk usage  
+- **Duration**: 2 minutes
+- **Severity**: critical
+- **Action**: Immediate intervention required
+
+## Notification Routing
+
+Configured in `pmm-notifications.yaml`:
+
+- **Critical alerts** → PagerDuty immediately (10s wait, 5m repeat)
+- **Warning alerts** → PagerDuty with delay (5m wait, 1h repeat)
+- **Inhibition**: Warnings suppressed if critical alert already firing
+
+## Verification
+
+### Check ConfigMaps Applied
+```bash
+kubectl get configmap pmm-alert-rules -n pmm
+kubectl get configmap pmm-alertmanager-config -n pmm
+```
+
+### View Alert Rules in PMM
+1. Navigate to PMM: `http://pmm-server/`
+2. Go to **Alerting** → **Alert rules**
+3. Search for "MySQL"
+
+### Test PagerDuty Integration
+Manually trigger a test alert:
+```bash
+kubectl exec -n pmm deploy/pmm-server -- \
+  curl -X POST http://localhost:9093/api/v1/alerts \
+  -d '[{"labels":{"alertname":"TestAlert","severity":"critical"},"annotations":{"summary":"Test PagerDuty integration"}}]'
+```
+
+Check PagerDuty for incident creation.
+
+### View Alertmanager Status
+```bash
+# Check active alerts
+kubectl exec -n pmm deploy/pmm-server -- \
+  curl http://localhost:9093/api/v1/alerts
+
+# Check notification status
+kubectl exec -n pmm deploy/pmm-server -- \
+  curl http://localhost:9093/api/v1/status
+```
+
+## Workflow
+
+```
+1. Edit pmm-alerts.yaml or pmm-notifications.yaml
+2. Commit to git
+3. Push to repository
+4. CI/CD pipeline triggers
+5. Fleet applies changes
+6. PMM automatically reloads configuration
+7. New alerts/routing active
+```
+
+## Customization
+
+### Change Alert Thresholds
+
+In `pmm-alerts.yaml`:
+```yaml
+expr: |
+  ... > 75  # Change to your threshold
+for: 5m     # Change duration
+```
+
+### Add New Notification Channel
+
+In `pmm-notifications.yaml`, add to `receivers`:
+```yaml
+- name: 'slack-notifications'
+  slack_configs:
+    - api_url: 'https://hooks.slack.com/services/YOUR/WEBHOOK/URL'
+      channel: '#alerts'
+      title: '{{ .GroupLabels.alertname }}'
+```
+
+Then add routing:
+```yaml
+routes:
+  - match:
+      severity: warning
+    receiver: slack-notifications
+```
+
+### Adjust PagerDuty Severity Mapping
+
+```yaml
+pagerduty_configs:
+  - routing_key: 'YOUR_KEY'
+    severity: '{{ if eq .GroupLabels.severity "critical" }}error{{ else }}warning{{ end }}'
+```
+
+## Troubleshooting
+
+### Alerts Not Showing
+```bash
+# Check ConfigMap content
+kubectl get configmap pmm-alert-rules -n pmm -o yaml
+
+# Check if mounted in pod
+kubectl describe pod -n pmm -l app=pmm | grep -A10 Volumes
+```
+
+### PagerDuty Not Receiving Alerts
+```bash
+# Check Alertmanager logs
+kubectl logs -n pmm deploy/pmm-server -c alertmanager
+
+# Verify integration key is correct
+kubectl get configmap pmm-alertmanager-config -n pmm -o yaml | grep routing_key
+```
+
+### Alert Rules Not Loading
+```bash
+# Check Grafana provisioning logs
+kubectl logs -n pmm deploy/pmm-server -c pmm-server | grep provisioning
+
+# Restart to force reload
+kubectl rollout restart deployment pmm-server -n pmm
+```
 
 ## Best Practices
 
-- **Version control**: Keep alert rules in git
-- **Test in dev first**: Deploy to dev environment before production
-- **Document thresholds**: Explain why specific thresholds were chosen
-- **Alert fatigue**: Don't set thresholds too low (creates noise)
-- **Notification routing**: Use appropriate channels for severity levels
-- **Regular review**: Revisit thresholds as infrastructure changes
+- Keep thresholds realistic (avoid alert fatigue)
+- Test in dev environment first
+- Document why each threshold was chosen
+- Use inhibition rules to prevent notification spam
+- Regularly review and adjust based on actual incidents
+- Version control everything (alerts + notifications)

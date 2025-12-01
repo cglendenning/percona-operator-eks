@@ -1,8 +1,5 @@
-# MySQL Disk Usage Alert Rule
-# Fires when disk usage on any monitored MySQL host exceeds 75%
-#
-# This alert monitors the node_filesystem_avail_bytes metric which tracks
-# available disk space on the filesystem where MySQL data is stored.
+# MySQL Alert Rules
+# Add new alert rules to this file and commit to trigger deployment via Fleet
 ---
 groups:
   - name: mysql_disk_usage

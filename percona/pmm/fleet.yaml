@@ -1,0 +1,48 @@
+# Fleet Configuration for PMM with Custom Alerts
+#
+# This file shows how to deploy PMM with custom alert rules and PagerDuty notifications.
+# Place this in your Fleet repository or reference these files from your main fleet.yaml
+---
+# Apply PMM alert rules ConfigMap
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: pmm-alert-rules
+  namespace: pmm
+data:
+  # ConfigMap will be created from pmm-alerts.yaml
+---
+# Apply PMM notification configuration ConfigMap  
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: pmm-alertmanager-config
+  namespace: pmm
+data:
+  # ConfigMap will be created from pmm-notifications.yaml
+---
+# Patch PMM deployment to mount custom alerts
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: pmm-server
+  namespace: pmm
+spec:
+  template:
+    spec:
+      volumes:
+        - name: custom-alert-rules
+          configMap:
+            name: pmm-alert-rules
+        - name: custom-alertmanager-config
+          configMap:
+            name: pmm-alertmanager-config
+      containers:
+        - name: pmm-server
+          volumeMounts:
+            - name: custom-alert-rules
+              mountPath: /etc/grafana/provisioning/alerting/custom
+              readOnly: true
+            - name: custom-alertmanager-config
+              mountPath: /etc/alertmanager
+              readOnly: true
