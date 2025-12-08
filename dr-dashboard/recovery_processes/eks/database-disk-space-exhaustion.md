@@ -1,8 +1,10 @@
-# Database Disk Space Exhaustion Recovery Process
+# Database Disk Space Exhaustion (Data Directory) Recovery Process
+
+This scenario covers persistent storage exhaustion in the MySQL data directory, including binlogs, undo logs, redo logs, and InnoDB tablespaces. This is distinct from temporary tablespace exhaustion, which is covered in a separate scenario.
 
 ## Primary Recovery Method
 
-1. **Identify what's using disk space**
+1. **Identify what's consuming persistent storage**
    ```bash
    # Check overall disk usage on PXC pods
    kubectl exec -n <namespace> <pod> -- df -h /var/lib/mysql
@@ -10,22 +12,33 @@
    # Check what's consuming space in MySQL data directory
    kubectl exec -n <namespace> <pod> -- du -sh /var/lib/mysql/* | sort -h
    
-   # Check binlog directory size
+   # Check binlog directory size (often the culprit)
    kubectl exec -n <namespace> <pod> -- du -sh /var/lib/mysql/binlog*
+   kubectl exec -n <namespace> <pod> -- ls -lh /var/lib/mysql/ | grep mysql-bin
    
-   # Check undo log tablespace size
-   kubectl exec -n <namespace> <pod> -- mysql -uroot -p<pass> -e "SELECT TABLESPACE_NAME, FILE_NAME, ROUND(SUM(FILE_SIZE)/1024/1024/1024, 2) AS SIZE_GB FROM information_schema.FILES WHERE TABLESPACE_NAME LIKE '%undo%' GROUP BY TABLESPACE_NAME;"
+   # Check undo log tablespace size (grows with long transactions)
+   kubectl exec -n <namespace> <pod> -- mysql -uroot -p<pass> -e "
+     SELECT TABLESPACE_NAME, FILE_NAME, 
+            ROUND(SUM(FILE_SIZE)/1024/1024/1024, 2) AS SIZE_GB 
+     FROM information_schema.FILES 
+     WHERE TABLESPACE_NAME LIKE '%undo%' 
+     GROUP BY TABLESPACE_NAME, FILE_NAME;"
    
-   # Check data file sizes
-   kubectl exec -n <namespace> <pod> -- mysql -uroot -p<pass> -e "SELECT table_schema, ROUND(SUM(data_length + index_length) / 1024 / 1024 / 1024, 2) AS size_gb FROM information_schema.tables GROUP BY table_schema ORDER BY size_gb DESC;"
+   # Check data file sizes by schema
+   kubectl exec -n <namespace> <pod> -- mysql -uroot -p<pass> -e "
+     SELECT table_schema, 
+            ROUND(SUM(data_length + index_length) / 1024 / 1024 / 1024, 2) AS size_gb 
+     FROM information_schema.tables 
+     GROUP BY table_schema 
+     ORDER BY size_gb DESC;"
    
-   # Check log file sizes (slow query log, general log, error log)
-   kubectl exec -n <namespace> <pod> -- ls -lh /var/lib/mysql/*.log 2>/dev/null
-   kubectl exec -n <namespace> <pod> -- ls -lh /var/log/mysql/*.log 2>/dev/null
-   
-   # Check temporary table space
-   kubectl exec -n <namespace> <pod> -- mysql -uroot -p<pass> -e "SHOW VARIABLES LIKE 'tmpdir';"
-   kubectl exec -n <namespace> <pod> -- du -sh $(mysql -uroot -p<pass> -e "SELECT @@tmpdir;" -s -N)
+   # Check for long-running transactions (cause undo log growth)
+   kubectl exec -n <namespace> <pod> -- mysql -uroot -p<pass> -e "
+     SELECT trx_id, trx_state, trx_started, 
+            TIMESTAMPDIFF(SECOND, trx_started, NOW()) as age_seconds,
+            trx_rows_locked, trx_rows_modified
+     FROM information_schema.INNODB_TRX 
+     ORDER BY trx_started;"
    
    # Check EBS volume usage via CloudWatch
    aws cloudwatch get-metric-statistics \
@@ -38,117 +51,108 @@
      --statistics Average,Maximum
    ```
 
-2. **Free space by purging old files/logs**
+2. **Free space by purging binlogs**
    ```bash
-   # If binlogs are the issue:
-   # List current binlogs
+   # List current binlogs and their sizes
    kubectl exec -n <namespace> <pod> -- mysql -uroot -p<pass> -e "SHOW BINARY LOGS;"
    
-   # Purge binlogs older than retention period (keep last 7 days as example)
-   kubectl exec -n <namespace> <pod> -- mysql -uroot -p<pass> -e "PURGE BINARY LOGS BEFORE DATE_SUB(NOW(), INTERVAL 7 DAY);"
+   # Check which binlog is currently in use by replication
+   kubectl exec -n <namespace> <pod> -- mysql -uroot -p<pass> -e "SHOW MASTER STATUS;"
    
-   # Or purge to a specific binlog file
-   kubectl exec -n <namespace> <pod> -- mysql -uroot -p<pass> -e "PURGE BINARY LOGS TO 'mysql-bin.000123';"
+   # Purge binlogs older than retention period
+   kubectl exec -n <namespace> <pod> -- mysql -uroot -p<pass> -e "
+     PURGE BINARY LOGS BEFORE DATE_SUB(NOW(), INTERVAL 3 DAY);"
    
-   # If slow query log or general log are the issue:
-   # Rotate or truncate log files
-   kubectl exec -n <namespace> <pod> -- truncate -s 0 /var/lib/mysql/slow-query.log
-   kubectl exec -n <namespace> <pod> -- truncate -s 0 /var/lib/mysql/general.log
-   
-   # If temporary tables are the issue:
-   # Kill long-running queries that might be creating large temp tables
-   kubectl exec -n <namespace> <pod> -- mysql -uroot -p<pass> -e "SELECT ID, USER, HOST, DB, COMMAND, TIME, STATE, INFO FROM information_schema.PROCESSLIST WHERE COMMAND != 'Sleep' AND TIME > 300 ORDER BY TIME DESC;"
-   kubectl exec -n <namespace> <pod> -- mysql -uroot -p<pass> -e "KILL <query-id>;"
-   
-   # If undo logs are the issue:
-   # Check for long-running transactions
-   kubectl exec -n <namespace> <pod> -- mysql -uroot -p<pass> -e "SELECT * FROM information_schema.INNODB_TRX ORDER BY trx_started;"
-   # Kill long-running transactions if safe
+   # Or purge to a specific binlog file (safer)
+   kubectl exec -n <namespace> <pod> -- mysql -uroot -p<pass> -e "
+     PURGE BINARY LOGS TO 'mysql-bin.000123';"
    ```
 
-3. **Enable log rotation if not already enabled**
+3. **Address undo log growth**
+   ```bash
+   # If undo logs are large, find and kill long-running transactions
+   kubectl exec -n <namespace> <pod> -- mysql -uroot -p<pass> -e "
+     SELECT ID, USER, HOST, DB, TIME, STATE, 
+            SUBSTRING(INFO, 1, 100) as query_preview
+     FROM information_schema.PROCESSLIST 
+     WHERE COMMAND != 'Sleep' AND TIME > 600 
+     ORDER BY TIME DESC;"
+   
+   # Kill specific long-running transaction (use with caution)
+   kubectl exec -n <namespace> <pod> -- mysql -uroot -p<pass> -e "KILL <thread_id>;"
+   
+   # Monitor undo log purge progress
+   kubectl exec -n <namespace> <pod> -- mysql -uroot -p<pass> -e "
+     SHOW ENGINE INNODB STATUS\G" | grep -A5 "TRANSACTIONS"
+   ```
+
+4. **Configure binlog retention to prevent recurrence**
    ```bash
    # Check current binlog settings
-   kubectl exec -n <namespace> <pod> -- mysql -uroot -p<pass> -e "SHOW VARIABLES LIKE 'max_binlog_size';"
-   kubectl exec -n <namespace> <pod> -- mysql -uroot -p<pass> -e "SHOW VARIABLES LIKE 'expire_logs_days';"
+   kubectl exec -n <namespace> <pod> -- mysql -uroot -p<pass> -e "
+     SHOW VARIABLES LIKE 'binlog_expire_logs_seconds';"
+   kubectl exec -n <namespace> <pod> -- mysql -uroot -p<pass> -e "
+     SHOW VARIABLES LIKE 'max_binlog_size';"
    
-   # Set max binlog size (default 1GB, can reduce if needed)
-   kubectl exec -n <namespace> <pod> -- mysql -uroot -p<pass> -e "SET GLOBAL max_binlog_size = 1073741824;"
+   # Set binlog expiration (604800 seconds = 7 days)
+   kubectl exec -n <namespace> <pod> -- mysql -uroot -p<pass> -e "
+     SET GLOBAL binlog_expire_logs_seconds = 604800;"
    
-   # Set binlog expiration (days)
-   kubectl exec -n <namespace> <pod> -- mysql -uroot -p<pass> -e "SET GLOBAL expire_logs_days = 7;"
-   
-   # Configure slow query log rotation
-   kubectl exec -n <namespace> <pod> -- mysql -uroot -p<pass> -e "SET GLOBAL slow_query_log_rotation_size = 1073741824;"
+   # Note: For permanent change, update PerconaXtraDBCluster CR configuration
    ```
 
-4. **Increase EBS volume size if needed**
+5. **Expand EBS volume if needed**
    ```bash
    # Get EBS volume ID from PVC
-   kubectl get pvc -n <namespace> <pvc-name> -o jsonpath='{.spec.volumeName}'
-   aws ec2 describe-volumes --volume-ids <volume-id>
+   VOLUME_ID=$(kubectl get pvc -n <namespace> <pvc-name> -o jsonpath='{.spec.volumeName}')
+   aws ec2 describe-volumes --filters Name=tag:kubernetes.io/created-for/pvc/name,Values=<pvc-name>
    
    # Modify EBS volume size
-   aws ec2 modify-volume --volume-id <volume-id> --size <new-size-gb>
+   aws ec2 modify-volume --volume-id $VOLUME_ID --size <new-size-gb>
    
    # Wait for modification to complete
-   aws ec2 describe-volumes-modifications --volume-ids <volume-id>
+   aws ec2 describe-volumes-modifications --volume-ids $VOLUME_ID
    
-   # Resize filesystem inside pod
-   kubectl exec -n <namespace> <pod> -- resize2fs /dev/<device>
-   
-   # Or if using ext4, check and resize
-   kubectl exec -n <namespace> <pod> -- df -h
-   kubectl exec -n <namespace> <pod> -- growpart /dev/<device> 1
-   kubectl exec -n <namespace> <pod> -- resize2fs /dev/<device>1
+   # The CSI driver should automatically resize the filesystem
+   # If not, resize manually:
+   kubectl exec -n <namespace> <pod> -- resize2fs /dev/nvme1n1
    ```
 
-5. **Verify space is freed and writes are restored**
+6. **Verify recovery**
    ```bash
-   # Check disk usage again
+   # Check disk usage
    kubectl exec -n <namespace> <pod> -- df -h /var/lib/mysql
    
-   # Test write operation
-   kubectl exec -n <namespace> <pod> -- mysql -uroot -p<pass> -e "INSERT INTO <test-table> VALUES (1, 'test');"
+   # Test write capability
+   kubectl exec -n <namespace> <pod> -- mysql -uroot -p<pass> -e "
+     CREATE TABLE IF NOT EXISTS test.disk_test (id INT);
+     INSERT INTO test.disk_test VALUES (1);
+     DROP TABLE test.disk_test;"
    
-   # Monitor for any "No space left on device" errors
-   kubectl logs -n <namespace> <pod> --tail=100 | grep -i "no space\|disk full"
-   
-   # Verify MySQL can write to all necessary locations
-   kubectl exec -n <namespace> <pod> -- mysql -uroot -p<pass> -e "SHOW VARIABLES LIKE 'datadir';"
-   kubectl exec -n <namespace> <pod> -- touch /var/lib/mysql/test-write && rm /var/lib/mysql/test-write
+   # Check for errors
+   kubectl logs -n <namespace> <pod> --tail=50 | grep -i "no space\|disk full"
    ```
 
 ## Alternate/Fallback Method
 
-1. **Temporarily disable non-critical logging**
+1. **Emergency: Temporarily disable binlogging**
    ```bash
-   # WARNING: This will reduce observability until re-enabled
-   # Only use if absolutely necessary to restore writes immediately
+   # WARNING: This prevents point-in-time recovery until re-enabled
+   kubectl exec -n <namespace> <pod> -- mysql -uroot -p<pass> -e "
+     SET GLOBAL sql_log_bin = OFF;"
    
-   # Disable slow query log if it's consuming space
-   kubectl exec -n <namespace> <pod> -- mysql -uroot -p<pass> -e "SET GLOBAL slow_query_log = OFF;"
-   
-   # Disable general log if it's consuming space
-   kubectl exec -n <namespace> <pod> -- mysql -uroot -p<pass> -e "SET GLOBAL general_log = OFF;"
-   
-   # Disable binlog temporarily (WARNING: prevents point-in-time recovery)
-   kubectl exec -n <namespace> <pod> -- mysql -uroot -p<pass> -e "SET GLOBAL sql_log_bin = OFF;"
-   
-   # Free space by other means (purge undo logs, temporary tables, etc.)
-   # Then re-enable logging as soon as possible
-   kubectl exec -n <namespace> <pod> -- mysql -uroot -p<pass> -e "SET GLOBAL sql_log_bin = ON;"
-   kubectl exec -n <namespace> <pod> -- mysql -uroot -p<pass> -e "SET GLOBAL slow_query_log = ON;"
+   # Free space, then immediately re-enable
+   kubectl exec -n <namespace> <pod> -- mysql -uroot -p<pass> -e "
+     SET GLOBAL sql_log_bin = ON;"
    ```
 
-2. **Restore from backup after space is freed**
+2. **Truncate logs consuming space**
    ```bash
-   # Once space is available, ensure backups are working
-   # If backups were interrupted due to space, trigger a new backup
-   kubectl get perconaxtradbclusterbackup -n <namespace>
+   # Truncate slow query log
+   kubectl exec -n <namespace> <pod> -- truncate -s 0 /var/lib/mysql/slow-query.log
    
-   # Create a new backup to ensure recovery capability
-   kubectl apply -f <backup-cr.yaml>
+   # Truncate general log (if enabled)
+   kubectl exec -n <namespace> <pod> -- truncate -s 0 /var/lib/mysql/general.log
    ```
 
 ## Recovery Targets
