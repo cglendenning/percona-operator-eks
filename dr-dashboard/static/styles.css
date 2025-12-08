@@ -37,23 +37,19 @@ body {
     z-index: -2;
 }
 
+/* Static gradient overlay - removed animation for performance */
 .gradient-bg::before {
     content: '';
     position: absolute;
-    top: -50%;
-    left: -50%;
-    width: 200%;
-    height: 200%;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
     background: 
-        radial-gradient(circle at 20% 50%, rgba(99, 102, 241, 0.15) 0%, transparent 50%),
-        radial-gradient(circle at 80% 80%, rgba(139, 92, 246, 0.15) 0%, transparent 50%),
-        radial-gradient(circle at 40% 20%, rgba(16, 185, 129, 0.1) 0%, transparent 50%);
-    animation: gradientShift 20s ease infinite;
-}
-
-@keyframes gradientShift {
-    0%, 100% { transform: translate(0, 0) rotate(0deg); }
-    50% { transform: translate(10%, 10%) rotate(5deg); }
+        radial-gradient(circle at 20% 50%, rgba(99, 102, 241, 0.12) 0%, transparent 50%),
+        radial-gradient(circle at 80% 80%, rgba(139, 92, 246, 0.12) 0%, transparent 50%),
+        radial-gradient(circle at 40% 20%, rgba(16, 185, 129, 0.08) 0%, transparent 50%);
+    pointer-events: none;
 }
 
 .container {
@@ -129,8 +125,7 @@ body {
     display: flex;
     gap: 1rem;
     justify-content: center;
-    background: var(--bg-card);
-    backdrop-filter: blur(10px);
+    background: rgba(15, 20, 40, 0.9);
     padding: 0.5rem;
     border-radius: 50px;
     border: 1px solid var(--border-color);
@@ -262,8 +257,9 @@ body {
     justify-content: center;
     opacity: 0;
     transform: translateY(-4px);
-    transition: opacity 0.2s ease, transform 0.2s ease, border-color 0.2s ease;
+    transition: opacity 0.15s ease, transform 0.15s ease, border-color 0.15s ease;
     cursor: pointer;
+    will-change: opacity, transform;
 }
 
 .code-copy-container:hover .copy-icon,
@@ -340,14 +336,14 @@ body {
 
 /* Scenario Card */
 .scenario-card {
-    background: var(--bg-card);
-    backdrop-filter: blur(10px);
+    background: rgba(15, 20, 40, 0.85);
     border: 1px solid var(--border-color);
     border-radius: 16px;
     margin-bottom: 1.5rem;
     overflow: hidden;
-    transition: all 0.3s ease;
+    transition: border-color 0.2s ease, box-shadow 0.2s ease;
     animation: fadeInUp 0.5s ease-out both;
+    contain: layout style;
 }
 
 .scenario-card:hover {
@@ -378,8 +374,9 @@ body {
     background: var(--bg-card);
     border: 1px solid var(--border-color);
     border-radius: 8px;
-    transition: all 0.3s ease;
+    transition: transform 0.2s ease, background 0.2s ease, border-color 0.2s ease;
     font-size: 1.2rem;
+    will-change: transform;
 }
 
 .scenario-header:hover .expand-arrow {
@@ -443,16 +440,24 @@ body {
 
 /* Recovery Content */
 .recovery-content {
-    max-height: 0;
+    display: grid;
+    grid-template-rows: 0fr;
+    transition: grid-template-rows 0.3s ease-out;
+}
+
+.recovery-content > .recovery-inner {
     overflow: hidden;
-    transition: max-height 0.5s ease;
 }
 
 .recovery-content.expanded {
-    max-height: 5000px;
+    grid-template-rows: 1fr;
 }
 
 .recovery-inner {
+    min-height: 0;
+}
+
+.recovery-content.expanded > .recovery-inner {
     padding: 0 1.5rem 1.5rem 1.5rem;
     border-top: 1px solid var(--border-color);
 }
@@ -501,6 +506,7 @@ body {
     background: rgba(0, 0, 0, 0.2);
     border-radius: 12px;
     padding: 1.5rem;
+    contain: content;
 }
 
 .recovery-process h1,

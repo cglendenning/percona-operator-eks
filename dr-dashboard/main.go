@@ -7,7 +7,6 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
-	"regexp"
 	"strings"
 )
 
@@ -66,8 +65,14 @@ func main() {
 	log.Fatal(http.ListenAndServe(":"+port, nil))
 }
 
+// ScenariosWrapper wraps the scenarios array from JSON
+type ScenariosWrapper struct {
+	Scenarios []DisasterScenario `json:"scenarios"`
+}
+
 // loadScenarios reads disaster scenarios from the testing framework's JSON files
 // Single source of truth: ../testing/{eks,on-prem}/disaster_scenarios/disaster_scenarios.json
+// Recovery process filenames are now stored directly in the JSON files
 func loadScenarios() error {
 	environments := []string{"eks", "on-prem"}
 
@@ -79,65 +84,16 @@ func loadScenarios() error {
 			return fmt.Errorf("failed to read %s scenarios: %w", env, err)
 		}
 
-		var envScenarios []DisasterScenario
-		if err := json.Unmarshal(data, &envScenarios); err != nil {
+		var wrapper ScenariosWrapper
+		if err := json.Unmarshal(data, &wrapper); err != nil {
 			return fmt.Errorf("failed to parse %s scenarios: %w", env, err)
 		}
 
-		// Map each scenario to its recovery process file
-		for i := range envScenarios {
-			filename := scenarioToFilename(envScenarios[i].Scenario)
-			envScenarios[i].RecoveryProcessFile = filename
-		}
-
-		scenarios[env] = envScenarios
-		log.Printf("✅ Loaded %d scenarios for %s", len(envScenarios), env)
+		scenarios[env] = wrapper.Scenarios
+		log.Printf("Loaded %d scenarios for %s", len(wrapper.Scenarios), env)
 	}
 
 	return nil
-}
-
-func scenarioToFilename(scenario string) string {
-	// Manual mapping for known scenarios to ensure exact filename matches
-	mappings := map[string]string{
-		"Single MySQL pod failure (container crash / OOM)":                 "single-mysql-pod-failure.md",
-		"Kubernetes worker node failure (VM host crash)":                   "kubernetes-worker-node-failure.md",
-		"Storage PVC corruption for a single PXC node":                     "storage-pvc-corruption.md",
-		"Percona Operator / CRD misconfiguration (bad rollout)":            "percona-operator-crd-misconfiguration.md",
-		"Cluster loses quorum (multiple PXC pods down)":                    "cluster-loses-quorum.md",
-		"Primary DC network partition from Secondary (WAN cut)":            "primary-dc-network-partition-from-secondary-wan-cut.md",
-		"Primary DC power/cooling outage (site down)":                      "primary-dc-power-cooling-outage-site-down.md",
-		"Both DCs up but replication stops (broken channel)":               "both-dcs-up-but-replication-stops-broken-channel.md",
-		"Accidental DROP/DELETE/TRUNCATE (logical data loss)":              "accidental-drop-delete-truncate-logical-data-loss.md",
-		"Widespread data corruption (bad migration/script)":                "widespread-data-corruption-bad-migration-script.md",
-		"S3 backup target unavailable (regional outage or ACL/cred issue)": "s3-backup-target-unavailable-regional-outage-or-acl-cred-issue.md",
-		"Backups complete but are non\u2011restorable (silent failure)":    "backups-complete-but-are-non-restorable-silent-failure.md",
-		"Kubernetes control plane outage (API server down)":                "kubernetes-control-plane-outage-api-server-down.md",
-		"Ransomware on VMware hosts (storage encrypted)":                   "ransomware-on-vmware-hosts-storage-encrypted.md",
-		"Credential compromise (DB or S3 keys)":                            "credential-compromise-db-or-s3-keys.md",
-		"Ingress/VIP failure (HAProxy/ProxySQL service unreachable)":       "ingress-vip-failure.md",
-	}
-
-	// Check if we have a direct mapping
-	if filename, ok := mappings[scenario]; ok {
-		return filename
-	}
-
-	// Fallback: generate filename from scenario name
-	filename := strings.ToLower(scenario)
-	filename = strings.ReplaceAll(filename, "(", "")
-	filename = strings.ReplaceAll(filename, ")", "")
-	filename = strings.ReplaceAll(filename, "/", "-")
-	filename = strings.ReplaceAll(filename, ":", "")
-	filename = strings.ReplaceAll(filename, ",", "")
-	filename = strings.ReplaceAll(filename, " ", "-")
-
-	// Clean up multiple consecutive dashes
-	re := regexp.MustCompile(`-+`)
-	filename = re.ReplaceAllString(filename, "-")
-	filename = strings.Trim(filename, "-")
-
-	return filename + ".md"
 }
 
 func handleIndex(w http.ResponseWriter, r *http.Request) {
