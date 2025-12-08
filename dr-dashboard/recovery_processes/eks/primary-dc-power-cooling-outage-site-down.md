@@ -1,5 +1,26 @@
 # Primary DC Power/Cooling Outage (Site Down) Recovery Process
 
+> **<span style="color:red">WARNING: PLACEHOLDER DOCUMENT</span>**
+>
+> **This recovery process is a PLACEHOLDER and has NOT been fully tested in production.**
+> Validate all steps in a non-production environment before executing during an actual incident.
+
+
+## Set Environment Variables
+
+Copy and paste the following block to configure your environment. You will be prompted for each value:
+
+```bash
+# Interactive variable setup - paste this block and answer each prompt
+read -p "Enter pod name (e.g., cluster1-pxc-0): " POD_NAME
+read -sp "Enter MySQL root password: " MYSQL_ROOT_PASSWORD; echo
+read -p "Enter secondary DC kubectl context: " SECONDARY_CONTEXT
+```
+
+
+
+
+
 ## Primary Recovery Method
 Promote Secondary DC replica to primary (planned role swap)
 
@@ -16,14 +37,14 @@ Promote Secondary DC replica to primary (planned role swap)
 
 2. **Verify secondary DC is healthy**
    ```bash
-   kubectl --context=secondary-dc get nodes
-   kubectl --context=secondary-dc get pods -n percona
-   kubectl --context=secondary-dc exec -n percona <pod> -- mysql -uroot -p<pass> -e "SELECT 1;"
+   kubectl --context=${SECONDARY_CONTEXT} get nodes
+   kubectl --context=${SECONDARY_CONTEXT} get pods -n percona
+   kubectl --context=${SECONDARY_CONTEXT} exec -n percona ${POD_NAME} -- mysql -uroot -p${MYSQL_ROOT_PASSWORD} -e "SELECT 1;"
    ```
 
 3. **Check replication lag on secondary**
    ```bash
-   kubectl --context=secondary-dc exec -n percona <pod> -- mysql -uroot -p<pass> -e "SHOW SLAVE STATUS\G" | grep Seconds_Behind_Master
+   kubectl --context=${SECONDARY_CONTEXT} exec -n percona ${POD_NAME} -- mysql -uroot -p${MYSQL_ROOT_PASSWORD} -e "SHOW SLAVE STATUS\G" | grep Seconds_Behind_Master
    ```
 
 4. **Stop writes to primary (if any route still exists)**
@@ -34,13 +55,13 @@ Promote Secondary DC replica to primary (planned role swap)
 5. **Promote secondary to primary**
    ```bash
    # Stop replication on secondary
-   kubectl --context=secondary-dc exec -n percona <pod> -- mysql -uroot -p<pass> -e "STOP SLAVE;"
+   kubectl --context=${SECONDARY_CONTEXT} exec -n percona ${POD_NAME} -- mysql -uroot -p${MYSQL_ROOT_PASSWORD} -e "STOP SLAVE;"
    
    # Reset slave status (make it standalone)
-   kubectl --context=secondary-dc exec -n percona <pod> -- mysql -uroot -p<pass> -e "RESET SLAVE ALL;"
+   kubectl --context=${SECONDARY_CONTEXT} exec -n percona ${POD_NAME} -- mysql -uroot -p${MYSQL_ROOT_PASSWORD} -e "RESET SLAVE ALL;"
    
    # Verify it's writable
-   kubectl --context=secondary-dc exec -n percona <pod> -- mysql -uroot -p<pass> -e "SHOW VARIABLES LIKE 'read_only';"
+   kubectl --context=${SECONDARY_CONTEXT} exec -n percona ${POD_NAME} -- mysql -uroot -p${MYSQL_ROOT_PASSWORD} -e "SHOW VARIABLES LIKE 'read_only';"
    ```
 
 6. **Update DNS and ingress**
@@ -56,7 +77,7 @@ Promote Secondary DC replica to primary (planned role swap)
 8. **Verify service is restored**
    ```bash
    # Test write operations
-   kubectl --context=secondary-dc exec -n percona <pod> -- mysql -uroot -p<pass> -e "CREATE DATABASE IF NOT EXISTS failover_test; USE failover_test; CREATE TABLE IF NOT EXISTS test (id INT); INSERT INTO test VALUES (1);"
+   kubectl --context=${SECONDARY_CONTEXT} exec -n percona ${POD_NAME} -- mysql -uroot -p${MYSQL_ROOT_PASSWORD} -e "CREATE DATABASE IF NOT EXISTS failover_test; USE failover_test; CREATE TABLE IF NOT EXISTS test (id INT); INSERT INTO test VALUES (1);"
    
    # Verify application connectivity
    # Check application logs for successful DB connections

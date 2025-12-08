@@ -1,5 +1,26 @@
 # Widespread Data Corruption (Bad Migration/Script) Recovery Process
 
+> **<span style="color:red">WARNING: PLACEHOLDER DOCUMENT</span>**
+>
+> **This recovery process is a PLACEHOLDER and has NOT been fully tested in production.**
+> Validate all steps in a non-production environment before executing during an actual incident.
+
+
+## Set Environment Variables
+
+Copy and paste the following block to configure your environment. You will be prompted for each value:
+
+```bash
+# Interactive variable setup - paste this block and answer each prompt
+read -p "Enter Kubernetes namespace [percona]: " NAMESPACE; NAMESPACE=${NAMESPACE:-percona}
+read -p "Enter pod name (e.g., cluster1-pxc-0): " POD_NAME
+read -sp "Enter MySQL root password: " MYSQL_ROOT_PASSWORD; echo
+```
+
+
+
+
+
 ## Primary Recovery Method
 PITR to pre-change timestamp on clean environment; validate; cutover
 
@@ -10,7 +31,7 @@ PITR to pre-change timestamp on clean environment; validate; cutover
 1. **Stop all changes immediately**
    ```bash
    # Set database read-only
-   kubectl exec -n <namespace> <pod> -- mysql -uroot -p<pass> -e "SET GLOBAL read_only = ON; SET GLOBAL super_read_only = ON;"
+   kubectl exec -n ${NAMESPACE} ${POD_NAME} -- mysql -uroot -p${MYSQL_ROOT_PASSWORD} -e "SET GLOBAL read_only = ON; SET GLOBAL super_read_only = ON;"
    
    # Stop automated jobs, deployments, scheduled tasks
    ```
@@ -45,16 +66,16 @@ PITR to pre-change timestamp on clean environment; validate; cutover
    aws s3 sync s3://<backup-bucket>/binlogs/ /tmp/binlogs/ --exclude "*" --include "mysql-bin.*"
    
    # Apply binlogs up to BEFORE corruption
-   mysqlbinlog --stop-datetime="<timestamp-before-corruption>" /tmp/binlogs/mysql-bin.* | mysql -uroot -p<pass> -h<restore-host>
+   mysqlbinlog --stop-datetime="<timestamp-before-corruption>" /tmp/binlogs/mysql-bin.* | mysql -uroot -p${MYSQL_ROOT_PASSWORD} -h<restore-host>
    ```
 
 6. **Validate restored data**
    ```bash
    # Run integrity checks
-   mysql -uroot -p<pass> -h<restore-host> -e "CHECK TABLE <database>.<table>;"
+   mysql -uroot -p${MYSQL_ROOT_PASSWORD} -h<restore-host> -e "CHECK TABLE <database>.<table>;"
    
    # Verify row counts
-   mysql -uroot -p<pass> -h<restore-host> -e "SELECT COUNT(*) FROM <database>.<table>;"
+   mysql -uroot -p${MYSQL_ROOT_PASSWORD} -h<restore-host> -e "SELECT COUNT(*) FROM <database>.<table>;"
    
    # Run application smoke tests on restored environment
    ```
@@ -66,7 +87,7 @@ PITR to pre-change timestamp on clean environment; validate; cutover
    # Restart application pods
    
    # Disable read-only on new primary
-   kubectl exec -n <new-namespace> <pod> -- mysql -uroot -p<pass> -e "SET GLOBAL read_only = OFF; SET GLOBAL super_read_only = OFF;"
+   kubectl exec -n <new-namespace> ${POD_NAME} -- mysql -uroot -p${MYSQL_ROOT_PASSWORD} -e "SET GLOBAL read_only = OFF; SET GLOBAL super_read_only = OFF;"
    ```
 
 8. **Verify service is restored**
@@ -96,18 +117,18 @@ If change is reversible, apply compensating migration from audit trail
 
 3. **Test on replica first**
    ```bash
-   kubectl exec -n <namespace> <replica-pod> -- mysql -uroot -p<pass> < compensating-migration.sql
+   kubectl exec -n ${NAMESPACE} <replica-pod> -- mysql -uroot -p${MYSQL_ROOT_PASSWORD} < compensating-migration.sql
    ```
 
 4. **Apply to production if test succeeds**
    ```bash
-   kubectl exec -n <namespace> <pod> -- mysql -uroot -p<pass> < compensating-migration.sql
+   kubectl exec -n ${NAMESPACE} ${POD_NAME} -- mysql -uroot -p${MYSQL_ROOT_PASSWORD} < compensating-migration.sql
    ```
 
 5. **Verify service is restored**
    ```bash
    # Verify data integrity
-   kubectl exec -n <namespace> <pod> -- mysql -uroot -p<pass> -e "CHECK TABLE <database>.<table>;"
+   kubectl exec -n ${NAMESPACE} ${POD_NAME} -- mysql -uroot -p${MYSQL_ROOT_PASSWORD} -e "CHECK TABLE <database>.<table>;"
    
    # Test write operations from application
    ```

@@ -1,5 +1,26 @@
 # Kubernetes Control Plane Outage (API Server Down) Recovery Process
 
+> **<span style="color:red">WARNING: PLACEHOLDER DOCUMENT</span>**
+>
+> **This recovery process is a PLACEHOLDER and has NOT been fully tested in production.**
+> Validate all steps in a non-production environment before executing during an actual incident.
+
+
+## Set Environment Variables
+
+Copy and paste the following block to configure your environment. You will be prompted for each value:
+
+```bash
+# Interactive variable setup - paste this block and answer each prompt
+read -p "Enter PXC cluster name: " CLUSTER_NAME
+read -p "Enter pod name (e.g., cluster1-pxc-0): " POD_NAME
+read -sp "Enter MySQL root password: " MYSQL_ROOT_PASSWORD; echo
+```
+
+
+
+
+
 ## Primary Recovery Method
 Restore control plane VMs; failover etcd; use Rancher to re-provision
 
@@ -20,10 +41,10 @@ Restore control plane VMs; failover etcd; use Rancher to re-provision
 2. **For managed Kubernetes (EKS):**
    ```bash
    # Check AWS service health
-   aws eks describe-cluster --name <cluster-name>
+   aws eks describe-cluster --name ${CLUSTER_NAME}
    
    # Check CloudWatch logs
-   aws logs tail /aws/eks/<cluster-name>/cluster --follow
+   aws logs tail /aws/eks/${CLUSTER_NAME}/cluster --follow
    
    # Open AWS support ticket if needed
    ```
@@ -73,7 +94,7 @@ Restore control plane VMs; failover etcd; use Rancher to re-provision
    
    # Verify database pods still healthy
    kubectl get pods -n percona
-   kubectl exec -n percona <pod> -- mysql -uroot -p<pass> -e "SHOW STATUS LIKE 'wsrep_cluster_status';"
+   kubectl exec -n percona ${POD_NAME} -- mysql -uroot -p${MYSQL_ROOT_PASSWORD} -e "SHOW STATUS LIKE 'wsrep_cluster_status';"
    
    # Test write operations from application
    ```
@@ -92,13 +113,13 @@ Operate cluster as-is (pods keep running); avoid changes until API is back
    docker ps | grep mysql
    
    # Access database directly
-   docker exec -it <container-id> mysql -uroot -p<pass>
+   docker exec -it <container-id> mysql -uroot -p${MYSQL_ROOT_PASSWORD}
    ```
 
 2. **Monitor database health without Kubernetes**
    ```bash
    # Check database is accepting connections
-   docker exec <container-id> mysql -uroot -p<pass> -e "SELECT 1;"
+   docker exec <container-id> mysql -uroot -p${MYSQL_ROOT_PASSWORD} -e "SELECT 1;"
    
    # Monitor logs
    docker logs -f <container-id>
@@ -107,7 +128,7 @@ Operate cluster as-is (pods keep running); avoid changes until API is back
 3. **Verify service is restored**
    ```bash
    # Verify database is operational
-   docker exec <container-id> mysql -uroot -p<pass> -e "SHOW STATUS LIKE 'wsrep_cluster_status';"
+   docker exec <container-id> mysql -uroot -p${MYSQL_ROOT_PASSWORD} -e "SHOW STATUS LIKE 'wsrep_cluster_status';"
    
    # Test write operations from application (if application can connect directly)
    ```

@@ -1,5 +1,29 @@
 # Storage PVC Corruption Recovery Process
 
+> **<span style="color:red">WARNING: PLACEHOLDER DOCUMENT</span>**
+>
+> **This recovery process is a PLACEHOLDER and has NOT been fully tested in production.**
+> Validate all steps in a non-production environment before executing during an actual incident.
+
+
+## Set Environment Variables
+
+Copy and paste the following block to configure your environment. You will be prompted for each value:
+
+```bash
+# Interactive variable setup - paste this block and answer each prompt
+read -p "Enter Kubernetes namespace [percona]: " NAMESPACE; NAMESPACE=${NAMESPACE:-percona}
+read -p "Enter pod name (e.g., cluster1-pxc-0): " POD_NAME
+read -p "Enter StatefulSet name: " STS_NAME
+read -sp "Enter MySQL root password: " MYSQL_ROOT_PASSWORD; echo
+read -p "Enter MinIO pod name: " MINIO_POD
+read -p "Enter PVC name: " PVC_NAME
+```
+
+
+
+
+
 ## Primary Recovery Method
 Remove failed node; recreate pod; let PXC SST/IST re-seed from peers
 
@@ -7,44 +31,44 @@ Remove failed node; recreate pod; let PXC SST/IST re-seed from peers
 
 1. **Identify the affected pod and PVC**
    ```bash
-   kubectl get pods -n <namespace>
-   kubectl describe pod -n <namespace> <pod-name>
-   kubectl get pvc -n <namespace>
+   kubectl get pods -n ${NAMESPACE}
+   kubectl describe pod -n ${NAMESPACE} ${POD_NAME}
+   kubectl get pvc -n ${NAMESPACE}
    ```
 
 2. **Scale down the StatefulSet to remove the corrupted pod**
    ```bash
-   kubectl scale statefulset <sts-name> -n <namespace> --replicas=<n-1>
+   kubectl scale statefulset ${STS_NAME} -n ${NAMESPACE} --replicas=<n-1>
    ```
 
 3. **CRITICAL: Ensure cluster maintains quorum (need majority of nodes up)**
 
 4. **Delete the corrupted PVC**
    ```bash
-   kubectl delete pvc <pvc-name> -n <namespace>
+   kubectl delete pvc ${PVC_NAME} -n ${NAMESPACE}
    ```
 
 5. **Scale StatefulSet back up**
    ```bash
-   kubectl scale statefulset <sts-name> -n <namespace> --replicas=<n>
+   kubectl scale statefulset ${STS_NAME} -n ${NAMESPACE} --replicas=<n>
    ```
 
 6. **Monitor pod creation and storage provisioning**
    ```bash
-   kubectl get pods -n <namespace> -w
-   kubectl get pvc -n <namespace> -w
+   kubectl get pods -n ${NAMESPACE} -w
+   kubectl get pvc -n ${NAMESPACE} -w
    ```
 
 7. **Watch for IST (Incremental State Transfer) or SST (State Snapshot Transfer)**
    ```bash
-   kubectl logs -n <namespace> <pod-name> -f
+   kubectl logs -n ${NAMESPACE} ${POD_NAME} -f
    ```
 
 8. **Verify service is restored**
    ```bash
    # Verify node rejoins and syncs
-   kubectl exec -n <namespace> <pod-name> -- mysql -uroot -p<password> -e "SHOW STATUS LIKE 'wsrep_cluster_status';"
-   kubectl exec -n <namespace> <pod-name> -- mysql -uroot -p<password> -e "SHOW STATUS LIKE 'wsrep_cluster_size';"
+   kubectl exec -n ${NAMESPACE} ${POD_NAME} -- mysql -uroot -p${MYSQL_ROOT_PASSWORD} -e "SHOW STATUS LIKE 'wsrep_cluster_status';"
+   kubectl exec -n ${NAMESPACE} ${POD_NAME} -- mysql -uroot -p${MYSQL_ROOT_PASSWORD} -e "SHOW STATUS LIKE 'wsrep_cluster_size';"
    
    # Test write operations from application
    ```
@@ -57,7 +81,7 @@ Restore individual table/DB from MinIO physical backup to side instance and logi
 1. **Restore latest backup to a temporary instance**
    ```bash
    # Download backup from MinIO
-   kubectl exec -n minio-operator <minio-pod> -- mc cp local/<backup-bucket>/backups/<backup-name>/ /tmp/restore/ --recursive
+   kubectl exec -n minio-operator ${MINIO_POD} -- mc cp local/<backup-bucket>/backups/<backup-name>/ /tmp/restore/ --recursive
    
    # Use Percona XtraBackup
    xtrabackup --prepare --target-dir=/tmp/restore
@@ -71,13 +95,13 @@ Restore individual table/DB from MinIO physical backup to side instance and logi
 
 3. **Import to production cluster**
    ```bash
-   kubectl exec -n <namespace> <pod-name> -- mysql -u root -p <database> < restore.sql
+   kubectl exec -n ${NAMESPACE} ${POD_NAME} -- mysql -u root -p <database> < restore.sql
    ```
 
 4. **Verify service is restored**
    ```bash
    # Verify data integrity
-   kubectl exec -n <namespace> <pod-name> -- mysql -uroot -p<password> -e "SELECT COUNT(*) FROM <database>.<table>;"
+   kubectl exec -n ${NAMESPACE} ${POD_NAME} -- mysql -uroot -p${MYSQL_ROOT_PASSWORD} -e "SELECT COUNT(*) FROM <database>.<table>;"
    
    # Test write operations from application
    ```

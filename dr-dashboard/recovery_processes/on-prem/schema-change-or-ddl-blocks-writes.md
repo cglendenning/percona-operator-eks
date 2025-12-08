@@ -1,23 +1,45 @@
 # Schema Change or DDL Blocks Writes Recovery Process
 
+> **<span style="color:red">WARNING: PLACEHOLDER DOCUMENT</span>**
+>
+> **This recovery process is a PLACEHOLDER and has NOT been fully tested in production.**
+> Validate all steps in a non-production environment before executing during an actual incident.
+
+
+## Set Environment Variables
+
+Copy and paste the following block to configure your environment. You will be prompted for each value:
+
+```bash
+# Interactive variable setup - paste this block and answer each prompt
+read -p "Enter Kubernetes namespace [percona]: " NAMESPACE; NAMESPACE=${NAMESPACE:-percona}
+read -p "Enter pod name (e.g., cluster1-pxc-0): " POD_NAME
+read -sp "Enter MySQL root password: " MYSQL_ROOT_PASSWORD; echo
+read -p "Enter MinIO pod name: " MINIO_POD
+```
+
+
+
+
+
 ## Primary Recovery Method
 
 1. **Identify the blocking DDL operation**
    ```bash
    # Check for running DDL processes
-   kubectl exec -n <namespace> <pod> -- mysql -uroot -p<pass> -e "SHOW PROCESSLIST;" | grep -i "alter\|create\|drop\|rename"
+   kubectl exec -n ${NAMESPACE} ${POD_NAME} -- mysql -uroot -p${MYSQL_ROOT_PASSWORD} -e "SHOW PROCESSLIST;" | grep -i "alter\|create\|drop\|rename"
    
    # Check for metadata locks
-   kubectl exec -n <namespace> <pod> -- mysql -uroot -p<pass> -e "SELECT * FROM performance_schema.metadata_locks WHERE OBJECT_TYPE='TABLE';"
+   kubectl exec -n ${NAMESPACE} ${POD_NAME} -- mysql -uroot -p${MYSQL_ROOT_PASSWORD} -e "SELECT * FROM performance_schema.metadata_locks WHERE OBJECT_TYPE='TABLE';"
    
    # Check for blocked queries
-   kubectl exec -n <namespace> <pod> -- mysql -uroot -p<pass> -e "SELECT * FROM information_schema.processlist WHERE State LIKE '%metadata%' OR State LIKE '%Waiting%';"
+   kubectl exec -n ${NAMESPACE} ${POD_NAME} -- mysql -uroot -p${MYSQL_ROOT_PASSWORD} -e "SELECT * FROM information_schema.processlist WHERE State LIKE '%metadata%' OR State LIKE '%Waiting%';"
    ```
 
 2. **Assess DDL progress and remaining time**
    ```bash
    # Check DDL progress (if using online DDL)
-   kubectl exec -n <namespace> <pod> -- mysql -uroot -p<pass> -e "SELECT * FROM information_schema.innodb_online_ddl_log;"
+   kubectl exec -n ${NAMESPACE} ${POD_NAME} -- mysql -uroot -p${MYSQL_ROOT_PASSWORD} -e "SELECT * FROM information_schema.innodb_online_ddl_log;"
    
    # Estimate remaining time based on table size and operation type
    # If DDL is >90% complete, consider waiting
@@ -29,7 +51,7 @@
    **Option A: Wait if DDL is near completion**
    ```bash
    # Monitor progress
-   watch -n 5 'kubectl exec -n <namespace> <pod> -- mysql -uroot -p<pass> -e "SHOW PROCESSLIST;" | grep -i "alter\|create"'
+   watch -n 5 'kubectl exec -n ${NAMESPACE} ${POD_NAME} -- mysql -uroot -p${MYSQL_ROOT_PASSWORD} -e "SHOW PROCESSLIST;" | grep -i "alter\|create"'
    
    # Continue monitoring until DDL completes
    ```
@@ -37,13 +59,13 @@
    **Option B: Kill DDL if safe and early in process**
    ```bash
    # Identify DDL process ID
-   DDL_PID=$(kubectl exec -n <namespace> <pod> -- mysql -uroot -p<pass> -e "SELECT ID FROM information_schema.processlist WHERE Command='Query' AND Info LIKE '%ALTER%' OR Info LIKE '%CREATE%';" | tail -1)
+   DDL_PID=$(kubectl exec -n ${NAMESPACE} ${POD_NAME} -- mysql -uroot -p${MYSQL_ROOT_PASSWORD} -e "SELECT ID FROM information_schema.processlist WHERE Command='Query' AND Info LIKE '%ALTER%' OR Info LIKE '%CREATE%';" | tail -1)
    
    # Kill the process
-   kubectl exec -n <namespace> <pod> -- mysql -uroot -p<pass> -e "KILL $DDL_PID;"
+   kubectl exec -n ${NAMESPACE} ${POD_NAME} -- mysql -uroot -p${MYSQL_ROOT_PASSWORD} -e "KILL $DDL_PID;"
    
    # Verify writes are unblocked
-   kubectl exec -n <namespace> <pod> -- mysql -uroot -p<pass> -e "SELECT * FROM information_schema.processlist WHERE State LIKE '%metadata%';"
+   kubectl exec -n ${NAMESPACE} ${POD_NAME} -- mysql -uroot -p${MYSQL_ROOT_PASSWORD} -e "SELECT * FROM information_schema.processlist WHERE State LIKE '%metadata%';"
    ```
 
    **Option C: Rollback DDL if possible**
@@ -51,13 +73,13 @@
    # If DDL was ALTER TABLE, check if it can be rolled back
    # For some operations, you may need to reverse the change
    # Example: If ALTER TABLE ADD COLUMN, then ALTER TABLE DROP COLUMN
-   kubectl exec -n <namespace> <pod> -- mysql -uroot -p<pass> -e "ALTER TABLE <table> DROP COLUMN <column>;"  # Only if safe!
+   kubectl exec -n ${NAMESPACE} ${POD_NAME} -- mysql -uroot -p${MYSQL_ROOT_PASSWORD} -e "ALTER TABLE <table> DROP COLUMN <column>;"  # Only if safe!
    ```
 
 4. **Verify writes are restored**
    ```bash
    # Test write operation
-   kubectl exec -n <namespace> <pod> -- mysql -uroot -p<pass> -e "INSERT INTO <test_table> VALUES (1, 'test');"
+   kubectl exec -n ${NAMESPACE} ${POD_NAME} -- mysql -uroot -p${MYSQL_ROOT_PASSWORD} -e "INSERT INTO <test_table> VALUES (1, 'test');"
    
    # Check application can write
    # Monitor application logs for successful writes
@@ -66,10 +88,10 @@
 5. **Monitor for any schema inconsistencies**
    ```bash
    # Check table structure
-   kubectl exec -n <namespace> <pod> -- mysql -uroot -p<pass> -e "SHOW CREATE TABLE <table>;"
+   kubectl exec -n ${NAMESPACE} ${POD_NAME} -- mysql -uroot -p${MYSQL_ROOT_PASSWORD} -e "SHOW CREATE TABLE <table>;"
    
    # Verify table integrity
-   kubectl exec -n <namespace> <pod> -- mysql -uroot -p<pass> -e "CHECK TABLE <table>;"
+   kubectl exec -n ${NAMESPACE} ${POD_NAME} -- mysql -uroot -p${MYSQL_ROOT_PASSWORD} -e "CHECK TABLE <table>;"
    ```
 
 ## Alternate/Fallback Method
@@ -78,7 +100,7 @@
    ```bash
    # Failover to replica (if available and not affected by DDL)
    # Check replica status
-   kubectl exec -n <namespace> <replica-pod> -- mysql -uroot -p<pass> -e "SHOW SLAVE STATUS\G"
+   kubectl exec -n ${NAMESPACE} <replica-pod> -- mysql -uroot -p${MYSQL_ROOT_PASSWORD} -e "SHOW SLAVE STATUS\G"
    
    # If replica is healthy and not running DDL, promote it
    # Update application connections to point to replica
@@ -88,7 +110,7 @@
    ```bash
    # Restore from backup
    # Find backup before DDL started
-   kubectl exec -n minio-operator <minio-pod> -- mc ls local/<backup-bucket>/backups/ --recursive | grep "<date-before-ddl>"
+   kubectl exec -n minio-operator ${MINIO_POD} -- mc ls local/<backup-bucket>/backups/ --recursive | grep "<date-before-ddl>"
    
    # Restore schema only (not data if data is still good)
    # Or restore full backup if data corruption occurred

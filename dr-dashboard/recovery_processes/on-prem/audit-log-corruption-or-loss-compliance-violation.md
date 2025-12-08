@@ -1,42 +1,64 @@
 # Audit Log Corruption or Loss (Compliance Violation) Recovery Process
 
+> **<span style="color:red">WARNING: PLACEHOLDER DOCUMENT</span>**
+>
+> **This recovery process is a PLACEHOLDER and has NOT been fully tested in production.**
+> Validate all steps in a non-production environment before executing during an actual incident.
+
+
+## Set Environment Variables
+
+Copy and paste the following block to configure your environment. You will be prompted for each value:
+
+```bash
+# Interactive variable setup - paste this block and answer each prompt
+read -p "Enter Kubernetes namespace [percona]: " NAMESPACE; NAMESPACE=${NAMESPACE:-percona}
+read -p "Enter pod name (e.g., cluster1-pxc-0): " POD_NAME
+read -sp "Enter MySQL root password: " MYSQL_ROOT_PASSWORD; echo
+read -p "Enter MinIO pod name: " MINIO_POD
+```
+
+
+
+
+
 ## Primary Recovery Method
 
 1. **Identify the audit log issue**
    ```bash
    # Check audit log file status
-   kubectl exec -n <namespace> <pod> -- ls -lh /var/lib/mysql/audit.log*
-   kubectl exec -n <namespace> <pod> -- mysql -uroot -p<pass> -e "SHOW VARIABLES LIKE 'audit_log%';"
+   kubectl exec -n ${NAMESPACE} ${POD_NAME} -- ls -lh /var/lib/mysql/audit.log*
+   kubectl exec -n ${NAMESPACE} ${POD_NAME} -- mysql -uroot -p${MYSQL_ROOT_PASSWORD} -e "SHOW VARIABLES LIKE 'audit_log%';"
    
    # Check for audit log corruption
-   kubectl exec -n <namespace> <pod> -- mysql -uroot -p<pass> -e "SELECT * FROM mysql.audit_log WHERE event_time >= DATE_SUB(NOW(), INTERVAL 1 DAY) LIMIT 10;"
+   kubectl exec -n ${NAMESPACE} ${POD_NAME} -- mysql -uroot -p${MYSQL_ROOT_PASSWORD} -e "SELECT * FROM mysql.audit_log WHERE event_time >= DATE_SUB(NOW(), INTERVAL 1 DAY) LIMIT 10;"
    
    # Check audit log file integrity
-   kubectl exec -n <namespace> <pod> -- file /var/lib/mysql/audit.log
+   kubectl exec -n ${NAMESPACE} ${POD_NAME} -- file /var/lib/mysql/audit.log
    ```
 
 2. **Restore audit logs from backup**
    ```bash
    # Find audit log backups in MinIO
-   kubectl exec -n minio-operator <minio-pod> -- mc ls local/<backup-bucket>/audit-logs/ --recursive
+   kubectl exec -n minio-operator ${MINIO_POD} -- mc ls local/<backup-bucket>/audit-logs/ --recursive
    
    # Download audit log backup
-   kubectl exec -n minio-operator <minio-pod> -- mc cp local/<backup-bucket>/audit-logs/<audit-log-backup> /tmp/audit-log-restore/
+   kubectl exec -n minio-operator ${MINIO_POD} -- mc cp local/<backup-bucket>/audit-logs/<audit-log-backup> /tmp/audit-log-restore/
    
    # Restore audit log file
-   kubectl cp <namespace>/<pod>:/tmp/audit-log-restore/audit.log /tmp/audit.log
-   kubectl cp /tmp/audit.log <namespace>/<pod>:/var/lib/mysql/audit.log
+   kubectl cp ${NAMESPACE}/${POD_NAME}:/tmp/audit-log-restore/audit.log /tmp/audit.log
+   kubectl cp /tmp/audit.log ${NAMESPACE}/${POD_NAME}:/var/lib/mysql/audit.log
    
    # Set proper permissions
-   kubectl exec -n <namespace> <pod> -- chown mysql:mysql /var/lib/mysql/audit.log
-   kubectl exec -n <namespace> <pod> -- chmod 640 /var/lib/mysql/audit.log
+   kubectl exec -n ${NAMESPACE} ${POD_NAME} -- chown mysql:mysql /var/lib/mysql/audit.log
+   kubectl exec -n ${NAMESPACE} ${POD_NAME} -- chmod 640 /var/lib/mysql/audit.log
    ```
 
 3. **Regenerate audit trail from binlogs if possible**
    ```bash
    # If audit logs cannot be restored, attempt to reconstruct from binlogs
    # Extract relevant events from binlogs
-   kubectl exec -n <namespace> <pod> -- mysqlbinlog --start-datetime="<start-time>" --stop-datetime="<end-time>" /var/lib/mysql/binlog.* | grep -i "audit\|compliance"
+   kubectl exec -n ${NAMESPACE} ${POD_NAME} -- mysqlbinlog --start-datetime="<start-time>" --stop-datetime="<end-time>" /var/lib/mysql/binlog.* | grep -i "audit\|compliance"
    
    # Note: This is a partial reconstruction and may not capture all audit events
    # Document the gap for compliance reporting
@@ -58,14 +80,14 @@
 5. **Verify audit logging is restored**
    ```bash
    # Verify audit log is writing
-   kubectl exec -n <namespace> <pod> -- mysql -uroot -p<pass> -e "SHOW VARIABLES LIKE 'audit_log%';"
+   kubectl exec -n ${NAMESPACE} ${POD_NAME} -- mysql -uroot -p${MYSQL_ROOT_PASSWORD} -e "SHOW VARIABLES LIKE 'audit_log%';"
    
    # Test audit log capture
-   kubectl exec -n <namespace> <pod> -- mysql -uroot -p<pass> -e "SELECT 1;"
-   kubectl exec -n <namespace> <pod> -- tail -5 /var/lib/mysql/audit.log
+   kubectl exec -n ${NAMESPACE} ${POD_NAME} -- mysql -uroot -p${MYSQL_ROOT_PASSWORD} -e "SELECT 1;"
+   kubectl exec -n ${NAMESPACE} ${POD_NAME} -- tail -5 /var/lib/mysql/audit.log
    
    # Verify audit log file is growing
-   kubectl exec -n <namespace> <pod> -- ls -lh /var/lib/mysql/audit.log
+   kubectl exec -n ${NAMESPACE} ${POD_NAME} -- ls -lh /var/lib/mysql/audit.log
    ```
 
 ## Alternate/Fallback Method
@@ -84,11 +106,11 @@
    ```bash
    # Enable additional logging
    # Increase audit log verbosity temporarily
-   kubectl exec -n <namespace> <pod> -- mysql -uroot -p<pass> -e "SET GLOBAL audit_log_policy = 'ALL';"
+   kubectl exec -n ${NAMESPACE} ${POD_NAME} -- mysql -uroot -p${MYSQL_ROOT_PASSWORD} -e "SET GLOBAL audit_log_policy = 'ALL';"
    
    # Enable general query log as backup
-   kubectl exec -n <namespace> <pod> -- mysql -uroot -p<pass> -e "SET GLOBAL general_log = 'ON';"
-   kubectl exec -n <namespace> <pod> -- mysql -uroot -p<pass> -e "SET GLOBAL log_output = 'FILE';"
+   kubectl exec -n ${NAMESPACE} ${POD_NAME} -- mysql -uroot -p${MYSQL_ROOT_PASSWORD} -e "SET GLOBAL general_log = 'ON';"
+   kubectl exec -n ${NAMESPACE} ${POD_NAME} -- mysql -uroot -p${MYSQL_ROOT_PASSWORD} -e "SET GLOBAL log_output = 'FILE';"
    ```
 
 ## Recovery Targets

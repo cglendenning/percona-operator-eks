@@ -1,5 +1,26 @@
 # Both DCs Up But Replication Stops (Broken Channel) Recovery Process
 
+> **<span style="color:red">WARNING: PLACEHOLDER DOCUMENT</span>**
+>
+> **This recovery process is a PLACEHOLDER and has NOT been fully tested in production.**
+> Validate all steps in a non-production environment before executing during an actual incident.
+
+
+## Set Environment Variables
+
+Copy and paste the following block to configure your environment. You will be prompted for each value:
+
+```bash
+# Interactive variable setup - paste this block and answer each prompt
+read -p "Enter pod name (e.g., cluster1-pxc-0): " POD_NAME
+read -sp "Enter MySQL root password: " MYSQL_ROOT_PASSWORD; echo
+read -p "Enter MinIO pod name: " MINIO_POD
+```
+
+
+
+
+
 ## Primary Recovery Method
 Fix replication (purge relay logs; CHANGE MASTER to correct coordinates; GTID resync)
 
@@ -8,7 +29,7 @@ Fix replication (purge relay logs; CHANGE MASTER to correct coordinates; GTID re
 1. **Identify the replication problem**
    ```bash
    # On secondary DC
-   kubectl exec -n percona <pod> -- mysql -uroot -p<pass> -e "SHOW SLAVE STATUS\G"
+   kubectl exec -n percona ${POD_NAME} -- mysql -uroot -p${MYSQL_ROOT_PASSWORD} -e "SHOW SLAVE STATUS\G"
    ```
    
    Look for:
@@ -18,31 +39,31 @@ Fix replication (purge relay logs; CHANGE MASTER to correct coordinates; GTID re
 
 2. **Check binlog position on primary**
    ```bash
-   kubectl --context=primary-dc exec -n percona <pod> -- mysql -uroot -p<pass> -e "SHOW MASTER STATUS\G"
+   kubectl --context=primary-dc exec -n percona ${POD_NAME} -- mysql -uroot -p${MYSQL_ROOT_PASSWORD} -e "SHOW MASTER STATUS\G"
    ```
 
 3. **Stop slave on secondary**
    ```bash
-   kubectl exec -n percona <pod> -- mysql -uroot -p<pass> -e "STOP SLAVE;"
+   kubectl exec -n percona ${POD_NAME} -- mysql -uroot -p${MYSQL_ROOT_PASSWORD} -e "STOP SLAVE;"
    ```
 
 4. **Check for common issues**
    
    **Network connectivity:**
    ```bash
-   kubectl exec -n percona <pod> -- ping <primary-dc-endpoint>
+   kubectl exec -n percona ${POD_NAME} -- ping <primary-dc-endpoint>
    ```
    
    **Binlog retention:**
    ```bash
-   kubectl --context=primary-dc exec -n percona <pod> -- mysql -uroot -p<pass> -e "SHOW BINARY LOGS;"
+   kubectl --context=primary-dc exec -n percona ${POD_NAME} -- mysql -uroot -p${MYSQL_ROOT_PASSWORD} -e "SHOW BINARY LOGS;"
    ```
 
 5. **Reset and restart replication**
    
    **Option A: Using GTID (if enabled):**
    ```bash
-   kubectl exec -n percona <pod> -- mysql -uroot -p<pass> << 'EOF'
+   kubectl exec -n percona ${POD_NAME} -- mysql -uroot -p${MYSQL_ROOT_PASSWORD} << 'EOF'
    STOP SLAVE;
    SET GLOBAL gtid_purged='<gtid-from-primary>';
    CHANGE MASTER TO
@@ -56,7 +77,7 @@ Fix replication (purge relay logs; CHANGE MASTER to correct coordinates; GTID re
    
    **Option B: Using binlog coordinates:**
    ```bash
-   kubectl exec -n percona <pod> -- mysql -uroot -p<pass> << 'EOF'
+   kubectl exec -n percona ${POD_NAME} -- mysql -uroot -p${MYSQL_ROOT_PASSWORD} << 'EOF'
    STOP SLAVE;
    CHANGE MASTER TO
      MASTER_HOST='<primary-host>',
@@ -71,16 +92,16 @@ Fix replication (purge relay logs; CHANGE MASTER to correct coordinates; GTID re
 6. **Verify service is restored**
    ```bash
    # Verify replication resumed
-   kubectl exec -n percona <pod> -- mysql -uroot -p<pass> -e "SHOW SLAVE STATUS\G" | grep -E "Slave_IO_Running|Slave_SQL_Running|Seconds_Behind_Master"
+   kubectl exec -n percona ${POD_NAME} -- mysql -uroot -p${MYSQL_ROOT_PASSWORD} -e "SHOW SLAVE STATUS\G" | grep -E "Slave_IO_Running|Slave_SQL_Running|Seconds_Behind_Master"
    
    # Monitor catch-up progress
-   watch -n 5 "kubectl exec -n percona <pod> -- mysql -uroot -p<pass> -e 'SHOW SLAVE STATUS\G' | grep Seconds_Behind_Master"
+   watch -n 5 "kubectl exec -n percona ${POD_NAME} -- mysql -uroot -p${MYSQL_ROOT_PASSWORD} -e 'SHOW SLAVE STATUS\G' | grep Seconds_Behind_Master"
    
    # Test data flow
-   kubectl --context=primary-dc exec -n percona <pod> -- mysql -uroot -p<pass> -e "CREATE DATABASE IF NOT EXISTS repl_test; USE repl_test; CREATE TABLE IF NOT EXISTS test (id INT, ts TIMESTAMP); INSERT INTO test VALUES (1, NOW());"
+   kubectl --context=primary-dc exec -n percona ${POD_NAME} -- mysql -uroot -p${MYSQL_ROOT_PASSWORD} -e "CREATE DATABASE IF NOT EXISTS repl_test; USE repl_test; CREATE TABLE IF NOT EXISTS test (id INT, ts TIMESTAMP); INSERT INTO test VALUES (1, NOW());"
    
    # Wait a few seconds, then verify on secondary
-   kubectl exec -n percona <pod> -- mysql -uroot -p<pass> -e "SELECT * FROM repl_test.test;"
+   kubectl exec -n percona ${POD_NAME} -- mysql -uroot -p${MYSQL_ROOT_PASSWORD} -e "SELECT * FROM repl_test.test;"
    ```
 
 ## Alternate/Fallback Method
@@ -96,10 +117,10 @@ If diverged, rebuild replica from MinIO backup + binlogs
 2. **Restore from backup**
    ```bash
    # Get latest backup from MinIO
-   kubectl exec -n minio-operator <minio-pod> -- mc ls local/<backup-bucket>/backups/ --recursive | sort | tail -1
+   kubectl exec -n minio-operator ${MINIO_POD} -- mc ls local/<backup-bucket>/backups/ --recursive | sort | tail -1
    
    # Download and restore
-   kubectl exec -n minio-operator <minio-pod> -- mc cp local/<backup-bucket>/backups/<backup-name>/ /tmp/restore/ --recursive
+   kubectl exec -n minio-operator ${MINIO_POD} -- mc cp local/<backup-bucket>/backups/<backup-name>/ /tmp/restore/ --recursive
    xtrabackup --prepare --target-dir=/tmp/restore
    xtrabackup --copy-back --target-dir=/tmp/restore --datadir=/var/lib/mysql
    ```
@@ -112,7 +133,7 @@ If diverged, rebuild replica from MinIO backup + binlogs
 4. **Set up replication from restore point**
    ```bash
    # Use binlog coordinates from backup metadata
-   kubectl exec -n percona <pod> -- mysql -uroot -p<pass> << 'EOF'
+   kubectl exec -n percona ${POD_NAME} -- mysql -uroot -p${MYSQL_ROOT_PASSWORD} << 'EOF'
    CHANGE MASTER TO
      MASTER_HOST='<primary-host>',
      MASTER_USER='replication',
@@ -126,9 +147,9 @@ If diverged, rebuild replica from MinIO backup + binlogs
 5. **Verify service is restored**
    ```bash
    # Verify replication is working
-   kubectl exec -n percona <pod> -- mysql -uroot -p<pass> -e "SHOW SLAVE STATUS\G" | grep -E "Slave_IO_Running|Slave_SQL_Running"
+   kubectl exec -n percona ${POD_NAME} -- mysql -uroot -p${MYSQL_ROOT_PASSWORD} -e "SHOW SLAVE STATUS\G" | grep -E "Slave_IO_Running|Slave_SQL_Running"
    
    # Test data flow
-   kubectl --context=primary-dc exec -n percona <pod> -- mysql -uroot -p<pass> -e "INSERT INTO repl_test.test VALUES (2, NOW());"
-   kubectl exec -n percona <pod> -- mysql -uroot -p<pass> -e "SELECT * FROM repl_test.test;"
+   kubectl --context=primary-dc exec -n percona ${POD_NAME} -- mysql -uroot -p${MYSQL_ROOT_PASSWORD} -e "INSERT INTO repl_test.test VALUES (2, NOW());"
+   kubectl exec -n percona ${POD_NAME} -- mysql -uroot -p${MYSQL_ROOT_PASSWORD} -e "SELECT * FROM repl_test.test;"
    ```

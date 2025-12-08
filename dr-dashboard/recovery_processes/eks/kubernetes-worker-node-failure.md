@@ -1,5 +1,26 @@
 # Kubernetes Worker Node Failure Recovery Process
 
+> **<span style="color:red">WARNING: PLACEHOLDER DOCUMENT</span>**
+>
+> **This recovery process is a PLACEHOLDER and has NOT been fully tested in production.**
+> Validate all steps in a non-production environment before executing during an actual incident.
+
+
+## Set Environment Variables
+
+Copy and paste the following block to configure your environment. You will be prompted for each value:
+
+```bash
+# Interactive variable setup - paste this block and answer each prompt
+read -p "Enter Kubernetes namespace [percona]: " NAMESPACE; NAMESPACE=${NAMESPACE:-percona}
+read -p "Enter pod name (e.g., cluster1-pxc-0): " POD_NAME
+read -sp "Enter MySQL root password: " MYSQL_ROOT_PASSWORD; echo
+```
+
+
+
+
+
 ## Primary Recovery Method
 Pods rescheduled by K8s; PXC node re-joins cluster
 
@@ -17,16 +38,16 @@ Pods rescheduled by K8s; PXC node re-joins cluster
    ```
 
 3. **Kubernetes automatically reschedules pods to healthy nodes**
-   - Monitor pod rescheduling: `kubectl get pods -n <namespace> -w`
+   - Monitor pod rescheduling: `kubectl get pods -n ${NAMESPACE} -w`
    - Percona Operator will reconcile and rejoin rescheduled PXC pods
 
 4. **Verify service is restored**
    ```bash
    # Check cluster health
-   kubectl exec -n <namespace> <pod-name> -- mysql -uroot -p<password> -e "SHOW STATUS LIKE 'wsrep_cluster_status';"
+   kubectl exec -n ${NAMESPACE} ${POD_NAME} -- mysql -uroot -p${MYSQL_ROOT_PASSWORD} -e "SHOW STATUS LIKE 'wsrep_cluster_status';"
    
    # Verify cluster size matches expected
-   kubectl exec -n <namespace> <pod-name> -- mysql -uroot -p<password> -e "SHOW STATUS LIKE 'wsrep_cluster_size';"
+   kubectl exec -n ${NAMESPACE} ${POD_NAME} -- mysql -uroot -p${MYSQL_ROOT_PASSWORD} -e "SHOW STATUS LIKE 'wsrep_cluster_size';"
    
    # Test application connectivity
    ```
@@ -53,9 +74,9 @@ Cordon/drain failing node; replace VM; verify anti-affinity rules
 4. **Verify service is restored**
    ```bash
    # Verify anti-affinity rules are working
-   kubectl get pods -n <namespace> -o wide
+   kubectl get pods -n ${NAMESPACE} -o wide
    
    # Ensure pods are distributed across availability zones
    # Verify cluster health
-   kubectl exec -n <namespace> <pod-name> -- mysql -uroot -p<password> -e "SHOW STATUS LIKE 'wsrep_cluster_status';"
+   kubectl exec -n ${NAMESPACE} ${POD_NAME} -- mysql -uroot -p${MYSQL_ROOT_PASSWORD} -e "SHOW STATUS LIKE 'wsrep_cluster_status';"
    ```

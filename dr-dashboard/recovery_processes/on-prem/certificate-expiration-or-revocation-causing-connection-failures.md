@@ -1,31 +1,51 @@
 # Certificate Expiration or Revocation Causing Connection Failures Recovery Process
 
+> **<span style="color:red">WARNING: PLACEHOLDER DOCUMENT</span>**
+>
+> **This recovery process is a PLACEHOLDER and has NOT been fully tested in production.**
+> Validate all steps in a non-production environment before executing during an actual incident.
+
+
+## Set Environment Variables
+
+Copy and paste the following block to configure your environment. You will be prompted for each value:
+
+```bash
+# Interactive variable setup - paste this block and answer each prompt
+read -p "Enter Kubernetes namespace [percona]: " NAMESPACE; NAMESPACE=${NAMESPACE:-percona}
+read -p "Enter pod name (e.g., cluster1-pxc-0): " POD_NAME
+```
+
+
+
+
+
 ## Primary Recovery Method
 
 1. **Identify certificate issue**
    ```bash
    # Check certificate expiration
-   kubectl exec -n <namespace> <pod-name> -- openssl s_client -connect <hostname>:3306 -showcerts 2>&1 | openssl x509 -noout -dates
+   kubectl exec -n ${NAMESPACE} ${POD_NAME} -- openssl s_client -connect <hostname>:3306 -showcerts 2>&1 | openssl x509 -noout -dates
    
    # Check certificate in Kubernetes secret
-   kubectl get secret -n <namespace> <cert-secret> -o jsonpath='{.data.tls\.crt}' | base64 -d | openssl x509 -noout -dates
+   kubectl get secret -n ${NAMESPACE} <cert-secret> -o jsonpath='{.data.tls\.crt}' | base64 -d | openssl x509 -noout -dates
    
    # Check pod logs for SSL errors
-   kubectl logs -n <namespace> <pod-name> | grep -i "certificate\|ssl\|tls"
+   kubectl logs -n ${NAMESPACE} ${POD_NAME} | grep -i "certificate\|ssl\|tls"
    ```
 
 2. **Renew/rotate certificates**
    ```bash
    # Generate new certificate (using cert-manager or manual)
    # If using cert-manager:
-   kubectl get certificate -n <namespace>
-   kubectl describe certificate -n <namespace> <cert-name>
+   kubectl get certificate -n ${NAMESPACE}
+   kubectl describe certificate -n ${NAMESPACE} <cert-name>
    
    # Manually create new certificate
    kubectl create secret tls <cert-secret> \
      --cert=<new-cert.pem> \
      --key=<new-key.pem> \
-     -n <namespace>
+     -n ${NAMESPACE}
    ```
 
 3. **Update Kubernetes secrets**
@@ -34,35 +54,35 @@
    kubectl create secret tls <cert-secret> \
      --cert=<new-cert.pem> \
      --key=<new-key.pem> \
-     -n <namespace> \
+     -n ${NAMESPACE} \
      --dry-run=client -o yaml | kubectl apply -f -
    
    # Verify secret updated
-   kubectl get secret -n <namespace> <cert-secret> -o yaml
+   kubectl get secret -n ${NAMESPACE} <cert-secret> -o yaml
    ```
 
 4. **Restart pods to load new certificates**
    ```bash
    # Restart database pods
-   kubectl rollout restart statefulset/<pxc-sts> -n <namespace>
+   kubectl rollout restart statefulset/<pxc-sts> -n ${NAMESPACE}
    
    # Restart application pods
-   kubectl rollout restart deployment/<app-deployment> -n <namespace>
+   kubectl rollout restart deployment/<app-deployment> -n ${NAMESPACE}
    
    # Wait for pods to be ready
-   kubectl rollout status statefulset/<pxc-sts> -n <namespace>
+   kubectl rollout status statefulset/<pxc-sts> -n ${NAMESPACE}
    ```
 
 5. **Verify service is restored**
    ```bash
    # Test SSL connection
-   kubectl exec -n <namespace> <pod-name> -- openssl s_client -connect <hostname>:3306 -verify_return_error
+   kubectl exec -n ${NAMESPACE} ${POD_NAME} -- openssl s_client -connect <hostname>:3306 -verify_return_error
    
    # Test application connectivity
-   kubectl exec -n <namespace> <app-pod> -- curl -v https://<hostname>:3306
+   kubectl exec -n ${NAMESPACE} <app-pod> -- curl -v https://<hostname>:3306
    
    # Check certificate validity
-   kubectl exec -n <namespace> <pod-name> -- openssl s_client -connect <hostname>:3306 2>&1 | openssl x509 -noout -dates
+   kubectl exec -n ${NAMESPACE} ${POD_NAME} -- openssl s_client -connect <hostname>:3306 2>&1 | openssl x509 -noout -dates
    ```
 
 ## Alternate/Fallback Method
@@ -80,10 +100,10 @@
    kubectl create secret tls <cert-secret> \
      --cert=<backup-cert.pem> \
      --key=<backup-key.pem> \
-     -n <namespace>
+     -n ${NAMESPACE}
    
    # Restart pods
-   kubectl rollout restart statefulset/<pxc-sts> -n <namespace>
+   kubectl rollout restart statefulset/<pxc-sts> -n ${NAMESPACE}
    ```
 
 3. **Use alternate certificate authority**

@@ -1,35 +1,55 @@
 # Encryption Key Rotation Failure (Database or Backup Encryption) Recovery Process
 
+> **<span style="color:red">WARNING: PLACEHOLDER DOCUMENT</span>**
+>
+> **This recovery process is a PLACEHOLDER and has NOT been fully tested in production.**
+> Validate all steps in a non-production environment before executing during an actual incident.
+
+
+## Set Environment Variables
+
+Copy and paste the following block to configure your environment. You will be prompted for each value:
+
+```bash
+# Interactive variable setup - paste this block and answer each prompt
+read -p "Enter Kubernetes namespace [percona]: " NAMESPACE; NAMESPACE=${NAMESPACE:-percona}
+read -p "Enter PXC cluster name: " CLUSTER_NAME
+```
+
+
+
+
+
 ## Primary Recovery Method
 
 1. **Identify encryption key rotation failure**
    ```bash
    # Check key rotation job status
-   kubectl get jobs -n <namespace> | grep key-rotation
-   kubectl logs -n <namespace> <key-rotation-job-pod>
+   kubectl get jobs -n ${NAMESPACE} | grep key-rotation
+   kubectl logs -n ${NAMESPACE} <key-rotation-job-pod>
    
    # Check AWS KMS errors
    aws kms describe-key --key-id <key-id>
    aws kms get-key-rotation-status --key-id <key-id>
    
    # Check encryption/decryption errors
-   kubectl logs -n <namespace> <pxc-pod> | grep -i "encryption\|decryption\|key"
+   kubectl logs -n ${NAMESPACE} <pxc-pod> | grep -i "encryption\|decryption\|key"
    
    # Check database encryption status
-   kubectl exec -n <namespace> <pxc-pod> -- mysql -e "SHOW VARIABLES LIKE 'innodb_encrypt%';"
+   kubectl exec -n ${NAMESPACE} <pxc-pod> -- mysql -e "SHOW VARIABLES LIKE 'innodb_encrypt%';"
    ```
 
 2. **Rollback key rotation**
    ```bash
    # Stop key rotation job if running
-   kubectl delete job -n <namespace> <key-rotation-job>
+   kubectl delete job -n ${NAMESPACE} <key-rotation-job>
    
    # Restore previous key from AWS KMS
    aws kms disable-key-rotation --key-id <new-key-id>
    aws kms enable-key --key-id <previous-key-id>
    
    # Update Kubernetes secret with previous key
-   kubectl get secret -n <namespace> <encryption-key-secret> -o yaml > key-backup.yaml
+   kubectl get secret -n ${NAMESPACE} <encryption-key-secret> -o yaml > key-backup.yaml
    kubectl apply -f key-backup.yaml
    ```
 
@@ -41,17 +61,17 @@
    # Restore previous key
    kubectl create secret generic <encryption-key-secret> \
      --from-literal=key=<previous-key-arn> \
-     -n <namespace> \
+     -n ${NAMESPACE} \
      --dry-run=client -o yaml | kubectl apply -f -
    ```
 
 4. **Fix key rotation process**
    ```bash
    # Review key rotation configuration
-   kubectl get perconaxtradbcluster -n <namespace> <cluster-name> -o yaml | grep -A 10 encryption
+   kubectl get perconaxtradbcluster -n ${NAMESPACE} ${CLUSTER_NAME} -o yaml | grep -A 10 encryption
    
    # Update key rotation configuration
-   kubectl patch perconaxtradbcluster -n <namespace> <cluster-name> --type=json -p='[
+   kubectl patch perconaxtradbcluster -n ${NAMESPACE} ${CLUSTER_NAME} --type=json -p='[
      {
        "op": "replace",
        "path": "/spec/pxc/encryption",
@@ -70,19 +90,19 @@
    kubectl apply -f <key-rotation-job.yaml>
    
    # Monitor key rotation
-   kubectl logs -n <namespace> <key-rotation-job-pod> -f
+   kubectl logs -n ${NAMESPACE} <key-rotation-job-pod> -f
    ```
 
 6. **Verify service is restored**
    ```bash
    # Check encryption status
-   kubectl exec -n <namespace> <pxc-pod> -- mysql -e "SHOW VARIABLES LIKE 'innodb_encrypt%';"
+   kubectl exec -n ${NAMESPACE} <pxc-pod> -- mysql -e "SHOW VARIABLES LIKE 'innodb_encrypt%';"
    
    # Test database operations
-   kubectl exec -n <namespace> <pxc-pod> -- mysql -e "SELECT 1;"
+   kubectl exec -n ${NAMESPACE} <pxc-pod> -- mysql -e "SELECT 1;"
    
    # Check backup encryption
-   kubectl get perconaxtradbclusterbackup -n <namespace>
+   kubectl get perconaxtradbclusterbackup -n ${NAMESPACE}
    
    # Verify AWS KMS key status
    aws kms describe-key --key-id <key-id>
@@ -98,7 +118,7 @@
    # Use backup key for restore
    kubectl create secret generic <encryption-key-secret> \
      --from-literal=key=<backup-key-arn> \
-     -n <namespace>
+     -n ${NAMESPACE}
    ```
 
 2. **Restore from unencrypted backup if available**
@@ -113,7 +133,7 @@
 3. **Re-encrypt data with new keys**
    ```bash
    # After restore, re-encrypt data
-   kubectl exec -n <namespace> <pxc-pod> -- mysql -e "ALTER TABLE <table-name> ENCRYPTION='Y';"
+   kubectl exec -n ${NAMESPACE} <pxc-pod> -- mysql -e "ALTER TABLE <table-name> ENCRYPTION='Y';"
    ```
 
 ## Recovery Targets

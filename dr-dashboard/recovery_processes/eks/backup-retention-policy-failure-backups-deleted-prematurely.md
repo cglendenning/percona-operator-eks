@@ -1,11 +1,31 @@
 # Backup Retention Policy Failure (Backups Deleted Prematurely) Recovery Process
 
+> **<span style="color:red">WARNING: PLACEHOLDER DOCUMENT</span>**
+>
+> **This recovery process is a PLACEHOLDER and has NOT been fully tested in production.**
+> Validate all steps in a non-production environment before executing during an actual incident.
+
+
+## Set Environment Variables
+
+Copy and paste the following block to configure your environment. You will be prompted for each value:
+
+```bash
+# Interactive variable setup - paste this block and answer each prompt
+read -p "Enter Kubernetes namespace [percona]: " NAMESPACE; NAMESPACE=${NAMESPACE:-percona}
+read -p "Enter PXC cluster name: " CLUSTER_NAME
+```
+
+
+
+
+
 ## Primary Recovery Method
 
 1. **Identify the backup deletion issue**
    ```bash
    # Check backup count
-   kubectl get perconaxtradbclusterbackup -n <namespace> --sort-by=.metadata.creationTimestamp
+   kubectl get perconaxtradbclusterbackup -n ${NAMESPACE} --sort-by=.metadata.creationTimestamp
    
    # List backups in S3
    aws s3 ls s3://<backup-bucket>/backups/ --recursive
@@ -14,16 +34,16 @@
    aws s3api get-bucket-lifecycle-configuration --bucket <backup-bucket>
    
    # Check backup retention policy configuration
-   kubectl get perconaxtradbcluster -n <namespace> <cluster-name> -o yaml | grep -A 10 retention
+   kubectl get perconaxtradbcluster -n ${NAMESPACE} ${CLUSTER_NAME} -o yaml | grep -A 10 retention
    ```
 
 2. **Restore from remaining backups**
    ```bash
    # Identify available backups
-   kubectl get perconaxtradbclusterbackup -n <namespace> -o jsonpath='{.items[*].metadata.name}'
+   kubectl get perconaxtradbclusterbackup -n ${NAMESPACE} -o jsonpath='{.items[*].metadata.name}'
    
    # Verify backup integrity
-   kubectl describe perconaxtradbclusterbackup -n <namespace> <backup-name>
+   kubectl describe perconaxtradbclusterbackup -n ${NAMESPACE} <backup-name>
    
    # Restore from most recent available backup if needed
    kubectl apply -f <restore-cr.yaml>
@@ -37,7 +57,7 @@
    aws s3api put-bucket-lifecycle-configuration --bucket <backup-bucket> --lifecycle-configuration file://lifecycle-policy.json
    
    # Fix PerconaXtraDBCluster retention policy
-   kubectl get perconaxtradbcluster -n <namespace> <cluster-name> -o yaml > cluster-backup.yaml
+   kubectl get perconaxtradbcluster -n ${NAMESPACE} ${CLUSTER_NAME} -o yaml > cluster-backup.yaml
    # Edit cluster-backup.yaml to fix retention policy
    kubectl apply -f cluster-backup.yaml
    ```
@@ -45,13 +65,13 @@
 4. **Verify backup lifecycle**
    ```bash
    # Check backup retention settings
-   kubectl get perconaxtradbcluster -n <namespace> <cluster-name> -o jsonpath='{.spec.backup.retentionPolicy}'
+   kubectl get perconaxtradbcluster -n ${NAMESPACE} ${CLUSTER_NAME} -o jsonpath='{.spec.backup.retentionPolicy}'
    
    # Verify S3 lifecycle policy
    aws s3api get-bucket-lifecycle-configuration --bucket <backup-bucket>
    
    # Monitor backup creation and deletion
-   kubectl get perconaxtradbclusterbackup -n <namespace> -w
+   kubectl get perconaxtradbclusterbackup -n ${NAMESPACE} -w
    ```
 
 5. **Create new backups to restore retention**
@@ -60,7 +80,7 @@
    kubectl apply -f <full-backup-cr.yaml>
    
    # Monitor backup completion
-   kubectl get perconaxtradbclusterbackup -n <namespace> -w
+   kubectl get perconaxtradbclusterbackup -n ${NAMESPACE} -w
    
    # Verify backup is created and stored correctly in S3
    aws s3 ls s3://<backup-bucket>/backups/ --recursive | tail -5

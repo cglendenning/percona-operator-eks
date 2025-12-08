@@ -1,15 +1,37 @@
 # Increased API Call Volume Causes Performance Degradation Recovery Process
 
+> **<span style="color:red">WARNING: PLACEHOLDER DOCUMENT</span>**
+>
+> **This recovery process is a PLACEHOLDER and has NOT been fully tested in production.**
+> Validate all steps in a non-production environment before executing during an actual incident.
+
+
+## Set Environment Variables
+
+Copy and paste the following block to configure your environment. You will be prompted for each value:
+
+```bash
+# Interactive variable setup - paste this block and answer each prompt
+read -p "Enter Kubernetes namespace [percona]: " NAMESPACE; NAMESPACE=${NAMESPACE:-percona}
+read -p "Enter PXC cluster name: " CLUSTER_NAME
+read -p "Enter pod name (e.g., cluster1-pxc-0): " POD_NAME
+read -sp "Enter MySQL root password: " MYSQL_ROOT_PASSWORD; echo
+```
+
+
+
+
+
 ## Primary Recovery Method
 
 1. **Identify performance degradation from increased API volume**
    ```bash
    # Check CPU and memory usage
-   kubectl top pods -n <namespace> | grep -E 'pxc|haproxy'
+   kubectl top pods -n ${NAMESPACE} | grep -E 'pxc|haproxy'
    
    # Check current cluster size
-   kubectl get perconaxtradbcluster -n <namespace> <cluster-name> -o jsonpath='{.spec.pxc.size}'
-   kubectl get perconaxtradbcluster -n <namespace> <cluster-name> -o jsonpath='{.spec.haproxy.size}'
+   kubectl get perconaxtradbcluster -n ${NAMESPACE} ${CLUSTER_NAME} -o jsonpath='{.spec.pxc.size}'
+   kubectl get perconaxtradbcluster -n ${NAMESPACE} ${CLUSTER_NAME} -o jsonpath='{.spec.haproxy.size}'
    
    # Check application metrics for API call volume
    # Review application logs and metrics dashboards
@@ -19,7 +41,7 @@
 2. **Scale up PXC cluster size**
    ```bash
    # Get current PerconaXtraDBCluster CR
-   kubectl get perconaxtradbcluster -n <namespace> <cluster-name> -o yaml > cluster-backup.yaml
+   kubectl get perconaxtradbcluster -n ${NAMESPACE} ${CLUSTER_NAME} -o yaml > cluster-backup.yaml
    
    # Edit cluster-backup.yaml to increase PXC size
    # Change: spec.pxc.size from current value (e.g., 3) to larger value (e.g., 5)
@@ -32,10 +54,10 @@
    kubectl apply -f cluster-backup.yaml
    
    # Monitor pod scaling
-   kubectl get pods -n <namespace> -l app.kubernetes.io/component=pxc -w
+   kubectl get pods -n ${NAMESPACE} -l app.kubernetes.io/component=pxc -w
    
    # Wait for new pods to be ready and join cluster
-   kubectl wait --for=condition=ready pod -n <namespace> -l app.kubernetes.io/component=pxc --timeout=600s
+   kubectl wait --for=condition=ready pod -n ${NAMESPACE} -l app.kubernetes.io/component=pxc --timeout=600s
    ```
 
 3. **Scale up HAProxy size if needed**
@@ -52,7 +74,7 @@
    kubectl apply -f cluster-backup.yaml
    
    # Monitor HAProxy pod scaling
-   kubectl get pods -n <namespace> -l app.kubernetes.io/component=haproxy -w
+   kubectl get pods -n ${NAMESPACE} -l app.kubernetes.io/component=haproxy -w
    ```
 
 4. **Push changes to appropriate branch (GitOps workflow)**
@@ -73,10 +95,10 @@
 5. **Verify performance is restored**
    ```bash
    # Monitor resource usage after scaling
-   kubectl top pods -n <namespace> | grep -E 'pxc|haproxy'
+   kubectl top pods -n ${NAMESPACE} | grep -E 'pxc|haproxy'
    
    # Check cluster status
-   kubectl exec -n <namespace> <pxc-pod> -- mysql -e "SHOW STATUS LIKE 'wsrep_cluster_size';"
+   kubectl exec -n ${NAMESPACE} <pxc-pod> -- mysql -e "SHOW STATUS LIKE 'wsrep_cluster_size';"
    
    # Monitor application response times
    # Check API response time metrics
@@ -88,16 +110,16 @@
 1. **If scaling reveals query or data model inefficiencies**
    ```bash
    # Identify slow queries
-   kubectl exec -n <namespace> <pod> -- mysql -uroot -p<pass> -e "SELECT sql_text, exec_count, avg_timer_wait/1000000000000 as avg_time_sec, sum_timer_wait/1000000000000 as total_time_sec FROM performance_schema.events_statements_summary_by_digest ORDER BY sum_timer_wait DESC LIMIT 10;"
+   kubectl exec -n ${NAMESPACE} ${POD_NAME} -- mysql -uroot -p${MYSQL_ROOT_PASSWORD} -e "SELECT sql_text, exec_count, avg_timer_wait/1000000000000 as avg_time_sec, sum_timer_wait/1000000000000 as total_time_sec FROM performance_schema.events_statements_summary_by_digest ORDER BY sum_timer_wait DESC LIMIT 10;"
    
    # Check for missing indexes
-   kubectl exec -n <namespace> <pod> -- mysql -uroot -p<pass> -e "SELECT TABLE_SCHEMA, TABLE_NAME, INDEX_NAME, CARDINALITY FROM information_schema.STATISTICS WHERE TABLE_SCHEMA NOT IN ('information_schema', 'mysql', 'performance_schema', 'sys') ORDER BY CARDINALITY;"
+   kubectl exec -n ${NAMESPACE} ${POD_NAME} -- mysql -uroot -p${MYSQL_ROOT_PASSWORD} -e "SELECT TABLE_SCHEMA, TABLE_NAME, INDEX_NAME, CARDINALITY FROM information_schema.STATISTICS WHERE TABLE_SCHEMA NOT IN ('information_schema', 'mysql', 'performance_schema', 'sys') ORDER BY CARDINALITY;"
    
    # Analyze query execution plans
-   kubectl exec -n <namespace> <pod> -- mysql -uroot -p<pass> -e "EXPLAIN <problematic-query>;"
+   kubectl exec -n ${NAMESPACE} ${POD_NAME} -- mysql -uroot -p${MYSQL_ROOT_PASSWORD} -e "EXPLAIN <problematic-query>;"
    
    # Add missing indexes
-   kubectl exec -n <namespace> <pod> -- mysql -uroot -p<pass> -e "CREATE INDEX <index-name> ON <table-name>(<column-name>);"
+   kubectl exec -n ${NAMESPACE} ${POD_NAME} -- mysql -uroot -p${MYSQL_ROOT_PASSWORD} -e "CREATE INDEX <index-name> ON <table-name>(<column-name>);"
    
    # Optimize data model if needed
    # Review table structures and relationships
@@ -108,7 +130,7 @@
    ```bash
    # If query optimization is not sufficient
    # Update PerconaXtraDBCluster CR to add query throttling
-   kubectl get perconaxtradbcluster -n <namespace> <cluster-name> -o yaml > cluster-backup.yaml
+   kubectl get perconaxtradbcluster -n ${NAMESPACE} ${CLUSTER_NAME} -o yaml > cluster-backup.yaml
    # Edit cluster-backup.yaml to add:
    # spec.pxc.configuration: |
    #   [mysqld]

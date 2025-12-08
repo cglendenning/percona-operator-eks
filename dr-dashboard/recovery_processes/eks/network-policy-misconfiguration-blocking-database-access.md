@@ -1,19 +1,40 @@
 # Network Policy Misconfiguration Blocking Database Access Recovery Process
 
+> **<span style="color:red">WARNING: PLACEHOLDER DOCUMENT</span>**
+>
+> **This recovery process is a PLACEHOLDER and has NOT been fully tested in production.**
+> Validate all steps in a non-production environment before executing during an actual incident.
+
+
+## Set Environment Variables
+
+Copy and paste the following block to configure your environment. You will be prompted for each value:
+
+```bash
+# Interactive variable setup - paste this block and answer each prompt
+read -p "Enter Kubernetes namespace [percona]: " NAMESPACE; NAMESPACE=${NAMESPACE:-percona}
+read -p "Enter PXC cluster name: " CLUSTER_NAME
+read -sp "Enter MySQL root password: " MYSQL_ROOT_PASSWORD; echo
+```
+
+
+
+
+
 ## Primary Recovery Method
 
 1. **Identify network policy issue**
    ```bash
    # Check network policies
-   kubectl get networkpolicies -n <namespace>
-   kubectl describe networkpolicy -n <namespace> <policy-name>
+   kubectl get networkpolicies -n ${NAMESPACE}
+   kubectl describe networkpolicy -n ${NAMESPACE} <policy-name>
    
    # Check VPC security groups
-   aws ec2 describe-security-groups --filters "Name=tag:kubernetes.io/cluster/<cluster-name>,Values=owned"
+   aws ec2 describe-security-groups --filters "Name=tag:kubernetes.io/cluster/${CLUSTER_NAME},Values=owned"
    
    # Check pod connectivity
-   kubectl exec -n <namespace> <app-pod> -- ping <database-pod-ip>
-   kubectl exec -n <namespace> <app-pod> -- telnet <database-pod-ip> 3306
+   kubectl exec -n ${NAMESPACE} <app-pod> -- ping <database-pod-ip>
+   kubectl exec -n ${NAMESPACE} <app-pod> -- telnet <database-pod-ip> 3306
    
    # Check network policy logs
    kubectl logs -n kube-system -l k8s-app=calico | grep -i "deny\|block"
@@ -22,10 +43,10 @@
 2. **Identify and fix network policy rules**
    ```bash
    # Review network policy rules
-   kubectl get networkpolicy -n <namespace> <policy-name> -o yaml
+   kubectl get networkpolicy -n ${NAMESPACE} <policy-name> -o yaml
    
    # Update network policy to allow database access
-   kubectl patch networkpolicy -n <namespace> <policy-name> --type=json -p='[
+   kubectl patch networkpolicy -n ${NAMESPACE} <policy-name> --type=json -p='[
      {
        "op": "add",
        "path": "/spec/ingress/-",
@@ -53,7 +74,7 @@
 3. **Update NetworkPolicy resources and VPC security groups**
    ```bash
    # Edit network policy
-   kubectl edit networkpolicy -n <namespace> <policy-name>
+   kubectl edit networkpolicy -n ${NAMESPACE} <policy-name>
    
    # Update VPC security groups if needed
    aws ec2 authorize-security-group-ingress \
@@ -66,10 +87,10 @@
 4. **Verify pod-to-pod connectivity**
    ```bash
    # Test connectivity from app pod to database
-   kubectl exec -n <namespace> <app-pod> -- telnet <database-service> 3306
+   kubectl exec -n ${NAMESPACE} <app-pod> -- telnet <database-service> 3306
    
    # Test database connection
-   kubectl exec -n <namespace> <app-pod> -- mysql -h <database-service> -u <user> -p<password> -e "SELECT 1;"
+   kubectl exec -n ${NAMESPACE} <app-pod> -- mysql -h <database-service> -u <user> -p${MYSQL_ROOT_PASSWORD} -e "SELECT 1;"
    
    # Check network policy allow logs
    kubectl logs -n kube-system -l k8s-app=calico | grep -i "allow"
@@ -78,13 +99,13 @@
 5. **Verify service is restored**
    ```bash
    # Test application connectivity
-   kubectl exec -n <namespace> <app-pod> -- curl -v <database-endpoint>
+   kubectl exec -n ${NAMESPACE} <app-pod> -- curl -v <database-endpoint>
    
    # Check application logs
-   kubectl logs -n <namespace> <app-pod> | grep -i "database\|connection"
+   kubectl logs -n ${NAMESPACE} <app-pod> | grep -i "database\|connection"
    
    # Monitor network policy metrics
-   kubectl top pods -n <namespace>
+   kubectl top pods -n ${NAMESPACE}
    ```
 
 ## Alternate/Fallback Method
@@ -93,10 +114,10 @@
    ```bash
    # WARNING: This reduces security, use only as last resort
    # Delete network policy
-   kubectl delete networkpolicy -n <namespace> <policy-name>
+   kubectl delete networkpolicy -n ${NAMESPACE} <policy-name>
    
    # Verify connectivity restored
-   kubectl exec -n <namespace> <app-pod> -- telnet <database-service> 3306
+   kubectl exec -n ${NAMESPACE} <app-pod> -- telnet <database-service> 3306
    ```
 
 2. **Use service mesh bypass if available**
@@ -112,7 +133,7 @@
    kubectl apply -f <network-policy-backup.yaml>
    
    # Verify network policy restored
-   kubectl get networkpolicy -n <namespace>
+   kubectl get networkpolicy -n ${NAMESPACE}
    ```
 
 ## Recovery Targets

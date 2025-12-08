@@ -1,26 +1,47 @@
 # Backup Retention Policy Failure (Backups Deleted Prematurely) Recovery Process
 
+> **<span style="color:red">WARNING: PLACEHOLDER DOCUMENT</span>**
+>
+> **This recovery process is a PLACEHOLDER and has NOT been fully tested in production.**
+> Validate all steps in a non-production environment before executing during an actual incident.
+
+
+## Set Environment Variables
+
+Copy and paste the following block to configure your environment. You will be prompted for each value:
+
+```bash
+# Interactive variable setup - paste this block and answer each prompt
+read -p "Enter Kubernetes namespace [percona]: " NAMESPACE; NAMESPACE=${NAMESPACE:-percona}
+read -p "Enter PXC cluster name: " CLUSTER_NAME
+read -p "Enter MinIO pod name: " MINIO_POD
+```
+
+
+
+
+
 ## Primary Recovery Method
 
 1. **Identify the backup deletion issue**
    ```bash
    # Check backup count
-   kubectl get perconaxtradbclusterbackup -n <namespace> --sort-by=.metadata.creationTimestamp
+   kubectl get perconaxtradbclusterbackup -n ${NAMESPACE} --sort-by=.metadata.creationTimestamp
    
    # List backups in MinIO
-   kubectl exec -n minio-operator <minio-pod> -- mc ls local/<backup-bucket>/backups/ --recursive
+   kubectl exec -n minio-operator ${MINIO_POD} -- mc ls local/<backup-bucket>/backups/ --recursive
    
    # Check backup retention policy configuration
-   kubectl get perconaxtradbcluster -n <namespace> <cluster-name> -o yaml | grep -A 10 retention
+   kubectl get perconaxtradbcluster -n ${NAMESPACE} ${CLUSTER_NAME} -o yaml | grep -A 10 retention
    ```
 
 2. **Restore from remaining backups**
    ```bash
    # Identify available backups
-   kubectl get perconaxtradbclusterbackup -n <namespace> -o jsonpath='{.items[*].metadata.name}'
+   kubectl get perconaxtradbclusterbackup -n ${NAMESPACE} -o jsonpath='{.items[*].metadata.name}'
    
    # Verify backup integrity
-   kubectl describe perconaxtradbclusterbackup -n <namespace> <backup-name>
+   kubectl describe perconaxtradbclusterbackup -n ${NAMESPACE} <backup-name>
    
    # Restore from most recent available backup if needed
    kubectl apply -f <restore-cr.yaml>
@@ -29,7 +50,7 @@
 3. **Implement retention policy fixes**
    ```bash
    # Review and fix retention policy configuration
-   kubectl get perconaxtradbcluster -n <namespace> <cluster-name> -o yaml > cluster-backup.yaml
+   kubectl get perconaxtradbcluster -n ${NAMESPACE} ${CLUSTER_NAME} -o yaml > cluster-backup.yaml
    # Edit cluster-backup.yaml to fix retention policy
    # Ensure retention period matches compliance requirements
    kubectl apply -f cluster-backup.yaml
@@ -38,10 +59,10 @@
 4. **Verify backup lifecycle**
    ```bash
    # Check backup retention settings
-   kubectl get perconaxtradbcluster -n <namespace> <cluster-name> -o jsonpath='{.spec.backup.retentionPolicy}'
+   kubectl get perconaxtradbcluster -n ${NAMESPACE} ${CLUSTER_NAME} -o jsonpath='{.spec.backup.retentionPolicy}'
    
    # Monitor backup creation and deletion
-   kubectl get perconaxtradbclusterbackup -n <namespace> -w
+   kubectl get perconaxtradbclusterbackup -n ${NAMESPACE} -w
    
    # Verify backups are not being deleted prematurely
    ```
@@ -52,7 +73,7 @@
    kubectl apply -f <full-backup-cr.yaml>
    
    # Monitor backup completion
-   kubectl get perconaxtradbclusterbackup -n <namespace> -w
+   kubectl get perconaxtradbclusterbackup -n ${NAMESPACE} -w
    
    # Verify backup is created and stored correctly
    ```

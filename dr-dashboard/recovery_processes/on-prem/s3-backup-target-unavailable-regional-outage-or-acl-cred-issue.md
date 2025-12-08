@@ -1,5 +1,34 @@
 # MinIO Backup Target Unavailable Recovery Process
 
+> **<span style="color:red">WARNING: PLACEHOLDER DOCUMENT</span>**
+>
+> **This recovery process is a PLACEHOLDER and has NOT been fully tested in production.**
+> Validate all steps in a non-production environment before executing during an actual incident.
+
+
+## Set Environment Variables
+
+Copy and paste the following block to configure your environment. You will be prompted for each value:
+
+```bash
+# Interactive variable setup - paste this block and answer each prompt
+read -p "Enter PXC cluster name: " CLUSTER_NAME
+read -p "Enter backup bucket name: " BUCKET_NAME
+read -p "Enter secondary/fallback bucket name: " SECONDARY_BUCKET_NAME
+read -p "Enter backup pod name: " BACKUP_POD
+read -p "Enter MinIO pod name: " MINIO_POD
+read -p "Enter credentials secret name: " SECRET_NAME
+read -p "Enter MinIO endpoint URL: " MINIO_ENDPOINT
+read -p "Enter secondary MinIO endpoint URL: " SECONDARY_MINIO_ENDPOINT
+read -p "Enter backup deployment name: " BACKUP_DEPLOYMENT
+read -p "Enter new MinIO username: " NEW_MINIO_USER
+read -sp "Enter new MinIO password: " NEW_MINIO_PASSWORD; echo
+```
+
+
+
+
+
 ## Primary Recovery Method
 Buffer locally; failover to secondary MinIO instance; rotate credentials
 
@@ -8,13 +37,13 @@ Buffer locally; failover to secondary MinIO instance; rotate credentials
 1. **Identify the root cause**
    ```bash
    # Check backup pod logs
-   kubectl logs -n percona <backup-pod> --tail=100
+   kubectl logs -n percona ${BACKUP_POD} --tail=100
    
    # Test MinIO connectivity
-   kubectl exec -n minio-operator <minio-pod> -- mc ls local/<bucket-name>/ 2>&1
+   kubectl exec -n minio-operator ${MINIO_POD} -- mc ls local/${BUCKET_NAME}/ 2>&1
    
    # Check MinIO credentials
-   kubectl get secret -n percona <minio-secret> -o yaml
+   kubectl get secret -n percona ${SECRET_NAME} -o yaml
    ```
 
 2. **Immediate action: Buffer backups locally**
@@ -35,24 +64,24 @@ Buffer locally; failover to secondary MinIO instance; rotate credentials
    EOF
    
    # Update backup configuration to write to local PVC temporarily
-   kubectl edit perconaxtradbcluster -n percona <cluster-name>
+   kubectl edit perconaxtradbcluster -n percona ${CLUSTER_NAME}
    ```
 
 3. **If credential issue: Rotate MinIO credentials**
    ```bash
    # Create new MinIO access keys
-   kubectl exec -n minio-operator <minio-pod> -- mc admin user add local <new-user> <new-password>
-   kubectl exec -n minio-operator <minio-pod> -- mc admin policy attach local readwrite --user <new-user>
+   kubectl exec -n minio-operator ${MINIO_POD} -- mc admin user add local ${NEW_MINIO_USER} ${NEW_MINIO_PASSWORD}
+   kubectl exec -n minio-operator ${MINIO_POD} -- mc admin policy attach local readwrite --user ${NEW_MINIO_USER}
    
    # Update Kubernetes secret
    kubectl create secret generic minio-credentials \
-     --from-literal=AWS_ACCESS_KEY_ID=<new-user> \
-     --from-literal=AWS_SECRET_ACCESS_KEY=<new-password> \
+     --from-literal=AWS_ACCESS_KEY_ID=${NEW_MINIO_USER} \
+     --from-literal=AWS_SECRET_ACCESS_KEY=${NEW_MINIO_PASSWORD} \
      -n percona \
      --dry-run=client -o yaml | kubectl apply -f -
    
    # Restart backup pods to pick up new credentials
-   kubectl rollout restart deployment <backup-deployment> -n percona
+   kubectl rollout restart deployment ${BACKUP_DEPLOYMENT} -n percona
    ```
 
 4. **If MinIO service issue: Restart or failover**
@@ -65,32 +94,32 @@ Buffer locally; failover to secondary MinIO instance; rotate credentials
    
    # Or failover to secondary MinIO instance if available
    # Update backup configuration to point to secondary MinIO
-   kubectl patch perconaxtradbcluster <cluster-name> -n percona --type=merge -p '
+   kubectl patch perconaxtradbcluster ${CLUSTER_NAME} -n percona --type=merge -p '
    spec:
      backup:
        storages:
          minio:
            s3:
-             endpointUrl: https://<secondary-minio-endpoint>:9000
+             endpointUrl: https://${SECONDARY_MINIO_ENDPOINT}:9000
    '
    ```
 
 5. **If bucket issue: Fix bucket permissions**
    ```bash
    # Check bucket exists
-   kubectl exec -n minio-operator <minio-pod> -- mc ls local/<bucket-name>
+   kubectl exec -n minio-operator ${MINIO_POD} -- mc ls local/${BUCKET_NAME}
    
    # Create bucket if missing
-   kubectl exec -n minio-operator <minio-pod> -- mc mb local/<bucket-name>
+   kubectl exec -n minio-operator ${MINIO_POD} -- mc mb local/${BUCKET_NAME}
    
    # Set bucket policy
-   kubectl exec -n minio-operator <minio-pod> -- mc anonymous set download local/<bucket-name>
+   kubectl exec -n minio-operator ${MINIO_POD} -- mc anonymous set download local/${BUCKET_NAME}
    ```
 
 6. **Verify service is restored**
    ```bash
    # Trigger test backup
-   kubectl exec -n percona <backup-pod> -- xtrabackup --backup --target-dir=/tmp/test-backup
+   kubectl exec -n percona ${BACKUP_POD} -- xtrabackup --backup --target-dir=/tmp/test-backup
    
    # Monitor backup job
    kubectl get jobs -n percona -w
@@ -110,15 +139,15 @@ Temporarily write backups to secondary DC object store/NAS
 
 2. **Configure backup to alternative target**
    ```bash
-   kubectl patch perconaxtradbcluster <cluster-name> -n percona --type=merge -p '
+   kubectl patch perconaxtradbcluster ${CLUSTER_NAME} -n percona --type=merge -p '
    spec:
      backup:
        storages:
          minio-secondary:
            type: s3
            s3:
-             bucket: <alternative-bucket>
-             endpointUrl: https://<secondary-minio-endpoint>:9000
+             bucket: ${SECONDARY_BUCKET_NAME}
+             endpointUrl: https://${SECONDARY_MINIO_ENDPOINT}:9000
              region: us-east-1
    '
    ```
@@ -126,7 +155,7 @@ Temporarily write backups to secondary DC object store/NAS
 3. **Verify service is restored**
    ```bash
    # Trigger test backup
-   kubectl exec -n percona <backup-pod> -- xtrabackup --backup --target-dir=/tmp/test-backup
+   kubectl exec -n percona ${BACKUP_POD} -- xtrabackup --backup --target-dir=/tmp/test-backup
    
    # Verify backup completes successfully
    ```

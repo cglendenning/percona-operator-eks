@@ -1,5 +1,30 @@
 # MinIO Service Failure (Backup Target Unavailable) Recovery Process
 
+> **<span style="color:red">WARNING: PLACEHOLDER DOCUMENT</span>**
+>
+> **This recovery process is a PLACEHOLDER and has NOT been fully tested in production.**
+> Validate all steps in a non-production environment before executing during an actual incident.
+
+
+## Set Environment Variables
+
+Copy and paste the following block to configure your environment. You will be prompted for each value:
+
+```bash
+# Interactive variable setup - paste this block and answer each prompt
+read -p "Enter Kubernetes namespace [percona]: " NAMESPACE; NAMESPACE=${NAMESPACE:-percona}
+read -p "Enter PXC cluster name: " CLUSTER_NAME
+read -p "Enter backup bucket name: " BUCKET_NAME
+read -p "Enter MinIO pod name: " MINIO_POD
+read -p "Enter MinIO endpoint URL: " MINIO_ENDPOINT
+read -p "Enter secondary MinIO endpoint URL: " SECONDARY_MINIO_ENDPOINT
+read -p "Enter path to test backup CR YAML: " TEST_BACKUP_CR
+```
+
+
+
+
+
 ## Primary Recovery Method
 
 1. **Identify MinIO service failure**
@@ -12,8 +37,8 @@
    kubectl logs -n minio-operator <minio-pod-name> --tail=100
    
    # Check backup job errors
-   kubectl get jobs -n <namespace> | grep backup
-   kubectl logs -n <namespace> <backup-job-pod> --tail=100
+   kubectl get jobs -n ${NAMESPACE} | grep backup
+   kubectl logs -n ${NAMESPACE} <backup-job-pod> --tail=100
    ```
 
 2. **Restart MinIO pods**
@@ -25,7 +50,7 @@
    kubectl get pods -n minio-operator -w
    
    # Verify MinIO is healthy
-   kubectl exec -n minio-operator <minio-pod> -- mc admin info local
+   kubectl exec -n minio-operator ${MINIO_POD} -- mc admin info local
    ```
 
 3. **Failover to secondary MinIO instance if available**
@@ -34,13 +59,13 @@
    kubectl get pods -n minio-operator -l app=minio-secondary
    
    # Update backup configuration to point to secondary MinIO
-   kubectl patch perconaxtradbcluster <cluster-name> -n <namespace> --type=merge -p '
+   kubectl patch perconaxtradbcluster ${CLUSTER_NAME} -n ${NAMESPACE} --type=merge -p '
    spec:
      backup:
        storages:
          minio:
            s3:
-             endpointUrl: https://<secondary-minio-endpoint>:9000
+             endpointUrl: https://${SECONDARY_MINIO_ENDPOINT}:9000
    '
    ```
 
@@ -52,7 +77,7 @@
    kind: PersistentVolumeClaim
    metadata:
      name: temp-backup-storage
-     namespace: <namespace>
+     namespace: ${NAMESPACE}
    spec:
      accessModes:
        - ReadWriteOnce
@@ -62,19 +87,19 @@
    EOF
    
    # Update backup configuration to use local storage temporarily
-   kubectl edit perconaxtradbcluster -n <namespace> <cluster-name>
+   kubectl edit perconaxtradbcluster -n ${NAMESPACE} ${CLUSTER_NAME}
    ```
 
 5. **Verify service is restored**
    ```bash
    # Test MinIO connectivity
-   kubectl exec -n minio-operator <minio-pod> -- mc ls local/<bucket-name>/
+   kubectl exec -n minio-operator ${MINIO_POD} -- mc ls local/${BUCKET_NAME}/
    
    # Trigger test backup
-   kubectl apply -f <test-backup-cr.yaml>
+   kubectl apply -f ${TEST_BACKUP_CR}
    
    # Monitor backup job
-   kubectl get jobs -n <namespace> -w
+   kubectl get jobs -n ${NAMESPACE} -w
    
    # Verify backup completes successfully
    ```
@@ -85,7 +110,7 @@
    ```bash
    # Mount NFS/NAS storage
    # Update backup configuration to use NFS/NAS
-   kubectl patch perconaxtradbcluster <cluster-name> -n <namespace> --type=merge -p '
+   kubectl patch perconaxtradbcluster ${CLUSTER_NAME} -n ${NAMESPACE} --type=merge -p '
    spec:
      backup:
        storages:

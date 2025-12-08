@@ -1,11 +1,33 @@
 # Application Change Causes Data Corruption Recovery Process
 
+> **<span style="color:red">WARNING: PLACEHOLDER DOCUMENT</span>**
+>
+> **This recovery process is a PLACEHOLDER and has NOT been fully tested in production.**
+> Validate all steps in a non-production environment before executing during an actual incident.
+
+
+## Set Environment Variables
+
+Copy and paste the following block to configure your environment. You will be prompted for each value:
+
+```bash
+# Interactive variable setup - paste this block and answer each prompt
+read -p "Enter Kubernetes namespace [percona]: " NAMESPACE; NAMESPACE=${NAMESPACE:-percona}
+read -p "Enter pod name (e.g., cluster1-pxc-0): " POD_NAME
+read -sp "Enter MySQL root password: " MYSQL_ROOT_PASSWORD; echo
+read -p "Enter MinIO pod name: " MINIO_POD
+```
+
+
+
+
+
 ## Primary Recovery Method
 
 1. **Stop further corruption**
    ```bash
    # Set database read-only to prevent further writes
-   kubectl exec -n <namespace> <pod> -- mysql -uroot -p<pass> -e "SET GLOBAL read_only = ON; SET GLOBAL super_read_only = ON;"
+   kubectl exec -n ${NAMESPACE} ${POD_NAME} -- mysql -uroot -p${MYSQL_ROOT_PASSWORD} -e "SET GLOBAL read_only = ON; SET GLOBAL super_read_only = ON;"
    
    # Stop application deployments and scheduled jobs
    # Disable affected application features if possible
@@ -14,13 +36,13 @@
 2. **Identify corruption timeline and scope**
    ```bash
    # Review application logs for errors
-   kubectl logs -n <namespace> -l app=<app-name> --tail=1000 | grep -i "error\|corrupt\|invalid"
+   kubectl logs -n ${NAMESPACE} -l app=<app-name> --tail=1000 | grep -i "error\|corrupt\|invalid"
    
    # Check audit logs for anomalies
-   kubectl exec -n <namespace> <pod> -- mysql -uroot -p<pass> -e "SELECT * FROM audit_log WHERE timestamp >= '<suspected-start-date>' ORDER BY timestamp;"
+   kubectl exec -n ${NAMESPACE} ${POD_NAME} -- mysql -uroot -p${MYSQL_ROOT_PASSWORD} -e "SELECT * FROM audit_log WHERE timestamp >= '<suspected-start-date>' ORDER BY timestamp;"
    
    # Run data integrity checks
-   kubectl exec -n <namespace> <pod> -- mysql -uroot -p<pass> -e "CHECK TABLE <database>.<table>;"
+   kubectl exec -n ${NAMESPACE} ${POD_NAME} -- mysql -uroot -p${MYSQL_ROOT_PASSWORD} -e "CHECK TABLE <database>.<table>;"
    ```
    - Determine when corruption began (may require forensic analysis of logs)
    - Identify the application version/deployment that introduced the bug
@@ -36,10 +58,10 @@
 4. **Restore database to pre-corruption point**
    ```bash
    # Find backup before corruption began from MinIO
-   kubectl exec -n minio-operator <minio-pod> -- mc ls local/<backup-bucket>/backups/ --recursive | grep "<date-before-corruption>"
+   kubectl exec -n minio-operator ${MINIO_POD} -- mc ls local/<backup-bucket>/backups/ --recursive | grep "<date-before-corruption>"
    
    # Download backup
-   kubectl exec -n minio-operator <minio-pod> -- mc cp local/<backup-bucket>/backups/<backup-name>/ /tmp/restore/ --recursive
+   kubectl exec -n minio-operator ${MINIO_POD} -- mc cp local/<backup-bucket>/backups/<backup-name>/ /tmp/restore/ --recursive
    
    # Restore to clean environment
    xtrabackup --prepare --target-dir=/tmp/restore
@@ -49,19 +71,19 @@
 5. **Apply PITR using binlogs**
    ```bash
    # Download binlogs from MinIO
-   kubectl exec -n minio-operator <minio-pod> -- mc cp local/<backup-bucket>/binlogs/ /tmp/binlogs/ --recursive
+   kubectl exec -n minio-operator ${MINIO_POD} -- mc cp local/<backup-bucket>/binlogs/ /tmp/binlogs/ --recursive
    
    # Apply binlogs up to BEFORE corruption began
-   mysqlbinlog --stop-datetime="<timestamp-before-corruption>" /tmp/binlogs/mysql-bin.* | mysql -uroot -p<pass> -h<restore-host>
+   mysqlbinlog --stop-datetime="<timestamp-before-corruption>" /tmp/binlogs/mysql-bin.* | mysql -uroot -p${MYSQL_ROOT_PASSWORD} -h<restore-host>
    ```
 
 6. **Validate restored data**
    ```bash
    # Run integrity checks
-   kubectl exec -n <restore-namespace> <pod> -- mysql -uroot -p<pass> -e "CHECK TABLE <database>.<table>;"
+   kubectl exec -n <restore-namespace> ${POD_NAME} -- mysql -uroot -p${MYSQL_ROOT_PASSWORD} -e "CHECK TABLE <database>.<table>;"
    
    # Verify row counts match expected values
-   kubectl exec -n <restore-namespace> <pod> -- mysql -uroot -p<pass> -e "SELECT COUNT(*) FROM <database>.<table>;"
+   kubectl exec -n <restore-namespace> ${POD_NAME} -- mysql -uroot -p${MYSQL_ROOT_PASSWORD} -e "SELECT COUNT(*) FROM <database>.<table>;"
    
    # Run application smoke tests on restored environment
    ```
@@ -80,7 +102,7 @@
    # Restart application pods
    
    # Disable read-only on new primary
-   kubectl exec -n <restore-namespace> <pod> -- mysql -uroot -p<pass> -e "SET GLOBAL read_only = OFF; SET GLOBAL super_read_only = OFF;"
+   kubectl exec -n <restore-namespace> ${POD_NAME} -- mysql -uroot -p${MYSQL_ROOT_PASSWORD} -e "SET GLOBAL read_only = OFF; SET GLOBAL super_read_only = OFF;"
    ```
 
 9. **Verify service is restored**

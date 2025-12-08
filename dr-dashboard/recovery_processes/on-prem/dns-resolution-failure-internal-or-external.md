@@ -1,12 +1,32 @@
 # DNS Resolution Failure (Internal or External) Recovery Process
 
+> **<span style="color:red">WARNING: PLACEHOLDER DOCUMENT</span>**
+>
+> **This recovery process is a PLACEHOLDER and has NOT been fully tested in production.**
+> Validate all steps in a non-production environment before executing during an actual incident.
+
+
+## Set Environment Variables
+
+Copy and paste the following block to configure your environment. You will be prompted for each value:
+
+```bash
+# Interactive variable setup - paste this block and answer each prompt
+read -p "Enter Kubernetes namespace [percona]: " NAMESPACE; NAMESPACE=${NAMESPACE:-percona}
+read -p "Enter pod name (e.g., cluster1-pxc-0): " POD_NAME
+```
+
+
+
+
+
 ## Primary Recovery Method
 
 1. **Identify DNS failure**
    ```bash
    # Test DNS resolution
-   kubectl exec -n <namespace> <pod-name> -- nslookup <database-hostname>
-   kubectl exec -n <namespace> <pod-name> -- dig <database-hostname>
+   kubectl exec -n ${NAMESPACE} ${POD_NAME} -- nslookup <database-hostname>
+   kubectl exec -n ${NAMESPACE} ${POD_NAME} -- dig <database-hostname>
    
    # Check DNS server status
    kubectl get pods -n kube-system | grep dns
@@ -25,16 +45,16 @@
    kubectl get svc -n kube-system kube-dns
    
    # Verify DNS resolution after restart
-   kubectl exec -n <namespace> <pod-name> -- nslookup <database-hostname>
+   kubectl exec -n ${NAMESPACE} ${POD_NAME} -- nslookup <database-hostname>
    ```
 
 3. **Update /etc/hosts as temporary workaround**
    ```bash
    # Get database service IP
-   kubectl get svc -n <namespace> <database-service-name>
+   kubectl get svc -n ${NAMESPACE} <database-service-name>
    
    # Add to /etc/hosts in pods (temporary)
-   kubectl exec -n <namespace> <pod-name> -- sh -c 'echo "<ip-address> <hostname>" >> /etc/hosts'
+   kubectl exec -n ${NAMESPACE} ${POD_NAME} -- sh -c 'echo "<ip-address> <hostname>" >> /etc/hosts'
    
    # Or update application connection strings to use IP directly
    ```
@@ -54,13 +74,13 @@
 5. **Verify service is restored**
    ```bash
    # Test DNS resolution
-   kubectl exec -n <namespace> <pod-name> -- nslookup <database-hostname>
+   kubectl exec -n ${NAMESPACE} ${POD_NAME} -- nslookup <database-hostname>
    
    # Test application connectivity
-   kubectl exec -n <namespace> <app-pod> -- curl -v <database-hostname>:3306
+   kubectl exec -n ${NAMESPACE} <app-pod> -- curl -v <database-hostname>:3306
    
    # Monitor DNS resolution
-   kubectl exec -n <namespace> <pod-name> -- dig <database-hostname> +short
+   kubectl exec -n ${NAMESPACE} ${POD_NAME} -- dig <database-hostname> +short
    ```
 
 ## Alternate/Fallback Method
@@ -68,21 +88,21 @@
 1. **Use IP addresses directly**
    ```bash
    # Get database service IP
-   kubectl get svc -n <namespace> <database-service-name> -o jsonpath='{.spec.clusterIP}'
+   kubectl get svc -n ${NAMESPACE} <database-service-name> -o jsonpath='{.spec.clusterIP}'
    
    # Update application connection strings to use IP
    # Update environment variables or configuration files
-   kubectl set env deployment/<app-deployment> DB_HOST=<ip-address> -n <namespace>
+   kubectl set env deployment/<app-deployment> DB_HOST=<ip-address> -n ${NAMESPACE}
    
    # Restart application pods
-   kubectl rollout restart deployment/<app-deployment> -n <namespace>
+   kubectl rollout restart deployment/<app-deployment> -n ${NAMESPACE}
    ```
 
 2. **Restore DNS when available**
    ```bash
    # Once DNS is restored, revert to hostname-based connections
-   kubectl set env deployment/<app-deployment> DB_HOST=<hostname> -n <namespace>
-   kubectl rollout restart deployment/<app-deployment> -n <namespace>
+   kubectl set env deployment/<app-deployment> DB_HOST=<hostname> -n ${NAMESPACE}
+   kubectl rollout restart deployment/<app-deployment> -n ${NAMESPACE}
    ```
 
 ## Recovery Targets

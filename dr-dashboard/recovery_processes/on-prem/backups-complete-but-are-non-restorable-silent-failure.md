@@ -1,5 +1,28 @@
 # Backups Complete But Are Non-Restorable (Silent Failure) Recovery Process
 
+> **<span style="color:red">WARNING: PLACEHOLDER DOCUMENT</span>**
+>
+> **This recovery process is a PLACEHOLDER and has NOT been fully tested in production.**
+> Validate all steps in a non-production environment before executing during an actual incident.
+
+
+## Set Environment Variables
+
+Copy and paste the following block to configure your environment. You will be prompted for each value:
+
+```bash
+# Interactive variable setup - paste this block and answer each prompt
+read -sp "Enter MySQL root password: " MYSQL_ROOT_PASSWORD; echo
+read -p "Enter backup bucket name: " BUCKET_NAME
+read -p "Enter backup pod name: " BACKUP_POD
+read -p "Enter MinIO pod name: " MINIO_POD
+read -p "Enter backup deployment name: " BACKUP_DEPLOYMENT
+```
+
+
+
+
+
 ## Primary Recovery Method
 Detect via scheduled restore drills; fix pipeline; re-run full backup
 
@@ -10,7 +33,7 @@ Detect via scheduled restore drills; fix pipeline; re-run full backup
 1. **Validate current backups immediately**
    ```bash
    # Download latest backup from MinIO
-   kubectl exec -n minio-operator <minio-pod> -- mc cp local/<bucket>/backups/<latest>/ /tmp/verify-backup/ --recursive
+   kubectl exec -n minio-operator ${MINIO_POD} -- mc cp local/${BUCKET_NAME}/backups/<latest>/ /tmp/verify-backup/ --recursive
    
    # Attempt to prepare backup
    xtrabackup --prepare --target-dir=/tmp/verify-backup
@@ -22,12 +45,12 @@ Detect via scheduled restore drills; fix pipeline; re-run full backup
 2. **Find last known good backup**
    ```bash
    # List all recent backups
-   kubectl exec -n minio-operator <minio-pod> -- mc ls local/<bucket>/backups/ --recursive | grep xtrabackup_checkpoints
+   kubectl exec -n minio-operator ${MINIO_POD} -- mc ls local/${BUCKET_NAME}/backups/ --recursive | grep xtrabackup_checkpoints
    
    # Test each backup going backwards in time
-   for backup in $(kubectl exec -n minio-operator <minio-pod> -- mc ls local/<bucket>/backups/ | awk '{print $5}' | tail -10); do
+   for backup in $(kubectl exec -n minio-operator ${MINIO_POD} -- mc ls local/${BUCKET_NAME}/backups/ | awk '{print $5}' | tail -10); do
      echo "Testing backup: $backup"
-     kubectl exec -n minio-operator <minio-pod> -- mc cp local/<bucket>/backups/${backup}/ /tmp/test-${backup}/ --recursive
+     kubectl exec -n minio-operator ${MINIO_POD} -- mc cp local/${BUCKET_NAME}/backups/${backup}/ /tmp/test-${backup}/ --recursive
      xtrabackup --prepare --target-dir=/tmp/test-${backup}
      if [ $? -eq 0 ]; then
        echo "Valid backup found: $backup"
@@ -40,7 +63,7 @@ Detect via scheduled restore drills; fix pipeline; re-run full backup
    
    **Check backup logs:**
    ```bash
-   kubectl logs -n percona <backup-pod> --tail=500
+   kubectl logs -n percona ${BACKUP_POD} --tail=500
    ```
    
    **Common issues:**
@@ -64,16 +87,16 @@ Detect via scheduled restore drills; fix pipeline; re-run full backup
    kubectl get networkpolicies -n percona
    
    # Verify MinIO connectivity
-   kubectl exec -n percona <backup-pod> -- mc ls local/<bucket>/
+   kubectl exec -n percona ${BACKUP_POD} -- mc ls local/${BUCKET_NAME}/
    ```
    
    **If version mismatch:**
    ```bash
    # Check xtrabackup version
-   kubectl exec -n percona <backup-pod> -- xtrabackup --version
+   kubectl exec -n percona ${BACKUP_POD} -- xtrabackup --version
    
    # Update to correct version
-   kubectl set image deployment/<backup-deployment> backup=percona/percona-xtradb-cluster-operator:1.XX.X
+   kubectl set image deployment/${BACKUP_DEPLOYMENT} backup=percona/percona-xtradb-cluster-operator:1.XX.X
    ```
 
 5. **Re-run full backup immediately**
@@ -88,7 +111,7 @@ Detect via scheduled restore drills; fix pipeline; re-run full backup
 6. **Verify service is restored**
    ```bash
    # Download new backup
-   kubectl exec -n minio-operator <minio-pod> -- mc sync local/<bucket>/backups/<new-backup>/ /tmp/verify-new/ --delete
+   kubectl exec -n minio-operator ${MINIO_POD} -- mc sync local/${BUCKET_NAME}/backups/<new-backup>/ /tmp/verify-new/ --delete
    
    # Prepare and verify
    xtrabackup --prepare --target-dir=/tmp/verify-new
@@ -110,7 +133,7 @@ Use previous verified backup then roll forward via binlogs
 2. **Restore from last verified backup**
    ```bash
    # Download verified backup from MinIO
-   kubectl exec -n minio-operator <minio-pod> -- mc sync local/<bucket>/backups/<verified-backup>/ /tmp/restore/ --delete
+   kubectl exec -n minio-operator ${MINIO_POD} -- mc sync local/${BUCKET_NAME}/backups/<verified-backup>/ /tmp/restore/ --delete
    
    # Prepare backup
    xtrabackup --prepare --target-dir=/tmp/restore
@@ -119,10 +142,10 @@ Use previous verified backup then roll forward via binlogs
 3. **Apply binlogs for point-in-time recovery**
    ```bash
    # Download binlogs from verified backup time to now
-   kubectl exec -n minio-operator <minio-pod> -- mc sync local/<bucket>/binlogs/ /tmp/binlogs/ --exclude "*" --include "mysql-bin.*"
+   kubectl exec -n minio-operator ${MINIO_POD} -- mc sync local/${BUCKET_NAME}/binlogs/ /tmp/binlogs/ --exclude "*" --include "mysql-bin.*"
    
    # Apply binlogs
-   mysqlbinlog --start-datetime="<backup-time>" /tmp/binlogs/mysql-bin.* | mysql -uroot -p<pass>
+   mysqlbinlog --start-datetime="<backup-time>" /tmp/binlogs/mysql-bin.* | mysql -uroot -p${MYSQL_ROOT_PASSWORD}
    ```
 
 4. **Verify service is restored**

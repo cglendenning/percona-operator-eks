@@ -1,5 +1,25 @@
 # Monitoring and Alerting System Failure During Incident Recovery Process
 
+> **<span style="color:red">WARNING: PLACEHOLDER DOCUMENT</span>**
+>
+> **This recovery process is a PLACEHOLDER and has NOT been fully tested in production.**
+> Validate all steps in a non-production environment before executing during an actual incident.
+
+
+## Set Environment Variables
+
+Copy and paste the following block to configure your environment. You will be prompted for each value:
+
+```bash
+# Interactive variable setup - paste this block and answer each prompt
+read -p "Enter Kubernetes namespace [percona]: " NAMESPACE; NAMESPACE=${NAMESPACE:-percona}
+read -p "Enter pod name (e.g., cluster1-pxc-0): " POD_NAME
+```
+
+
+
+
+
 ## Primary Recovery Method
 
 1. **Identify monitoring system failure**
@@ -32,29 +52,29 @@
    ```bash
    # Use kubectl for basic monitoring
    kubectl top nodes
-   kubectl top pods -n <namespace>
+   kubectl top pods -n ${NAMESPACE}
    
    # Use basic system commands
-   kubectl exec -n <namespace> <pod-name> -- top
-   kubectl exec -n <namespace> <pod-name> -- df -h
-   kubectl exec -n <namespace> <pod-name> -- free -m
+   kubectl exec -n ${NAMESPACE} ${POD_NAME} -- top
+   kubectl exec -n ${NAMESPACE} ${POD_NAME} -- df -h
+   kubectl exec -n ${NAMESPACE} ${POD_NAME} -- free -m
    ```
 
 4. **Rely on manual checks and kubectl commands**
    ```bash
    # Check cluster status
    kubectl get nodes
-   kubectl get pods -n <namespace>
-   kubectl get pvc -n <namespace>
+   kubectl get pods -n ${NAMESPACE}
+   kubectl get pvc -n ${NAMESPACE}
    
    # Check pod status
-   kubectl describe pod -n <namespace> <pod-name>
+   kubectl describe pod -n ${NAMESPACE} ${POD_NAME}
    
    # Check events
-   kubectl get events -n <namespace> --sort-by='.lastTimestamp'
+   kubectl get events -n ${NAMESPACE} --sort-by='.lastTimestamp'
    
    # Check logs
-   kubectl logs -n <namespace> <pod-name> --tail=100
+   kubectl logs -n ${NAMESPACE} ${POD_NAME} --tail=100
    ```
 
 5. **Verify service is restored**
@@ -72,22 +92,22 @@
 1. **Use basic system commands**
    ```bash
    # Check system resources
-   kubectl exec -n <namespace> <pod-name> -- top
-   kubectl exec -n <namespace> <pod-name> -- df -h
-   kubectl exec -n <namespace> <pod-name> -- free -m
-   kubectl exec -n <namespace> <pod-name> -- netstat -tuln
+   kubectl exec -n ${NAMESPACE} ${POD_NAME} -- top
+   kubectl exec -n ${NAMESPACE} ${POD_NAME} -- df -h
+   kubectl exec -n ${NAMESPACE} ${POD_NAME} -- free -m
+   kubectl exec -n ${NAMESPACE} ${POD_NAME} -- netstat -tuln
    ```
 
 2. **Check application logs directly**
    ```bash
    # Check application logs
-   kubectl logs -n <namespace> <app-pod> --tail=100
+   kubectl logs -n ${NAMESPACE} <app-pod> --tail=100
    
    # Check database logs
-   kubectl logs -n <namespace> <pxc-pod> --tail=100
+   kubectl logs -n ${NAMESPACE} <pxc-pod> --tail=100
    
    # Search logs for errors
-   kubectl logs -n <namespace> <pod-name> | grep -i "error\|fail\|exception"
+   kubectl logs -n ${NAMESPACE} ${POD_NAME} | grep -i "error\|fail\|exception"
    ```
 
 3. **Use backup monitoring systems if available**
