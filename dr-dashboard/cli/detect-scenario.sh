@@ -333,11 +333,30 @@ check_cluster_quorum() {
     
     QUORUM_REACHABLE=true
     
+    # Try to get wsrep status - first check if we have a password
+    if [[ -z "$MYSQL_ROOT_PASSWORD" ]]; then
+        log_warn "MySQL root password not available, cannot check quorum via MySQL"
+        # Fall back to checking PXC CR status instead
+        if [[ "$PXC_CR_STATUS" == "ready" ]]; then
+            QUORUM_HAS_QUORUM=true
+            QUORUM_STATUS="Primary (inferred from CR)"
+            QUORUM_SIZE=$POD_RUNNING
+            log_success "Galera cluster has quorum (inferred from PXC CR status): $QUORUM_SIZE nodes"
+        fi
+        return 0
+    fi
+    
     local status_output
     status_output=$(run_kubectl exec -n "$NAMESPACE" "$pod_name" -- \
         mysql -uroot -p"$MYSQL_ROOT_PASSWORD" -N -e \
-        "SHOW STATUS WHERE Variable_name IN ('wsrep_cluster_status', 'wsrep_cluster_size');" 2>/dev/null || echo "")
+        "SHOW STATUS WHERE Variable_name IN ('wsrep_cluster_status', 'wsrep_cluster_size');" 2>&1 || echo "")
     
+    # Debug output if verbose
+    if [[ "$VERBOSE" == "true" ]]; then
+        log_detail "MySQL output: $status_output"
+    fi
+    
+    # Check for Primary status
     if [[ "$status_output" == *"Primary"* ]]; then
         QUORUM_HAS_QUORUM=true
         QUORUM_STATUS="Primary"
@@ -345,14 +364,37 @@ check_cluster_quorum() {
         QUORUM_STATUS="non-Primary"
     fi
     
-    QUORUM_SIZE=$(echo "$status_output" | grep -oP 'wsrep_cluster_size\s+\K\d+' || echo "0")
+    # Extract cluster size using portable awk instead of grep -P
+    QUORUM_SIZE=$(echo "$status_output" | awk '/wsrep_cluster_size/ {print $2}' | tr -d '[:space:]')
+    if [[ -z "$QUORUM_SIZE" ]] || ! [[ "$QUORUM_SIZE" =~ ^[0-9]+$ ]]; then
+        QUORUM_SIZE=0
+    fi
     
-    if [[ "$QUORUM_HAS_QUORUM" == "true" ]] && [[ $QUORUM_SIZE -gt 0 ]]; then
-        log_success "Galera cluster has quorum: $QUORUM_SIZE nodes, status=$QUORUM_STATUS"
+    # Determine result
+    if [[ "$QUORUM_HAS_QUORUM" == "true" ]]; then
+        if [[ $QUORUM_SIZE -gt 0 ]]; then
+            log_success "Galera cluster has quorum: $QUORUM_SIZE nodes, status=$QUORUM_STATUS"
+        else
+            log_success "Galera cluster has quorum: status=$QUORUM_STATUS"
+        fi
     elif [[ "$QUORUM_STATUS" == "non-Primary" ]]; then
         log_error "Galera cluster lost quorum: status=$QUORUM_STATUS"
+    elif [[ -n "$status_output" ]] && [[ "$status_output" != *"ERROR"* ]] && [[ "$status_output" != *"Access denied"* ]]; then
+        # We got some output but couldn't parse it
+        log_warn "Could not determine cluster quorum status from MySQL output"
+        if [[ "$VERBOSE" == "true" ]]; then
+            log_detail "Raw output: $status_output"
+        fi
     else
-        log_warn "Could not determine cluster quorum status"
+        # MySQL command failed - fall back to PXC CR status
+        if [[ "$PXC_CR_STATUS" == "ready" ]]; then
+            QUORUM_HAS_QUORUM=true
+            QUORUM_STATUS="Primary (inferred from CR)"
+            QUORUM_SIZE=$POD_RUNNING
+            log_success "Galera cluster has quorum (inferred from PXC CR): $QUORUM_SIZE nodes"
+        else
+            log_warn "Could not connect to MySQL to check quorum (password issue or pod not ready)"
+        fi
     fi
 }
 
@@ -556,8 +598,10 @@ check_replication() {
             REPL_SQL_RUNNING=true
         fi
         
-        REPL_SECONDS_BEHIND=$(echo "$repl_output" | grep -oP 'Seconds_Behind_\w+:\s+\K\d+' | head -1 || echo "")
-        REPL_LAST_ERROR=$(echo "$repl_output" | grep -oP 'Last_(?:IO_)?Error:\s+\K.+' | head -1 || echo "")
+        # Extract seconds behind using portable awk (works on macOS and Linux)
+        REPL_SECONDS_BEHIND=$(echo "$repl_output" | awk -F': ' '/Seconds_Behind_(Master|Source)/ {print $2}' | head -1 | tr -d '[:space:]')
+        # Extract last error
+        REPL_LAST_ERROR=$(echo "$repl_output" | awk -F': ' '/Last_(IO_)?Error/ && $2 != "" {print $2}' | head -1)
         
         if [[ "$REPL_IO_RUNNING" == "true" ]] && [[ "$REPL_SQL_RUNNING" == "true" ]]; then
             log_success "Replication healthy: IO=running, SQL=running, Lag=${REPL_SECONDS_BEHIND:-0}s"
