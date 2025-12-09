@@ -22,6 +22,7 @@ RESET='\033[0m'
 # Global state
 NAMESPACE=""
 CLUSTER_NAME=""
+SECRET_NAME=""
 VERBOSE=false
 JSON_OUTPUT=false
 ENVIRONMENT="on-prem"
@@ -87,6 +88,8 @@ Usage: $(basename "$0") [OPTIONS]
 
 Required:
   -n, --namespace NAME    Kubernetes namespace to inspect
+  -s, --secret NAME       Kubernetes secret containing MySQL root password
+                          (must have 'root' key with base64-encoded password)
 
 Options:
   -c, --cluster-name NAME PXC cluster name (optional, auto-detected)
@@ -95,8 +98,8 @@ Options:
   -h, --help              Show this help message
 
 Examples:
-  $(basename "$0") --namespace percona
-  $(basename "$0") -n percona -c cluster1 --verbose
+  $(basename "$0") --namespace percona --secret db-secrets
+  $(basename "$0") -n percona -s db-secrets -c cluster1 --verbose
 
 Requirements:
   - KUBECONFIG must be set or ~/.kube/config must exist
@@ -111,6 +114,10 @@ parse_args() {
         case "$1" in
             -n|--namespace)
                 NAMESPACE="$2"
+                shift 2
+                ;;
+            -s|--secret)
+                SECRET_NAME="$2"
                 shift 2
                 ;;
             -c|--cluster-name)
@@ -137,6 +144,12 @@ parse_args() {
 
     if [[ -z "$NAMESPACE" ]]; then
         echo "Error: --namespace is required" >&2
+        echo "" >&2
+        usage
+    fi
+
+    if [[ -z "$SECRET_NAME" ]]; then
+        echo "Error: --secret is required" >&2
         echo "" >&2
         usage
     fi
@@ -929,11 +942,15 @@ main() {
     BACKUP_FAILING=false
     BACKUP_ERRORS=""
     
-    # Get MySQL password from environment or secret
-    if [[ -z "${MYSQL_ROOT_PASSWORD:-}" ]]; then
-        MYSQL_ROOT_PASSWORD=$(kubectl --kubeconfig "$KUBECONFIG_PATH" get secret -n "$NAMESPACE" \
-            -l app.kubernetes.io/component=pxc \
-            -o jsonpath='{.items[0].data.root}' 2>/dev/null | base64 -d 2>/dev/null || echo "")
+    # Get MySQL password from specified secret
+    log_step "Retrieving MySQL root password from secret '$SECRET_NAME'..."
+    MYSQL_ROOT_PASSWORD=$(kubectl --kubeconfig "$KUBECONFIG_PATH" get secret -n "$NAMESPACE" \
+        "$SECRET_NAME" -o jsonpath='{.data.root}' 2>/dev/null | base64 -d 2>/dev/null || echo "")
+    
+    if [[ -n "$MYSQL_ROOT_PASSWORD" ]]; then
+        log_success "MySQL root password retrieved from secret"
+    else
+        log_warn "Could not retrieve password from secret '$SECRET_NAME' (will use fallback detection)"
     fi
     
     log ""

@@ -58,10 +58,13 @@
                                 <span>detect-scenario.sh</span>
                             </div>
                             <pre id="diagnostic-script"><code># From the percona_operator directory:
-./dr-dashboard/cli/detect-scenario.sh --namespace percona
+./dr-dashboard/cli/detect-scenario.sh --namespace percona --secret db-secrets
+
+# Required:
+#   -n, --namespace     Kubernetes namespace to inspect
+#   -s, --secret        K8s secret with MySQL root password (must have 'root' key)
 
 # Options:
-#   -n, --namespace     Kubernetes namespace to inspect (required)
 #   -c, --cluster-name  PXC cluster name (optional, auto-detected)
 #   -v, --verbose       Show detailed command output
 #       --json          Output results as JSON</code></pre>
@@ -71,6 +74,7 @@
                             <ul>
                                 <li>Checks pod status, cluster health, and node availability</li>
                                 <li>Tests API server connectivity and service endpoints</li>
+                                <li>Queries MySQL for Galera cluster quorum status (read-only)</li>
                                 <li>Inspects PVC storage, replication status, and backups</li>
                                 <li>Identifies matching disaster scenarios with confidence levels</li>
                                 <li>Provides direct links to recovery procedures</li>
