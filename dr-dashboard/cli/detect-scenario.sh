@@ -23,6 +23,7 @@ CLUSTER_NAME=""
 VERBOSE=false
 JSON_OUTPUT=false
 ENVIRONMENT="on-prem"
+KUBECONFIG_PATH=""
 
 # Diagnostic results
 declare -a SCENARIOS=()
@@ -65,10 +66,10 @@ log_detail() {
     fi
 }
 
-# Run kubectl with timeout
+# Run kubectl with timeout and kubeconfig
 run_kubectl() {
     local timeout="${KUBECTL_TIMEOUT:-30}"
-    if timeout "$timeout" kubectl "$@" 2>/dev/null; then
+    if timeout "$timeout" kubectl --kubeconfig "$KUBECONFIG_PATH" "$@" 2>/dev/null; then
         return 0
     else
         return 1
@@ -141,9 +142,19 @@ parse_args() {
 
 # Check prerequisites
 check_prerequisites() {
-    # Check KUBECONFIG
-    if [[ -z "${KUBECONFIG:-}" ]] && [[ ! -f "${HOME}/.kube/config" ]]; then
+    # Set KUBECONFIG_PATH from environment variable
+    if [[ -n "${KUBECONFIG:-}" ]]; then
+        KUBECONFIG_PATH="$KUBECONFIG"
+    elif [[ -f "${HOME}/.kube/config" ]]; then
+        KUBECONFIG_PATH="${HOME}/.kube/config"
+    else
         echo "Error: KUBECONFIG environment variable must be set or ~/.kube/config must exist" >&2
+        exit 1
+    fi
+
+    # Verify kubeconfig file exists
+    if [[ ! -f "$KUBECONFIG_PATH" ]]; then
+        echo "Error: KUBECONFIG file not found: $KUBECONFIG_PATH" >&2
         exit 1
     fi
 
@@ -152,6 +163,14 @@ check_prerequisites() {
         echo "Error: kubectl is not installed or not in PATH" >&2
         exit 1
     fi
+    
+    # Check jq
+    if ! command -v jq &>/dev/null; then
+        echo "Error: jq is not installed or not in PATH" >&2
+        exit 1
+    fi
+    
+    log_step "Using KUBECONFIG: $KUBECONFIG_PATH"
 }
 
 # Add scenario match
@@ -183,7 +202,7 @@ detect_environment() {
     log_step "Detecting environment..."
     
     local context
-    context=$(kubectl config current-context 2>/dev/null || echo "")
+    context=$(kubectl --kubeconfig "$KUBECONFIG_PATH" config current-context 2>/dev/null || echo "")
     
     if [[ "$context" == *"eks"* ]] || [[ "$context" == *"aws"* ]] || [[ "$context" == *"amazon"* ]]; then
         ENVIRONMENT="eks"
@@ -206,7 +225,7 @@ check_dns() {
         return 0
     else
         # Clean up pod if it wasn't deleted
-        kubectl delete pod dns-test -n "$NAMESPACE" --ignore-not-found &>/dev/null || true
+        kubectl --kubeconfig "$KUBECONFIG_PATH" delete pod dns-test -n "$NAMESPACE" --ignore-not-found &>/dev/null || true
         log_warn "DNS resolution may have issues"
         return 1
     fi
@@ -706,7 +725,7 @@ main() {
     
     # Get MySQL password from environment or secret
     if [[ -z "${MYSQL_ROOT_PASSWORD:-}" ]]; then
-        MYSQL_ROOT_PASSWORD=$(kubectl get secret -n "$NAMESPACE" \
+        MYSQL_ROOT_PASSWORD=$(kubectl --kubeconfig "$KUBECONFIG_PATH" get secret -n "$NAMESPACE" \
             -l app.kubernetes.io/component=pxc \
             -o jsonpath='{.items[0].data.root}' 2>/dev/null | base64 -d 2>/dev/null || echo "")
     fi
