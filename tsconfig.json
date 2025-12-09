@@ -7,9 +7,9 @@
     "forceConsistentCasingInFileNames": true,
     "strict": true,
     "skipLibCheck": true,
-    "outDir": "percona/dist"
+    "outDir": "dist"
   },
-  "include": ["percona/src/**/*"]
+  "include": ["percona/src/**/*", "dr-dashboard/cli/**/*"]
 }
 
 

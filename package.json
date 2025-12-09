@@ -5,7 +5,8 @@
   "type": "module",
   "scripts": {
     "build": "tsc -p tsconfig.json",
-    "percona": "tsx percona/src/percona.ts"
+    "percona": "tsx percona/src/percona.ts",
+    "detect-scenario": "tsx dr-dashboard/cli/detect-scenario.ts"
   },
   "dependencies": {
     "chalk": "^5.3.0",
