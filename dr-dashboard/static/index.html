@@ -51,34 +51,31 @@
                 <div class="recovery-content" id="content-unknown">
                     <div class="recovery-inner">
                         <div class="diagnostic-info">
-                            <p><strong>Run this diagnostic CLI to automatically detect which scenario is occurring:</strong></p>
+                            <p><strong>Run this diagnostic script to automatically detect which scenario is occurring:</strong></p>
                         </div>
                         <div class="code-block">
                             <div class="code-header">
-                                <span>detect-scenario CLI</span>
+                                <span>detect-scenario.sh</span>
                             </div>
                             <pre id="diagnostic-script"><code># From the percona_operator directory:
-npx tsx dr-dashboard/cli/detect-scenario.ts --namespace percona
-
-# Or with npm script:
-npm run detect-scenario -- --namespace percona
+./dr-dashboard/cli/detect-scenario.sh --namespace percona
 
 # Options:
-#   --namespace, -n   Kubernetes namespace to inspect (required)
-#   --cluster-name, -c   PXC cluster name (optional, auto-detected)
-#   --json            Output results as JSON
-#   --verbose, -v     Show detailed command output</code></pre>
+#   -n, --namespace     Kubernetes namespace to inspect (required)
+#   -c, --cluster-name  PXC cluster name (optional, auto-detected)
+#   -v, --verbose       Show detailed command output
+#       --json          Output results as JSON</code></pre>
                         </div>
                         <div class="diagnostic-note">
                             <strong>What it does:</strong>
                             <ul>
                                 <li>Checks pod status, cluster health, and node availability</li>
-                                <li>Tests API server connectivity, DNS, and service endpoints</li>
-                                <li>Inspects PVC storage, replication, certificates, and backups</li>
+                                <li>Tests API server connectivity and service endpoints</li>
+                                <li>Inspects PVC storage, replication status, and backups</li>
                                 <li>Identifies matching disaster scenarios with confidence levels</li>
                                 <li>Provides direct links to recovery procedures</li>
                             </ul>
-                            <p><strong>Requirements:</strong> KUBECONFIG must be set, kubectl installed</p>
+                            <p><strong>Requirements:</strong> KUBECONFIG must be set, kubectl and jq installed</p>
                         </div>
                     </div>
                 </div>
