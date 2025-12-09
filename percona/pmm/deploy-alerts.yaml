@@ -1,0 +1,277 @@
+# PMM v3 Alert Deployment
+#
+# Deploys alerts to PMM v3 via Grafana's HTTP API.
+# PMM v3 uses "Percona Alerting" which is built on Grafana Unified Alerting.
+#
+# Usage:
+#   1. Ensure PMM is deployed and running
+#   2. Update the pmm-credentials secret with your admin password
+#   3. kubectl apply -f deploy-alerts.yaml
+#   4. Check status: kubectl logs -n pmm job/pmm-deploy-alerts
+#   5. View alerts in PMM: Alerting -> Alert rules
+#
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: pmm-credentials
+  namespace: pmm
+type: Opaque
+stringData:
+  username: admin
+  password: admin  # CHANGE THIS to your PMM admin password
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: pmm-alerts
+  namespace: pmm
+data:
+  deploy.sh: |
+    #!/bin/sh
+    set -e
+    
+    # Configuration
+    PMM_URL="${PMM_URL:-http://pmm:80}"
+    PMM_USER="${PMM_USER:-admin}"
+    PMM_PASS="${PMM_PASS:-admin}"
+    AUTH="-u ${PMM_USER}:${PMM_PASS}"
+    
+    echo "=============================================="
+    echo "PMM v3 Alert Deployment"
+    echo "=============================================="
+    echo "PMM URL: $PMM_URL"
+    echo ""
+    
+    # Wait for PMM to be ready
+    echo "[1/5] Waiting for PMM to be ready..."
+    for i in $(seq 1 60); do
+      if curl -sf "$PMM_URL/v1/version" >/dev/null 2>&1; then
+        VERSION=$(curl -sf "$PMM_URL/v1/version" | jq -r '.version // "unknown"')
+        echo "      PMM is ready (version: $VERSION)"
+        break
+      fi
+      if [ $i -eq 60 ]; then
+        echo "ERROR: PMM not ready after 5 minutes"
+        exit 1
+      fi
+      echo "      Waiting... ($i/60)"
+      sleep 5
+    done
+    
+    # Get VictoriaMetrics datasource UID (PMM v3 uses VM, not Prometheus)
+    echo ""
+    echo "[2/5] Finding VictoriaMetrics datasource..."
+    DS_UID=$(curl -sf $AUTH "$PMM_URL/graph/api/datasources" 2>/dev/null | \
+      jq -r '.[] | select(.type=="prometheus" or .type=="victoriametrics") | .uid' | head -1)
+    
+    if [ -z "$DS_UID" ]; then
+      echo "      Warning: Could not find datasource, using 'prometheus'"
+      DS_UID="prometheus"
+    else
+      echo "      Datasource UID: $DS_UID"
+    fi
+    
+    # Create alert folder
+    echo ""
+    echo "[3/5] Creating alert folder..."
+    FOLDER_RESULT=$(curl -sf $AUTH -X POST "$PMM_URL/graph/api/folders" \
+      -H "Content-Type: application/json" \
+      -d '{"title":"MySQL Alerts"}' 2>&1) || true
+    
+    FOLDER_UID=$(curl -sf $AUTH "$PMM_URL/graph/api/folders" | \
+      jq -r '.[] | select(.title=="MySQL Alerts") | .uid')
+    
+    if [ -z "$FOLDER_UID" ]; then
+      echo "      Warning: Could not create/find folder, using General"
+      FOLDER_UID="general"
+    else
+      echo "      Folder UID: $FOLDER_UID"
+    fi
+    
+    # Function to create an alert rule
+    echo ""
+    echo "[4/5] Creating alert rules..."
+    
+    create_alert() {
+      NAME="$1"
+      EXPR="$2"
+      THRESHOLD="$3"
+      OPERATOR="$4"  # gt, lt
+      SEVERITY="$5"
+      DURATION="$6"
+      SUMMARY="$7"
+      
+      echo "      Creating: $NAME"
+      
+      # Build the rule JSON
+      RULE_JSON=$(cat <<ENDJSON
+    {
+      "name": "$NAME",
+      "interval": "1m",
+      "rules": [{
+        "grafana_alert": {
+          "title": "$NAME",
+          "condition": "C",
+          "data": [
+            {
+              "refId": "A",
+              "relativeTimeRange": {"from": 600, "to": 0},
+              "datasourceUid": "$DS_UID",
+              "model": {
+                "expr": "$EXPR",
+                "instant": true,
+                "refId": "A"
+              }
+            },
+            {
+              "refId": "B",
+              "relativeTimeRange": {"from": 600, "to": 0},
+              "datasourceUid": "__expr__",
+              "model": {
+                "type": "reduce",
+                "expression": "A",
+                "reducer": "last",
+                "refId": "B"
+              }
+            },
+            {
+              "refId": "C",
+              "relativeTimeRange": {"from": 600, "to": 0},
+              "datasourceUid": "__expr__",
+              "model": {
+                "type": "threshold",
+                "expression": "B",
+                "refId": "C",
+                "conditions": [{
+                  "evaluator": {
+                    "type": "$OPERATOR",
+                    "params": [$THRESHOLD]
+                  }
+                }]
+              }
+            }
+          ],
+          "no_data_state": "NoData",
+          "exec_err_state": "Error"
+        },
+        "for": "$DURATION",
+        "labels": {
+          "severity": "$SEVERITY"
+        },
+        "annotations": {
+          "summary": "$SUMMARY"
+        }
+      }]
+    }
+    ENDJSON
+    )
+      
+      RESULT=$(curl -sf $AUTH -X POST "$PMM_URL/graph/api/ruler/grafana/api/v1/rules/$FOLDER_UID" \
+        -H "Content-Type: application/json" \
+        -d "$RULE_JSON" 2>&1) || true
+      
+      if echo "$RESULT" | grep -q "error\|Error"; then
+        echo "        Warning: $RESULT"
+      fi
+    }
+    
+    # MySQL Disk Usage Warning (>75%)
+    create_alert \
+      "MySQL Disk Usage Warning" \
+      "(1 - (node_filesystem_avail_bytes{mountpoint=~\\\"/var/lib/mysql|/data\\\"} / node_filesystem_size_bytes{mountpoint=~\\\"/var/lib/mysql|/data\\\"})) * 100" \
+      "75" "gt" "warning" "5m" \
+      "MySQL disk usage above 75% on {{ \$labels.instance }}"
+    
+    # MySQL Disk Usage Critical (>90%)
+    create_alert \
+      "MySQL Disk Usage Critical" \
+      "(1 - (node_filesystem_avail_bytes{mountpoint=~\\\"/var/lib/mysql|/data\\\"} / node_filesystem_size_bytes{mountpoint=~\\\"/var/lib/mysql|/data\\\"})) * 100" \
+      "90" "gt" "critical" "2m" \
+      "CRITICAL: MySQL disk usage above 90%"
+    
+    # MySQL Connections High (>80% of max)
+    create_alert \
+      "MySQL Connections High" \
+      "(mysql_global_status_threads_connected / mysql_global_variables_max_connections) * 100" \
+      "80" "gt" "warning" "5m" \
+      "MySQL connections at {{ \$value }}% of max_connections"
+    
+    # MySQL Replication Lag (>30s)
+    create_alert \
+      "MySQL Replication Lag" \
+      "mysql_slave_status_seconds_behind_master" \
+      "30" "gt" "warning" "5m" \
+      "MySQL replication lag {{ \$value }}s behind master"
+    
+    # PXC Cluster Size Changed
+    create_alert \
+      "PXC Cluster Size Warning" \
+      "mysql_global_status_wsrep_cluster_size" \
+      "3" "lt" "warning" "2m" \
+      "PXC cluster size is {{ \$value }}, expected 3"
+    
+    # Verify alerts were created
+    echo ""
+    echo "[5/5] Verifying alerts..."
+    ALERTS=$(curl -sf $AUTH "$PMM_URL/graph/api/ruler/grafana/api/v1/rules/$FOLDER_UID" 2>/dev/null | \
+      jq -r '.[].rules[].grafana_alert.title' 2>/dev/null || echo "")
+    
+    if [ -n "$ALERTS" ]; then
+      echo "      Created alerts:"
+      echo "$ALERTS" | while read alert; do
+        echo "        - $alert"
+      done
+    else
+      echo "      Warning: Could not verify alerts"
+    fi
+    
+    echo ""
+    echo "=============================================="
+    echo "Deployment Complete!"
+    echo "=============================================="
+    echo ""
+    echo "View alerts in PMM:"
+    echo "  $PMM_URL -> Alerting -> Alert rules"
+    echo ""
+    echo "To configure PagerDuty notifications:"
+    echo "  1. Go to Alerting -> Contact points"
+    echo "  2. Add new contact point (PagerDuty)"
+    echo "  3. Go to Alerting -> Notification policies"
+    echo "  4. Route alerts to your contact point"
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: pmm-deploy-alerts
+  namespace: pmm
+spec:
+  ttlSecondsAfterFinished: 600
+  backoffLimit: 3
+  template:
+    spec:
+      restartPolicy: OnFailure
+      containers:
+        - name: deploy
+          image: alpine/curl:latest
+          command: ["sh", "-c", "apk add --no-cache jq >/dev/null 2>&1 && sh /scripts/deploy.sh"]
+          env:
+            - name: PMM_URL
+              value: "http://pmm:80"
+            - name: PMM_USER
+              valueFrom:
+                secretKeyRef:
+                  name: pmm-credentials
+                  key: username
+            - name: PMM_PASS
+              valueFrom:
+                secretKeyRef:
+                  name: pmm-credentials
+                  key: password
+          volumeMounts:
+            - name: scripts
+              mountPath: /scripts
+      volumes:
+        - name: scripts
+          configMap:
+            name: pmm-alerts

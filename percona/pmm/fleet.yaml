@@ -1,26 +1,18 @@
-# Fleet Configuration for PMM with Custom Alerts
+# Fleet Configuration for PMM
 #
-# This deploys PMM with custom alert rules and PagerDuty notifications
-# Alert rules and notification configs are git-managed via ConfigMaps
+# Deploys PMM via Helm with environment-specific values.
+# Alerts are deployed separately via deploy-alerts.yaml after PMM is ready.
 ---
 defaultNamespace: pmm
 
-# Create ConfigMaps for alerts and notifications
-resources:
-  - pmm-alerts.yaml
-  - pmm-notifications.yaml
-
-# Deploy PMM Helm chart with custom values
 helm:
   repo: https://percona.github.io/percona-helm-charts/
   chart: pmm
   releaseName: pmm
   
-  # Base values for all environments
   valuesFiles:
     - values/pmm-base.yaml
   
-  # Environment-specific overrides
   targetCustomizations:
     - name: dev
       clusterSelector:
