@@ -2,8 +2,9 @@
 #
 # Database Emergency Diagnostic CLI
 # Detects which disaster scenario is currently occurring
+# For on-premises vSphere Kubernetes environments
 #
-# Usage: ./detect-scenario.sh --namespace percona
+# Usage: ./detect-scenario.sh --namespace percona --secret db-secrets
 #
 
 set -euo pipefail
@@ -25,7 +26,6 @@ CLUSTER_NAME=""
 SECRET_NAME=""
 VERBOSE=false
 JSON_OUTPUT=false
-ENVIRONMENT="on-prem"
 KUBECONFIG_PATH=""
 
 # Diagnostic results
@@ -201,31 +201,16 @@ add_scenario() {
 
 # Check API server
 check_api_server() {
-    log_step "Checking Kubernetes API server connectivity..."
+    log_step "Testing connection to Kubernetes API server..."
+    log_detail "Running: kubectl cluster-info"
     
     if run_kubectl cluster-info &>/dev/null; then
         log_success "API server is responsive"
         return 0
     else
-        log_error "API server is not responding"
+        log_error "API server is not responding - check network connectivity and kubeconfig"
         return 1
     fi
-}
-
-# Detect environment (EKS vs on-prem)
-detect_environment() {
-    log_step "Detecting environment..."
-    
-    local context
-    context=$(kubectl --kubeconfig "$KUBECONFIG_PATH" config current-context 2>/dev/null || echo "")
-    
-    if [[ "$context" == *"eks"* ]] || [[ "$context" == *"aws"* ]] || [[ "$context" == *"amazon"* ]]; then
-        ENVIRONMENT="eks"
-    else
-        ENVIRONMENT="on-prem"
-    fi
-    
-    log_detail "Environment: $ENVIRONMENT"
 }
 
 # Check DNS
@@ -248,7 +233,8 @@ check_dns() {
 
 # Check PXC pod status
 check_pod_status() {
-    log_step "Checking PXC pod status in namespace $NAMESPACE..."
+    log_step "Querying PXC database pods in namespace '$NAMESPACE'..."
+    log_detail "Running: kubectl get pods -n $NAMESPACE -l app.kubernetes.io/component=pxc"
     
     local pods_json
     pods_json=$(run_kubectl get pods -n "$NAMESPACE" -l app.kubernetes.io/component=pxc -o json 2>/dev/null || echo '{"items":[]}')
@@ -271,6 +257,13 @@ check_pod_status() {
     # Get container errors
     POD_ERRORS=$(echo "$pods_json" | jq -r '.items[] | .metadata.name as $name | .status.containerStatuses[]? | select(.state.waiting.reason != null and .state.waiting.reason != "ContainerCreating" and .state.waiting.reason != "PodInitializing") | "\($name): \(.state.waiting.reason)"' | head -5)
     
+    # List pod names
+    local pod_names
+    pod_names=$(echo "$pods_json" | jq -r '.items[].metadata.name' | tr '\n' ', ' | sed 's/,$//')
+    if [[ -n "$pod_names" ]]; then
+        log_detail "Found pods: $pod_names"
+    fi
+    
     # Report status
     if [[ $total -eq 0 ]]; then
         log_warn "No PXC pods found in namespace $NAMESPACE"
@@ -285,7 +278,8 @@ check_pod_status() {
 
 # Check PXC Custom Resource status
 check_pxc_cr_status() {
-    log_step "Checking PXC cluster custom resource status..."
+    log_step "Querying PerconaXtraDBCluster custom resource..."
+    log_detail "Running: kubectl get pxc -n $NAMESPACE"
     
     PXC_CR_STATUS="unknown"
     PXC_CR_READY=""
@@ -303,6 +297,8 @@ check_pxc_cr_status() {
         log_warn "No PXC cluster resources found in namespace $NAMESPACE"
         return 1
     fi
+    
+    log_detail "Found $count PXC cluster resource(s)"
     
     # Get first PXC cluster (or use CLUSTER_NAME if specified)
     if [[ -n "$CLUSTER_NAME" ]]; then
@@ -328,7 +324,7 @@ check_pxc_cr_status() {
 
 # Check cluster quorum
 check_cluster_quorum() {
-    log_step "Checking Galera cluster quorum..."
+    log_step "Querying Galera cluster quorum status via MySQL..."
     
     local pod_name
     pod_name=$(run_kubectl get pods -n "$NAMESPACE" -l app.kubernetes.io/component=pxc \
@@ -344,6 +340,7 @@ check_cluster_quorum() {
         return 1
     fi
     
+    log_detail "Using pod: $pod_name"
     QUORUM_REACHABLE=true
     
     # Try to get wsrep status - first check if we have a password
@@ -359,6 +356,7 @@ check_cluster_quorum() {
         return 0
     fi
     
+    log_detail "Running: SELECT wsrep_cluster_status, wsrep_cluster_size"
     local status_output
     status_output=$(run_kubectl exec -n "$NAMESPACE" "$pod_name" -- \
         mysql -uroot -p"$MYSQL_ROOT_PASSWORD" -N -e \
@@ -413,7 +411,8 @@ check_cluster_quorum() {
 
 # Check Kubernetes nodes
 check_nodes() {
-    log_step "Checking Kubernetes node status..."
+    log_step "Querying Kubernetes worker node status..."
+    log_detail "Running: kubectl get nodes"
     
     local nodes_json
     nodes_json=$(run_kubectl get nodes -o json 2>/dev/null || echo '{"items":[]}')
@@ -424,6 +423,11 @@ check_nodes() {
     NODE_DISK_PRESSURE=$(echo "$nodes_json" | jq '[.items[] | select(.status.conditions[] | select(.type == "DiskPressure" and .status == "True"))] | length')
     NODE_MEMORY_PRESSURE=$(echo "$nodes_json" | jq '[.items[] | select(.status.conditions[] | select(.type == "MemoryPressure" and .status == "True"))] | length')
     NODE_UNREACHABLE=$(echo "$nodes_json" | jq -r '[.items[] | select(.status.conditions[] | select(.type == "Ready" and .status != "True")) | .metadata.name] | join(", ")')
+    
+    # List node names
+    local node_names
+    node_names=$(echo "$nodes_json" | jq -r '.items[].metadata.name' | tr '\n' ', ' | sed 's/,$//')
+    log_detail "Nodes in cluster: $node_names"
     
     if [[ $NODE_READY -eq $NODE_TOTAL ]] && [[ $NODE_DISK_PRESSURE -eq 0 ]] && [[ $NODE_MEMORY_PRESSURE -eq 0 ]]; then
         log_success "All nodes healthy: $NODE_READY/$NODE_TOTAL ready"
@@ -436,7 +440,7 @@ check_nodes() {
 
 # Check Percona Operator
 check_operator() {
-    log_step "Checking Percona Operator status..."
+    log_step "Searching for Percona XtraDB Cluster Operator..."
     
     OPERATOR_RUNNING=false
     OPERATOR_COUNT=0
@@ -445,6 +449,7 @@ check_operator() {
     
     # Try multiple possible namespaces
     local namespaces=("$NAMESPACE" "percona-operator" "default" "percona-system")
+    log_detail "Searching namespaces: ${namespaces[*]}"
     
     for ns in "${namespaces[@]}"; do
         # Search for operator pod by name pattern (more reliable than labels)
@@ -494,13 +499,15 @@ check_operator() {
 
 # Check service endpoints
 check_services() {
-    log_step "Checking proxy service endpoints..."
+    log_step "Checking database proxy service endpoints..."
+    log_detail "Looking for ProxySQL or HAProxy endpoints"
     
     SERVICE_HAS_ENDPOINTS=false
     SERVICE_ENDPOINT_COUNT=0
     SERVICE_PROXY_TYPE="unknown"
     
     # Check ProxySQL
+    log_detail "Running: kubectl get endpoints -n $NAMESPACE -l app.kubernetes.io/component=proxysql"
     local ep_json
     ep_json=$(run_kubectl get endpoints -n "$NAMESPACE" -l app.kubernetes.io/component=proxysql -o json 2>/dev/null || echo '{"items":[]}')
     
@@ -511,8 +518,10 @@ check_services() {
         SERVICE_PROXY_TYPE="proxysql"
         SERVICE_ENDPOINT_COUNT=$count
         SERVICE_HAS_ENDPOINTS=true
+        log_detail "Found ProxySQL with $count endpoint(s)"
     else
         # Check HAProxy
+        log_detail "Running: kubectl get endpoints -n $NAMESPACE -l app.kubernetes.io/component=haproxy"
         ep_json=$(run_kubectl get endpoints -n "$NAMESPACE" -l app.kubernetes.io/component=haproxy -o json 2>/dev/null || echo '{"items":[]}')
         count=$(echo "$ep_json" | jq '[.items[].subsets[]?.addresses[]?] | length')
         
@@ -520,6 +529,7 @@ check_services() {
             SERVICE_PROXY_TYPE="haproxy"
             SERVICE_ENDPOINT_COUNT=$count
             SERVICE_HAS_ENDPOINTS=true
+            log_detail "Found HAProxy with $count endpoint(s)"
         fi
     fi
     
@@ -534,7 +544,8 @@ check_services() {
 
 # Check PVC status
 check_pvcs() {
-    log_step "Checking PVC status and disk usage..."
+    log_step "Checking PersistentVolumeClaim status and disk usage..."
+    log_detail "Running: kubectl get pvc -n $NAMESPACE"
     
     local pvc_json
     pvc_json=$(run_kubectl get pvc -n "$NAMESPACE" -o json 2>/dev/null || echo '{"items":[]}')
@@ -544,6 +555,13 @@ check_pvcs() {
     PVC_PENDING=$(echo "$pvc_json" | jq '[.items[] | select(.status.phase == "Pending")] | length')
     PVC_ISSUES=$(echo "$pvc_json" | jq -r '.items[] | select(.status.phase == "Pending") | "PVC \(.metadata.name) is pending"')
     
+    # List PVC names
+    local pvc_names
+    pvc_names=$(echo "$pvc_json" | jq -r '.items[].metadata.name' | tr '\n' ', ' | sed 's/,$//')
+    if [[ -n "$pvc_names" ]]; then
+        log_detail "PVCs found: $pvc_names"
+    fi
+    
     # Check disk usage on running pods
     local pod_name
     pod_name=$(run_kubectl get pods -n "$NAMESPACE" -l app.kubernetes.io/component=pxc \
@@ -551,6 +569,7 @@ check_pvcs() {
     
     DISK_USAGE_HIGH=""
     if [[ -n "$pod_name" ]]; then
+        log_detail "Checking disk usage on pod: $pod_name"
         local df_output
         df_output=$(run_kubectl exec -n "$NAMESPACE" "$pod_name" -- df -h /var/lib/mysql 2>/dev/null || echo "")
         
@@ -577,7 +596,7 @@ check_pvcs() {
 
 # Check replication status
 check_replication() {
-    log_step "Checking replication status..."
+    log_step "Checking MySQL async replication status (for multi-DC setups)..."
     
     REPL_CONFIGURED=false
     REPL_IO_RUNNING=false
@@ -590,10 +609,16 @@ check_replication() {
         -o jsonpath='{.items[0].metadata.name}' --field-selector=status.phase=Running 2>/dev/null || echo "")
     
     if [[ -z "$pod_name" ]]; then
-        log_detail "Replication: No running pods to check"
+        log_detail "No running pods to check replication"
         return
     fi
     
+    if [[ -z "$MYSQL_ROOT_PASSWORD" ]]; then
+        log_detail "Cannot check replication - MySQL password not available"
+        return
+    fi
+    
+    log_detail "Running: SHOW REPLICA STATUS on pod $pod_name"
     local repl_output
     repl_output=$(run_kubectl exec -n "$NAMESPACE" "$pod_name" -- \
         mysql -uroot -p"$MYSQL_ROOT_PASSWORD" -e "SHOW REPLICA STATUS\G" 2>/dev/null || \
@@ -628,7 +653,8 @@ check_replication() {
 
 # Check backup status
 check_backups() {
-    log_step "Checking backup status..."
+    log_step "Checking PerconaXtraDBClusterBackup resources..."
+    log_detail "Running: kubectl get perconaxtradbclusterbackup -n $NAMESPACE"
     
     BACKUP_LAST_TIME=""
     BACKUP_FAILING=false
@@ -639,6 +665,7 @@ check_backups() {
     
     local count
     count=$(echo "$backup_json" | jq '.items | length')
+    log_detail "Found $count backup resource(s)"
     
     if [[ $count -gt 0 ]]; then
         # Get latest backup
@@ -825,7 +852,7 @@ print_results() {
         esac
         
         log "${color}${BOLD}$i. [$confidence] $name${RESET}"
-        log "${GRAY}   Recovery Doc: recovery_processes/$ENVIRONMENT/$file${RESET}"
+        log "${GRAY}   Recovery Doc: recovery_processes/on-prem/$file${RESET}"
         
         if [[ -n "$indicators_str" ]]; then
             log "${GRAY}   Indicators:${RESET}"
@@ -839,9 +866,9 @@ print_results() {
     done
     
     log "${CYAN}${BOLD}NEXT STEPS:${RESET}"
-    log "1. Review the recovery documentation in dr-dashboard/recovery_processes/$ENVIRONMENT/"
+    log "1. Review the recovery documentation in dr-dashboard/recovery_processes/on-prem/"
     log "2. Open the Database Emergency Kit dashboard: http://localhost:8080"
-    log "3. Switch to '${ENVIRONMENT^^}' environment in the dashboard"
+    log "3. Select 'On-Prem' environment in the dashboard"
     log "4. Follow the recovery steps for the matching scenario(s)"
     log "5. Contact on-call DBA if needed"
     log ""
@@ -879,7 +906,7 @@ print_json() {
     
     cat << EOF
 {
-  "environment": "$ENVIRONMENT",
+  "environment": "on-prem",
   "namespace": "$NAMESPACE",
   "scenarios": $scenarios_json,
   "state": {
@@ -957,11 +984,13 @@ main() {
     log "${RED}${BOLD}DATABASE EMERGENCY DIAGNOSTIC${RESET}"
     log "${RED}$(printf '=%.0s' {1..50})${RESET}"
     log ""
-    log "${CYAN}Namespace: $NAMESPACE${RESET}"
+    log "${CYAN}Environment: On-Premises (vSphere)${RESET}"
+    log "${CYAN}Namespace:   $NAMESPACE${RESET}"
+    log "${CYAN}Secret:      $SECRET_NAME${RESET}"
     log ""
     
     # Check API server first
-    log "${WHITE}${BOLD}[1/10] Infrastructure Checks${RESET}"
+    log "${WHITE}${BOLD}[1/10] Kubernetes API Server${RESET}"
     if ! check_api_server; then
         add_scenario "CRITICAL" \
             "Kubernetes control plane outage (API server down)" \
@@ -976,33 +1005,31 @@ main() {
         exit 1
     fi
     
-    detect_environment
-    
-    log "${WHITE}${BOLD}[2/10] PXC Cluster Status${RESET}"
+    log "${WHITE}${BOLD}[2/10] PXC Cluster Custom Resource${RESET}"
     check_pxc_cr_status
     
-    log "${WHITE}${BOLD}[3/10] Pod Status${RESET}"
+    log "${WHITE}${BOLD}[3/10] PXC Database Pods${RESET}"
     check_pod_status
     
-    log "${WHITE}${BOLD}[4/10] Cluster Quorum${RESET}"
+    log "${WHITE}${BOLD}[4/10] Galera Cluster Quorum${RESET}"
     check_cluster_quorum
     
-    log "${WHITE}${BOLD}[5/10] Kubernetes Nodes${RESET}"
+    log "${WHITE}${BOLD}[5/10] Kubernetes Worker Nodes${RESET}"
     check_nodes
     
     log "${WHITE}${BOLD}[6/10] Percona Operator${RESET}"
     check_operator
     
-    log "${WHITE}${BOLD}[7/10] Service Endpoints${RESET}"
+    log "${WHITE}${BOLD}[7/10] Database Proxy Endpoints${RESET}"
     check_services
     
-    log "${WHITE}${BOLD}[8/10] Storage (PVCs)${RESET}"
+    log "${WHITE}${BOLD}[8/10] Persistent Volume Claims${RESET}"
     check_pvcs
     
-    log "${WHITE}${BOLD}[9/10] Replication${RESET}"
+    log "${WHITE}${BOLD}[9/10] Async Replication (Multi-DC)${RESET}"
     check_replication
     
-    log "${WHITE}${BOLD}[10/10] Backups${RESET}"
+    log "${WHITE}${BOLD}[10/10] Backup Resources${RESET}"
     check_backups
     
     # Detect scenarios
