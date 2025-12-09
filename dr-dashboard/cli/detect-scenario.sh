@@ -13,6 +13,8 @@ RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[0;33m'
 CYAN='\033[0;36m'
+BLUE='\033[0;34m'
+WHITE='\033[1;37m'
 GRAY='\033[0;90m'
 BOLD='\033[1m'
 RESET='\033[0m'
@@ -245,8 +247,6 @@ check_pod_status() {
     pending=$(echo "$pods_json" | jq '[.items[] | select(.status.phase == "Pending")] | length')
     oom_killed=$(echo "$pods_json" | jq '[.items[].status.containerStatuses[]? | select(.state.terminated.reason == "OOMKilled")] | length')
     
-    log_detail "Pods: $running/$total running, $crashloop crashloop, $oom_killed OOM"
-    
     # Export for scenario detection
     POD_TOTAL=$total
     POD_RUNNING=$running
@@ -257,6 +257,60 @@ check_pod_status() {
     
     # Get container errors
     POD_ERRORS=$(echo "$pods_json" | jq -r '.items[] | .metadata.name as $name | .status.containerStatuses[]? | select(.state.waiting.reason != null and .state.waiting.reason != "ContainerCreating" and .state.waiting.reason != "PodInitializing") | "\($name): \(.state.waiting.reason)"' | head -5)
+    
+    # Report status
+    if [[ $total -eq 0 ]]; then
+        log_warn "No PXC pods found in namespace $NAMESPACE"
+    elif [[ $running -eq $total ]] && [[ $crashloop -eq 0 ]] && [[ $oom_killed -eq 0 ]]; then
+        log_success "All PXC pods healthy: $running/$total running"
+    elif [[ $running -gt 0 ]]; then
+        log_warn "PXC pods degraded: $running/$total running, $crashloop crashloop, $oom_killed OOM"
+    else
+        log_error "All PXC pods down: $running/$total running"
+    fi
+}
+
+# Check PXC Custom Resource status
+check_pxc_cr_status() {
+    log_step "Checking PXC cluster custom resource status..."
+    
+    PXC_CR_STATUS="unknown"
+    PXC_CR_READY=""
+    PXC_CR_MESSAGE=""
+    PXC_CR_NAME=""
+    
+    # Get PXC CR status
+    local pxc_json
+    pxc_json=$(run_kubectl get pxc -n "$NAMESPACE" -o json 2>/dev/null || echo '{"items":[]}')
+    
+    local count
+    count=$(echo "$pxc_json" | jq '.items | length')
+    
+    if [[ $count -eq 0 ]]; then
+        log_warn "No PXC cluster resources found in namespace $NAMESPACE"
+        return 1
+    fi
+    
+    # Get first PXC cluster (or use CLUSTER_NAME if specified)
+    if [[ -n "$CLUSTER_NAME" ]]; then
+        PXC_CR_NAME="$CLUSTER_NAME"
+        PXC_CR_STATUS=$(echo "$pxc_json" | jq -r ".items[] | select(.metadata.name == \"$CLUSTER_NAME\") | .status.state // \"unknown\"")
+        PXC_CR_READY=$(echo "$pxc_json" | jq -r ".items[] | select(.metadata.name == \"$CLUSTER_NAME\") | .status.ready // \"unknown\"")
+        PXC_CR_MESSAGE=$(echo "$pxc_json" | jq -r ".items[] | select(.metadata.name == \"$CLUSTER_NAME\") | .status.message // \"\"")
+    else
+        PXC_CR_NAME=$(echo "$pxc_json" | jq -r '.items[0].metadata.name // "unknown"')
+        PXC_CR_STATUS=$(echo "$pxc_json" | jq -r '.items[0].status.state // "unknown"')
+        PXC_CR_READY=$(echo "$pxc_json" | jq -r '.items[0].status.ready // "unknown"')
+        PXC_CR_MESSAGE=$(echo "$pxc_json" | jq -r '.items[0].status.message // ""')
+    fi
+    
+    if [[ "$PXC_CR_STATUS" == "ready" ]]; then
+        log_success "PXC cluster '$PXC_CR_NAME' status: $PXC_CR_STATUS"
+    elif [[ "$PXC_CR_STATUS" == "initializing" ]] || [[ "$PXC_CR_STATUS" == "unknown" ]]; then
+        log_warn "PXC cluster '$PXC_CR_NAME' status: $PXC_CR_STATUS"
+    else
+        log_error "PXC cluster '$PXC_CR_NAME' status: $PXC_CR_STATUS${PXC_CR_MESSAGE:+ - $PXC_CR_MESSAGE}"
+    fi
 }
 
 # Check cluster quorum
@@ -293,7 +347,13 @@ check_cluster_quorum() {
     
     QUORUM_SIZE=$(echo "$status_output" | grep -oP 'wsrep_cluster_size\s+\K\d+' || echo "0")
     
-    log_detail "Cluster: $QUORUM_SIZE nodes, status=$QUORUM_STATUS"
+    if [[ "$QUORUM_HAS_QUORUM" == "true" ]] && [[ $QUORUM_SIZE -gt 0 ]]; then
+        log_success "Galera cluster has quorum: $QUORUM_SIZE nodes, status=$QUORUM_STATUS"
+    elif [[ "$QUORUM_STATUS" == "non-Primary" ]]; then
+        log_error "Galera cluster lost quorum: status=$QUORUM_STATUS"
+    else
+        log_warn "Could not determine cluster quorum status"
+    fi
 }
 
 # Check Kubernetes nodes
@@ -310,7 +370,13 @@ check_nodes() {
     NODE_MEMORY_PRESSURE=$(echo "$nodes_json" | jq '[.items[] | select(.status.conditions[] | select(.type == "MemoryPressure" and .status == "True"))] | length')
     NODE_UNREACHABLE=$(echo "$nodes_json" | jq -r '[.items[] | select(.status.conditions[] | select(.type == "Ready" and .status != "True")) | .metadata.name] | join(", ")')
     
-    log_detail "Nodes: $NODE_READY/$NODE_TOTAL ready, $NODE_DISK_PRESSURE disk pressure, $NODE_MEMORY_PRESSURE memory pressure"
+    if [[ $NODE_READY -eq $NODE_TOTAL ]] && [[ $NODE_DISK_PRESSURE -eq 0 ]] && [[ $NODE_MEMORY_PRESSURE -eq 0 ]]; then
+        log_success "All nodes healthy: $NODE_READY/$NODE_TOTAL ready"
+    elif [[ $NODE_NOT_READY -gt 0 ]]; then
+        log_error "Nodes degraded: $NODE_READY/$NODE_TOTAL ready, not ready: $NODE_UNREACHABLE"
+    else
+        log_warn "Nodes have pressure: $NODE_DISK_PRESSURE disk pressure, $NODE_MEMORY_PRESSURE memory pressure"
+    fi
 }
 
 # Check Percona Operator
@@ -319,14 +385,32 @@ check_operator() {
     
     OPERATOR_RUNNING=false
     OPERATOR_COUNT=0
+    OPERATOR_POD_NAME=""
+    OPERATOR_NAMESPACE=""
     
-    # Try multiple possible namespaces and labels
-    local namespaces=("percona-operator" "$NAMESPACE" "default")
-    local labels=("app.kubernetes.io/name=percona-xtradb-cluster-operator" "name=percona-xtradb-cluster-operator")
+    # Try multiple possible namespaces
+    local namespaces=("$NAMESPACE" "percona-operator" "default" "percona-system")
     
     for ns in "${namespaces[@]}"; do
+        # Search for operator pod by name pattern (more reliable than labels)
+        local pods_json
+        pods_json=$(run_kubectl get pods -n "$ns" -o json 2>/dev/null || echo '{"items":[]}')
+        
+        # Look for pods with "operator" in the name that are related to percona/pxc
+        local operator_pod
+        operator_pod=$(echo "$pods_json" | jq -r '.items[] | select(.metadata.name | test("percona.*operator|pxc.*operator|operator.*pxc|operator.*percona"; "i")) | select(.status.phase == "Running") | .metadata.name' | head -1)
+        
+        if [[ -n "$operator_pod" ]]; then
+            OPERATOR_RUNNING=true
+            OPERATOR_POD_NAME="$operator_pod"
+            OPERATOR_NAMESPACE="$ns"
+            OPERATOR_COUNT=1
+            break
+        fi
+        
+        # Also try by common labels
+        local labels=("app.kubernetes.io/name=percona-xtradb-cluster-operator" "name=percona-xtradb-cluster-operator" "app=percona-xtradb-cluster-operator")
         for label in "${labels[@]}"; do
-            local pods_json
             pods_json=$(run_kubectl get pods -n "$ns" -l "$label" -o json 2>/dev/null || echo '{"items":[]}')
             
             local count
@@ -334,10 +418,12 @@ check_operator() {
             
             if [[ $count -gt 0 ]]; then
                 OPERATOR_COUNT=$count
-                local running
-                running=$(echo "$pods_json" | jq '[.items[] | select(.status.phase == "Running")] | length')
-                if [[ $running -gt 0 ]]; then
+                local running_pod
+                running_pod=$(echo "$pods_json" | jq -r '.items[] | select(.status.phase == "Running") | .metadata.name' | head -1)
+                if [[ -n "$running_pod" ]]; then
                     OPERATOR_RUNNING=true
+                    OPERATOR_POD_NAME="$running_pod"
+                    OPERATOR_NAMESPACE="$ns"
                 fi
                 break 2
             fi
@@ -345,9 +431,9 @@ check_operator() {
     done
     
     if [[ "$OPERATOR_RUNNING" == "true" ]]; then
-        log_success "Operator is running"
+        log_success "Operator is running: $OPERATOR_POD_NAME (namespace: $OPERATOR_NAMESPACE)"
     else
-        log_warn "Operator is not running"
+        log_warn "Operator not found or not running"
     fi
 }
 
@@ -382,7 +468,13 @@ check_services() {
         fi
     fi
     
-    log_detail "Proxy: $SERVICE_PROXY_TYPE, $SERVICE_ENDPOINT_COUNT endpoints"
+    if [[ "$SERVICE_HAS_ENDPOINTS" == "true" ]]; then
+        log_success "Proxy endpoints healthy: $SERVICE_PROXY_TYPE with $SERVICE_ENDPOINT_COUNT endpoints"
+    elif [[ "$SERVICE_PROXY_TYPE" != "unknown" ]]; then
+        log_error "Proxy has no endpoints: $SERVICE_PROXY_TYPE"
+    else
+        log_warn "No proxy service found (proxysql or haproxy)"
+    fi
 }
 
 # Check PVC status
@@ -415,7 +507,17 @@ check_pvcs() {
         fi
     fi
     
-    log_detail "PVCs: $PVC_BOUND/$PVC_TOTAL bound, $PVC_PENDING pending"
+    if [[ $PVC_TOTAL -eq 0 ]]; then
+        log_warn "No PVCs found in namespace $NAMESPACE"
+    elif [[ $PVC_BOUND -eq $PVC_TOTAL ]]; then
+        if [[ -n "$DISK_USAGE_HIGH" ]]; then
+            log_warn "PVCs bound but disk usage high: $DISK_USAGE_HIGH"
+        else
+            log_success "All PVCs healthy: $PVC_BOUND/$PVC_TOTAL bound"
+        fi
+    else
+        log_error "PVC issues: $PVC_BOUND/$PVC_TOTAL bound, $PVC_PENDING pending"
+    fi
 }
 
 # Check replication status
@@ -457,9 +559,13 @@ check_replication() {
         REPL_SECONDS_BEHIND=$(echo "$repl_output" | grep -oP 'Seconds_Behind_\w+:\s+\K\d+' | head -1 || echo "")
         REPL_LAST_ERROR=$(echo "$repl_output" | grep -oP 'Last_(?:IO_)?Error:\s+\K.+' | head -1 || echo "")
         
-        log_detail "Replication: IO=$REPL_IO_RUNNING, SQL=$REPL_SQL_RUNNING, Lag=${REPL_SECONDS_BEHIND}s"
+        if [[ "$REPL_IO_RUNNING" == "true" ]] && [[ "$REPL_SQL_RUNNING" == "true" ]]; then
+            log_success "Replication healthy: IO=running, SQL=running, Lag=${REPL_SECONDS_BEHIND:-0}s"
+        else
+            log_error "Replication broken: IO=$REPL_IO_RUNNING, SQL=$REPL_SQL_RUNNING"
+        fi
     else
-        log_detail "Replication: Not configured"
+        log_detail "Replication: Not configured (single-DC setup)"
     fi
 }
 
@@ -489,15 +595,27 @@ check_backups() {
             BACKUP_ERRORS=$(echo "$backup_json" | jq -r '[.items | sort_by(.metadata.creationTimestamp) | reverse | .[0]] | .[0].status.error // "unknown error"')
         fi
         
-        log_detail "Last backup: $BACKUP_LAST_TIME"
+        if [[ "$BACKUP_FAILING" == "true" ]]; then
+            log_error "Latest backup failed: $BACKUP_ERRORS"
+        else
+            log_success "Backups healthy, last backup: $BACKUP_LAST_TIME"
+        fi
     else
-        log_detail "Backups: No backup resources found"
+        log_detail "No backup resources found"
     fi
 }
 
 # Detect scenarios based on gathered data
 detect_scenarios() {
     # API server down - most critical (already handled in main)
+    
+    # PXC CR not ready
+    if [[ "$PXC_CR_STATUS" != "ready" ]] && [[ "$PXC_CR_STATUS" != "unknown" ]] && [[ -n "$PXC_CR_STATUS" ]]; then
+        add_scenario "HIGH" \
+            "PXC cluster not in ready state" \
+            "cluster-loses-quorum.md" \
+            "PXC CR status: $PXC_CR_STATUS" "${PXC_CR_MESSAGE:+Message: $PXC_CR_MESSAGE}"
+    fi
     
     # All pods down - site outage
     if [[ "$POD_ALL_DOWN" == "true" ]]; then
@@ -615,9 +733,9 @@ detect_scenarios() {
 # Print results
 print_results() {
     log ""
-    log "${YELLOW}${BOLD}$(printf '=%.0s' {1..50})${RESET}"
-    log "${YELLOW}${BOLD}DIAGNOSTIC RESULTS${RESET}"
-    log "${YELLOW}${BOLD}$(printf '=%.0s' {1..50})${RESET}"
+    log "${WHITE}${BOLD}$(printf '=%.0s' {1..50})${RESET}"
+    log "${WHITE}${BOLD}DIAGNOSTIC RESULTS${RESET}"
+    log "${WHITE}${BOLD}$(printf '=%.0s' {1..50})${RESET}"
     log ""
     
     if [[ ${#SCENARIOS[@]} -eq 0 ]]; then
@@ -708,10 +826,11 @@ print_json() {
   "namespace": "$NAMESPACE",
   "scenarios": $scenarios_json,
   "state": {
+    "pxcCluster": {"name": "$PXC_CR_NAME", "status": "$PXC_CR_STATUS", "ready": "$PXC_CR_READY"},
     "pods": {"total": $POD_TOTAL, "running": $POD_RUNNING, "crashloop": $POD_CRASHLOOP, "oomKilled": $POD_OOM},
     "quorum": {"hasQuorum": $QUORUM_HAS_QUORUM, "clusterSize": $QUORUM_SIZE, "status": "$QUORUM_STATUS"},
     "nodes": {"total": $NODE_TOTAL, "ready": $NODE_READY, "notReady": $NODE_NOT_READY},
-    "operator": {"running": $OPERATOR_RUNNING},
+    "operator": {"running": $OPERATOR_RUNNING, "pod": "$OPERATOR_POD_NAME", "namespace": "$OPERATOR_NAMESPACE"},
     "services": {"hasEndpoints": $SERVICE_HAS_ENDPOINTS, "endpointCount": $SERVICE_ENDPOINT_COUNT}
   }
 }
@@ -722,6 +841,49 @@ EOF
 main() {
     parse_args "$@"
     check_prerequisites
+    
+    # Initialize all state variables to prevent undefined variable errors
+    PXC_CR_STATUS=""
+    PXC_CR_READY=""
+    PXC_CR_MESSAGE=""
+    PXC_CR_NAME=""
+    POD_TOTAL=0
+    POD_RUNNING=0
+    POD_CRASHLOOP=0
+    POD_PENDING=0
+    POD_OOM=0
+    POD_ALL_DOWN="false"
+    POD_ERRORS=""
+    QUORUM_REACHABLE=false
+    QUORUM_HAS_QUORUM=false
+    QUORUM_STATUS="unknown"
+    QUORUM_SIZE=0
+    NODE_TOTAL=0
+    NODE_READY=0
+    NODE_NOT_READY=0
+    NODE_DISK_PRESSURE=0
+    NODE_MEMORY_PRESSURE=0
+    NODE_UNREACHABLE=""
+    OPERATOR_RUNNING=false
+    OPERATOR_COUNT=0
+    OPERATOR_POD_NAME=""
+    OPERATOR_NAMESPACE=""
+    SERVICE_HAS_ENDPOINTS=false
+    SERVICE_ENDPOINT_COUNT=0
+    SERVICE_PROXY_TYPE="unknown"
+    PVC_TOTAL=0
+    PVC_BOUND=0
+    PVC_PENDING=0
+    PVC_ISSUES=""
+    DISK_USAGE_HIGH=""
+    REPL_CONFIGURED=false
+    REPL_IO_RUNNING=false
+    REPL_SQL_RUNNING=false
+    REPL_SECONDS_BEHIND=""
+    REPL_LAST_ERROR=""
+    BACKUP_LAST_TIME=""
+    BACKUP_FAILING=false
+    BACKUP_ERRORS=""
     
     # Get MySQL password from environment or secret
     if [[ -z "${MYSQL_ROOT_PASSWORD:-}" ]]; then
@@ -738,7 +900,7 @@ main() {
     log ""
     
     # Check API server first
-    log "${YELLOW}${BOLD}[1/9] Infrastructure Checks${RESET}"
+    log "${WHITE}${BOLD}[1/10] Infrastructure Checks${RESET}"
     if ! check_api_server; then
         add_scenario "CRITICAL" \
             "Kubernetes control plane outage (API server down)" \
@@ -755,28 +917,31 @@ main() {
     
     detect_environment
     
-    log "${YELLOW}${BOLD}[2/9] Pod Status${RESET}"
+    log "${WHITE}${BOLD}[2/10] PXC Cluster Status${RESET}"
+    check_pxc_cr_status
+    
+    log "${WHITE}${BOLD}[3/10] Pod Status${RESET}"
     check_pod_status
     
-    log "${YELLOW}${BOLD}[3/9] Cluster Quorum${RESET}"
+    log "${WHITE}${BOLD}[4/10] Cluster Quorum${RESET}"
     check_cluster_quorum
     
-    log "${YELLOW}${BOLD}[4/9] Kubernetes Nodes${RESET}"
+    log "${WHITE}${BOLD}[5/10] Kubernetes Nodes${RESET}"
     check_nodes
     
-    log "${YELLOW}${BOLD}[5/9] Percona Operator${RESET}"
+    log "${WHITE}${BOLD}[6/10] Percona Operator${RESET}"
     check_operator
     
-    log "${YELLOW}${BOLD}[6/9] Service Endpoints${RESET}"
+    log "${WHITE}${BOLD}[7/10] Service Endpoints${RESET}"
     check_services
     
-    log "${YELLOW}${BOLD}[7/9] Storage (PVCs)${RESET}"
+    log "${WHITE}${BOLD}[8/10] Storage (PVCs)${RESET}"
     check_pvcs
     
-    log "${YELLOW}${BOLD}[8/9] Replication${RESET}"
+    log "${WHITE}${BOLD}[9/10] Replication${RESET}"
     check_replication
     
-    log "${YELLOW}${BOLD}[9/9] Backups${RESET}"
+    log "${WHITE}${BOLD}[10/10] Backups${RESET}"
     check_backups
     
     # Detect scenarios
