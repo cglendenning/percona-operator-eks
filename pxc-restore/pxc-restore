@@ -912,18 +912,26 @@ copy_backup_resource() {
     return 0
 }
 
-# Wait for cluster to be ready for restore
-wait_for_cluster_initializing() {
+# Wait for cluster to be fully ready before restore
+wait_for_cluster_ready() {
     local target_ns="$1"
     local target_cluster="$2"
-    local max_wait=180  # 3 minutes max
+    local max_wait=600  # 10 minutes max - cluster startup can take time
 
-    log_info "Waiting for cluster to initialize..."
+    log_header "Waiting for Cluster to be Ready"
+    log_info "The cluster must be fully ready before restore can begin..."
+    log_info "This may take several minutes while pods start up."
+    echo ""
 
     local elapsed=0
     while [ $elapsed -lt $max_wait ]; do
         local cluster_state
         cluster_state=$(kctl get perconaxtradbcluster "$target_cluster" -n "$target_ns" -o jsonpath='{.status.state}' 2>/dev/null || echo "")
+        
+        # Get pod counts for progress display
+        local pxc_ready pxc_size
+        pxc_ready=$(kctl get perconaxtradbcluster "$target_cluster" -n "$target_ns" -o jsonpath='{.status.pxc.ready}' 2>/dev/null || echo "0")
+        pxc_size=$(kctl get perconaxtradbcluster "$target_cluster" -n "$target_ns" -o jsonpath='{.status.pxc.size}' 2>/dev/null || echo "?")
         
         if [ -n "$cluster_state" ]; then
             # Check for error states
@@ -935,25 +943,27 @@ wait_for_cluster_initializing() {
                 return 1
             fi
             
-            # Cluster is recognized by operator, we can proceed
-            if [ "$cluster_state" = "initializing" ] || [ "$cluster_state" = "ready" ] || [ "$cluster_state" = "paused" ]; then
+            # Only proceed when cluster is fully ready
+            if [ "$cluster_state" = "ready" ]; then
                 echo ""
-                log_success "Cluster is ready for restore (state: $cluster_state)"
+                log_success "Cluster is ready (state: $cluster_state, nodes: $pxc_ready/$pxc_size)"
                 return 0
             fi
             
-            printf "\r  Cluster state: %-15s (%ds)" "$cluster_state" "$elapsed"
+            printf "\r  Cluster state: %-15s | PXC nodes: %s/%s | Elapsed: %ds     " "$cluster_state" "$pxc_ready" "$pxc_size" "$elapsed"
         else
-            printf "\r  Waiting for cluster to be recognized... (%ds)" "$elapsed"
+            printf "\r  Waiting for operator to recognize cluster... (%ds)     " "$elapsed"
         fi
         
-        sleep 5
-        elapsed=$((elapsed + 5))
+        sleep 10
+        elapsed=$((elapsed + 10))
     done
 
     echo ""
-    log_warn "Cluster state not confirmed after ${max_wait}s, proceeding anyway..."
-    return 0
+    log_error "Cluster did not reach ready state after ${max_wait}s"
+    log_info "Check cluster status: kubectl get pxc $target_cluster -n $target_ns"
+    log_info "Check pod status: kubectl get pods -n $target_ns"
+    return 1
 }
 
 # Create restore resource
@@ -1324,7 +1334,8 @@ if [ "$DRY_RUN" = true ]; then
     fi
     log_dry "2. Create PXC cluster $TARGET_CLUSTER in $TARGET_NAMESPACE"
     log_dry "   - $pxc_size PXC nodes, $proxysql_size ProxySQL nodes"
-    log_dry "3. Wait for cluster to be recognized by operator"
+    log_dry "3. Wait for cluster to be FULLY READY (all pods running)"
+    log_dry "   - This may take several minutes"
     log_dry "4. Copy backup resource $BACKUP_NAME to $TARGET_NAMESPACE"
     log_dry "5. Create PerconaXtraDBClusterRestore resource"
     log_dry "   - Restore from backup: $BACKUP_NAME"
@@ -1358,8 +1369,8 @@ fi
 # Execute restore
 create_target_cluster "$SOURCE_NAMESPACE" "$TARGET_NAMESPACE" "$CLUSTER_NAME" || exit 1
 
-# Wait for cluster to be recognized by operator before attempting restore
-wait_for_cluster_initializing "$TARGET_NAMESPACE" "$TARGET_CLUSTER"
+# Wait for cluster to be FULLY READY before attempting restore
+wait_for_cluster_ready "$TARGET_NAMESPACE" "$TARGET_CLUSTER" || exit 1
 
 create_restore "$TARGET_NAMESPACE" "$TARGET_CLUSTER" "$BACKUP_NAME" "$RESTORE_TIME" "$BACKUP_STORAGE" "$SOURCE_NAMESPACE" || exit 1
 
