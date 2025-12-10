@@ -748,7 +748,7 @@ create_target_cluster() {
     # Copy required secrets
     log_info "Copying secrets to target namespace..."
 
-    # Get secrets name from spec or use default
+    # 1. Main cluster secrets (MySQL passwords)
     local secrets_name
     secrets_name=$(echo "$source_json" | jq -r '.spec.secretsName // ""')
     if [ -z "$secrets_name" ]; then
@@ -756,11 +756,46 @@ create_target_cluster() {
     fi
     copy_secret "$secrets_name" "$source_ns" "$target_ns" || true
 
-    # Copy backup credentials
+    # 2. SSL secrets (if TLS enabled)
+    local ssl_secret
+    ssl_secret=$(echo "$source_json" | jq -r '.spec.sslSecretName // ""')
+    if [ -n "$ssl_secret" ]; then
+        copy_secret "$ssl_secret" "$source_ns" "$target_ns" || true
+    fi
+
+    local ssl_internal_secret
+    ssl_internal_secret=$(echo "$source_json" | jq -r '.spec.sslInternalSecretName // ""')
+    if [ -n "$ssl_internal_secret" ]; then
+        copy_secret "$ssl_internal_secret" "$source_ns" "$target_ns" || true
+    fi
+
+    # 3. Backup storage credentials (S3/MinIO)
     local backup_creds
     backup_creds=$(echo "$source_json" | jq -r '.spec.backup.storages[]?.s3?.credentialsSecret // empty' | head -1)
     if [ -n "$backup_creds" ]; then
         copy_secret "$backup_creds" "$source_ns" "$target_ns" || true
+    fi
+
+    # 4. PITR storage credentials (may be different from backup storage)
+    local pitr_creds
+    pitr_creds=$(echo "$source_json" | jq -r '.spec.backup.pitr?.storageName as $sn | .spec.backup.storages[$sn]?.s3?.credentialsSecret // empty')
+    if [ -n "$pitr_creds" ] && [ "$pitr_creds" != "$backup_creds" ]; then
+        copy_secret "$pitr_creds" "$source_ns" "$target_ns" || true
+    fi
+
+    # 5. PMM secrets (if monitoring enabled)
+    local pmm_secret
+    pmm_secret=$(echo "$source_json" | jq -r '.spec.pmm.serverUser // ""')
+    if [ -n "$pmm_secret" ]; then
+        # PMM uses a secret named <cluster>-pmm-secret by default
+        copy_secret "${source_cluster}-pmm-secret" "$source_ns" "$target_ns" || true
+    fi
+
+    # 6. Vault token secret (if vault enabled)
+    local vault_secret
+    vault_secret=$(echo "$source_json" | jq -r '.spec.vault.secret // ""')
+    if [ -n "$vault_secret" ]; then
+        copy_secret "$vault_secret" "$source_ns" "$target_ns" || true
     fi
 
     # Modify cluster spec for target
@@ -774,6 +809,8 @@ create_target_cluster() {
         del(.metadata.generation) |
         del(.metadata.managedFields) |
         del(.metadata.ownerReferences) |
+        del(.metadata.finalizers) |
+        del(.metadata.annotations["kubectl.kubernetes.io/last-applied-configuration"]) |
         del(.status)
     ')
 
@@ -806,6 +843,119 @@ create_target_cluster() {
     fi
 }
 
+# Copy backup resource from source to target namespace
+copy_backup_resource() {
+    local backup_name="$1"
+    local source_ns="$2"
+    local target_ns="$3"
+
+    log_info "Copying backup resource to target namespace..."
+
+    if ! kctl get perconaxtradbclusterbackup "$backup_name" -n "$source_ns" &>/dev/null; then
+        log_error "Backup resource not found: $backup_name in $source_ns"
+        return 1
+    fi
+
+    if [ "$DRY_RUN" = true ]; then
+        log_dry "Would copy backup resource: $backup_name from $source_ns to $target_ns"
+        return 0
+    fi
+
+    # Get full backup including status
+    local backup_json
+    backup_json=$(kctl get perconaxtradbclusterbackup "$backup_name" -n "$source_ns" -o json)
+
+    # Extract status before modifying (status contains critical backup destination info)
+    local backup_status
+    backup_status=$(echo "$backup_json" | jq '.status')
+
+    # Modify metadata for target namespace
+    backup_json=$(echo "$backup_json" | jq --arg ns "$target_ns" '
+        .metadata.namespace = $ns |
+        del(.metadata.resourceVersion) |
+        del(.metadata.uid) |
+        del(.metadata.creationTimestamp) |
+        del(.metadata.generation) |
+        del(.metadata.managedFields) |
+        del(.metadata.ownerReferences) |
+        del(.metadata.finalizers) |
+        del(.status)
+    ')
+
+    # Apply the backup resource (creates without status)
+    if ! echo "$backup_json" | kctl apply -f - &>/dev/null; then
+        log_warn "Failed to create backup resource (may already exist)"
+    fi
+
+    # Now patch the status subresource - this is critical for restore to find the backup data
+    if [ "$backup_status" != "null" ] && [ -n "$backup_status" ]; then
+        local status_patch
+        status_patch=$(echo "$backup_status" | jq '{status: .}')
+        
+        if kctl patch perconaxtradbclusterbackup "$backup_name" -n "$target_ns" \
+            --type=merge --subresource=status -p "$status_patch" &>/dev/null; then
+            log_success "Copied backup resource with status: $backup_name"
+        else
+            # Fallback: try strategic merge patch
+            if kctl patch perconaxtradbclusterbackup "$backup_name" -n "$target_ns" \
+                --type=strategic --subresource=status -p "$status_patch" &>/dev/null; then
+                log_success "Copied backup resource with status: $backup_name"
+            else
+                log_warn "Could not patch backup status - restore may fail"
+                log_warn "Backup destination from source: $(echo "$backup_status" | jq -r '.destination // "unknown"')"
+            fi
+        fi
+    else
+        log_success "Copied backup resource: $backup_name"
+    fi
+
+    return 0
+}
+
+# Wait for cluster to be ready for restore
+wait_for_cluster_initializing() {
+    local target_ns="$1"
+    local target_cluster="$2"
+    local max_wait=180  # 3 minutes max
+
+    log_info "Waiting for cluster to initialize..."
+
+    local elapsed=0
+    while [ $elapsed -lt $max_wait ]; do
+        local cluster_state
+        cluster_state=$(kctl get perconaxtradbcluster "$target_cluster" -n "$target_ns" -o jsonpath='{.status.state}' 2>/dev/null || echo "")
+        
+        if [ -n "$cluster_state" ]; then
+            # Check for error states
+            if [ "$cluster_state" = "error" ] || [ "$cluster_state" = "Error" ]; then
+                echo ""
+                local error_msg
+                error_msg=$(kctl get perconaxtradbcluster "$target_cluster" -n "$target_ns" -o jsonpath='{.status.messages}' 2>/dev/null || echo "Unknown error")
+                log_error "Cluster entered error state: $error_msg"
+                return 1
+            fi
+            
+            # Cluster is recognized by operator, we can proceed
+            if [ "$cluster_state" = "initializing" ] || [ "$cluster_state" = "ready" ] || [ "$cluster_state" = "paused" ]; then
+                echo ""
+                log_success "Cluster is ready for restore (state: $cluster_state)"
+                return 0
+            fi
+            
+            printf "\r  Cluster state: %-15s (%ds)" "$cluster_state" "$elapsed"
+        else
+            printf "\r  Waiting for cluster to be recognized... (%ds)" "$elapsed"
+        fi
+        
+        sleep 5
+        elapsed=$((elapsed + 5))
+    done
+
+    echo ""
+    log_warn "Cluster state not confirmed after ${max_wait}s, proceeding anyway..."
+    return 0
+}
+
 # Create restore resource
 create_restore() {
     local target_ns="$1"
@@ -813,10 +963,14 @@ create_restore() {
     local backup_name="$3"
     local restore_time="$4"
     local storage_name="$5"
+    local source_ns="$6"
 
     local restore_name="restore-${target_cluster}-$(date +%s)"
 
     log_header "Creating Restore Resource"
+
+    # The restore needs the backup resource in the target namespace
+    copy_backup_resource "$backup_name" "$source_ns" "$target_ns"
 
     local restore_yaml
     restore_yaml=$(cat <<EOF
@@ -918,8 +1072,14 @@ get_database_summary() {
 
     log_header "Database Summary"
 
-    # Get root password
-    local secrets_name="${target_cluster}-secrets"
+    # Get root password - first check what secretsName the cluster uses
+    local secrets_name
+    secrets_name=$(kctl get perconaxtradbcluster "$target_cluster" -n "$target_ns" -o jsonpath='{.spec.secretsName}' 2>/dev/null || echo "")
+    if [ -z "$secrets_name" ]; then
+        # Fallback to convention
+        secrets_name="${target_cluster}-secrets"
+    fi
+    
     local root_pwd_b64
     root_pwd_b64=$(kctl get secret "$secrets_name" -n "$target_ns" -o jsonpath='{.data.root}' 2>/dev/null || echo "")
 
@@ -1164,11 +1324,13 @@ if [ "$DRY_RUN" = true ]; then
     fi
     log_dry "2. Create PXC cluster $TARGET_CLUSTER in $TARGET_NAMESPACE"
     log_dry "   - $pxc_size PXC nodes, $proxysql_size ProxySQL nodes"
-    log_dry "3. Create PerconaXtraDBClusterRestore resource"
+    log_dry "3. Wait for cluster to be recognized by operator"
+    log_dry "4. Copy backup resource $BACKUP_NAME to $TARGET_NAMESPACE"
+    log_dry "5. Create PerconaXtraDBClusterRestore resource"
     log_dry "   - Restore from backup: $BACKUP_NAME"
     log_dry "   - Point-in-time: $RESTORE_TIME UTC"
-    log_dry "4. Wait for restore completion and cluster ready state"
-    log_dry "5. Display database summary"
+    log_dry "6. Wait for restore completion and cluster ready state"
+    log_dry "7. Display database summary"
     echo ""
     
     if [ $dry_errors -gt 0 ]; then
@@ -1196,10 +1358,10 @@ fi
 # Execute restore
 create_target_cluster "$SOURCE_NAMESPACE" "$TARGET_NAMESPACE" "$CLUSTER_NAME" || exit 1
 
-# Wait a moment for cluster to be registered
-sleep 5
+# Wait for cluster to be recognized by operator before attempting restore
+wait_for_cluster_initializing "$TARGET_NAMESPACE" "$TARGET_CLUSTER"
 
-create_restore "$TARGET_NAMESPACE" "$TARGET_CLUSTER" "$BACKUP_NAME" "$RESTORE_TIME" "$BACKUP_STORAGE" || exit 1
+create_restore "$TARGET_NAMESPACE" "$TARGET_CLUSTER" "$BACKUP_NAME" "$RESTORE_TIME" "$BACKUP_STORAGE" "$SOURCE_NAMESPACE" || exit 1
 
 wait_for_restore "$TARGET_NAMESPACE" "$RESTORE_NAME" "$TARGET_CLUSTER" || exit 1
 
