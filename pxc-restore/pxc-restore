@@ -807,21 +807,16 @@ create_target_cluster() {
         copy_secret "$pitr_creds" "$source_ns" "$target_ns" || log_warn "Could not copy PITR credentials"
     fi
 
-    # 5. PMM secrets (if monitoring enabled) - optional
-    local pmm_enabled
-    pmm_enabled=$(echo "$source_json" | jq -r '.spec.pmm.enabled // false')
-    if [ "$pmm_enabled" = "true" ]; then
-        copy_secret "${source_cluster}-pmm-secret" "$source_ns" "$target_ns" || log_warn "Could not copy PMM secret"
-    fi
+    # Note: PMM credentials (pmmservertoken) are included in the main cluster secret
 
-    # 6. Vault token secret (if vault enabled)
+    # 5. Vault token secret (if vault enabled)
     local vault_secret
     vault_secret=$(echo "$source_json" | jq -r '.spec.vault.secret // ""')
     if [ -n "$vault_secret" ]; then
         copy_secret "$vault_secret" "$source_ns" "$target_ns" || log_warn "Could not copy Vault secret"
     fi
 
-    # 7. Copy image pull secrets if specified
+    # 6. Copy image pull secrets if specified
     local pull_secrets
     pull_secrets=$(echo "$source_json" | jq -r '.spec.imagePullSecrets[]?.name // empty' 2>/dev/null)
     for secret in $pull_secrets; do
