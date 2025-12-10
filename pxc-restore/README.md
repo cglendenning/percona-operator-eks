@@ -87,12 +87,94 @@ Use `--dry-run` to verify everything is in place without making changes:
 ./pxc-restore -n percona --dry-run
 ```
 
-This will:
-- Check all prerequisites (kubectl, jq, cluster access, operator, backups)
-- Verify the source namespace and cluster exist
-- List available backups and their time windows
-- Validate the target namespace configuration
-- Show exactly what actions would be taken
+### Prerequisite Checks
+
+The dry-run performs comprehensive validation:
+
+**Tools & Connectivity:**
+- kubectl installed and version
+- jq installed (for JSON parsing)
+- base64 installed (for secret decoding)
+- Kubernetes cluster accessible
+
+**Source Environment:**
+- Source namespace exists
+- PXC operator CRDs installed
+- PXC operator is running
+- PXC cluster exists and is in ready state
+- Backups exist (and count of succeeded backups)
+
+**Secrets & Credentials:**
+- Cluster secrets exist and contain root password
+- Backup credentials secret exists
+- Backup credentials contain AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY
+
+**Storage & Configuration:**
+- Backup storage configured in cluster spec
+- Backup bucket and endpoint configured
+- PITR enabled on source cluster
+- Storage class exists
+- Ready nodes available in cluster
+
+**Permissions:**
+- Permission to create namespaces (RBAC check)
+
+### Dry Run Validation
+
+After selecting backup, time, and target namespace, dry-run validates:
+
+- Cluster secrets can be found and will be copied
+- Backup credentials can be found and will be copied
+- Backup storage name matches cluster configuration
+- Selected backup is in Succeeded state
+- Backup destination/location is known
+- Target namespace exists or will be created
+- No conflicting cluster with same name in target namespace
+- Shows cluster size (PXC nodes, ProxySQL nodes)
+- Shows complete restore configuration
+
+### Example Dry Run Output
+
+```
+=====================================================
+  Dry Run - Detailed Validation
+=====================================================
+
+Validating secrets to copy:
+[DRY-RUN]   Will copy cluster secret: pxc-cluster-secrets
+[DRY-RUN]   Will copy backup credentials: minio-credentials
+
+Validating backup configuration:
+[DRY-RUN]   Backup storage 'minio-backup' exists in cluster config
+[DRY-RUN]   Backup 'daily-backup-20250115' is in Succeeded state
+[DRY-RUN]   Backup location: s3://percona-backups/daily-backup-20250115
+
+Validating target namespace:
+[DRY-RUN]   Target namespace 'percona-restored' will be created
+[DRY-RUN]   No conflicting cluster named 'pxc-cluster-restored'
+
+Cluster configuration to create:
+[DRY-RUN]   PXC nodes: 3
+[DRY-RUN]   ProxySQL nodes: 3
+
+=====================================================
+  Dry Run - Actions Summary
+=====================================================
+
+[DRY-RUN] 1. Copy secrets from percona to percona-restored
+[DRY-RUN]    - pxc-cluster-secrets (cluster secrets)
+[DRY-RUN]    - minio-credentials (backup credentials)
+[DRY-RUN] 2. Create PXC cluster pxc-cluster-restored in percona-restored
+[DRY-RUN]    - 3 PXC nodes, 3 ProxySQL nodes
+[DRY-RUN] 3. Create PerconaXtraDBClusterRestore resource
+[DRY-RUN]    - Restore from backup: daily-backup-20250115
+[DRY-RUN]    - Point-in-time: 2025-01-15 12:00:00 UTC
+[DRY-RUN] 4. Wait for restore completion and cluster ready state
+[DRY-RUN] 5. Display database summary
+
+[OK] Dry run validation complete. All checks passed.
+[INFO] Remove --dry-run to perform the actual restore.
+```
 
 ## Example Session
 
