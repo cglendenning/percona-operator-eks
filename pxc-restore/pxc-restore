@@ -170,19 +170,41 @@ check_prerequisites() {
     # Check PXC operator is running
     local operator_ns=""
     local operator_running=false
-    for ns in "percona" "pxc-operator" "default" "$SOURCE_NAMESPACE"; do
-        if [ -n "$ns" ]; then
-            local operator_pods
-            operator_pods=$(kctl get pods -n "$ns" -l app.kubernetes.io/name=percona-xtradb-cluster-operator -o jsonpath='{.items[*].status.phase}' 2>/dev/null || echo "")
-            if echo "$operator_pods" | grep -q "Running"; then
-                operator_ns="$ns"
-                operator_running=true
-                break
+    local operator_pod=""
+    
+    # Search in common namespaces with multiple label patterns
+    for ns in "$SOURCE_NAMESPACE" "percona" "pxc-operator" "percona-system" "default"; do
+        if [ -n "$ns" ] && kctl get namespace "$ns" &>/dev/null; then
+            # Try different label selectors that operators commonly use
+            for label in "app.kubernetes.io/name=percona-xtradb-cluster-operator" \
+                         "name=percona-xtradb-cluster-operator" \
+                         "app=percona-xtradb-cluster-operator"; do
+                operator_pod=$(kctl get pods -n "$ns" -l "$label" -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || echo "")
+                if [ -n "$operator_pod" ]; then
+                    local pod_phase
+                    pod_phase=$(kctl get pod "$operator_pod" -n "$ns" -o jsonpath='{.status.phase}' 2>/dev/null || echo "")
+                    if [ "$pod_phase" = "Running" ]; then
+                        operator_ns="$ns"
+                        operator_running=true
+                        break 2
+                    fi
+                fi
+            done
+            
+            # Fallback: search for any pod with "operator" in name containing "pxc" or "percona"
+            if [ "$operator_running" = false ]; then
+                operator_pod=$(kctl get pods -n "$ns" --no-headers 2>/dev/null | grep -i "percona.*operator\|pxc.*operator" | grep "Running" | head -1 | awk '{print $1}' || echo "")
+                if [ -n "$operator_pod" ]; then
+                    operator_ns="$ns"
+                    operator_running=true
+                    break
+                fi
             fi
         fi
     done
+    
     if [ "$operator_running" = true ]; then
-        log_success "PXC operator is running (namespace: $operator_ns)"
+        log_success "PXC operator is running (namespace: $operator_ns, pod: $operator_pod)"
     else
         log_warn "Could not verify PXC operator is running (may be in a different namespace)"
         ((warnings++))
@@ -1044,12 +1066,11 @@ echo ""
 if [ "$DRY_RUN" = true ]; then
     log_header "Dry Run - Detailed Validation"
     
-    local dry_errors=0
+    dry_errors=0
     
     # Validate secrets that will be copied
     echo "Validating secrets to copy:"
     
-    local secrets_name
     secrets_name=$(kctl get perconaxtradbcluster "$CLUSTER_NAME" -n "$SOURCE_NAMESPACE" -o jsonpath='{.spec.secretsName}' 2>/dev/null || echo "")
     if [ -z "$secrets_name" ]; then
         secrets_name="${CLUSTER_NAME}-secrets"
@@ -1063,7 +1084,6 @@ if [ "$DRY_RUN" = true ]; then
     fi
     
     # Check backup credentials
-    local backup_creds
     backup_creds=$(kctl get perconaxtradbcluster "$CLUSTER_NAME" -n "$SOURCE_NAMESPACE" -o json 2>/dev/null | jq -r '.spec.backup.storages[]?.s3?.credentialsSecret // empty' | head -1)
     if [ -n "$backup_creds" ]; then
         if kctl get secret "$backup_creds" -n "$SOURCE_NAMESPACE" &>/dev/null; then
@@ -1077,7 +1097,6 @@ if [ "$DRY_RUN" = true ]; then
     
     # Validate backup storage name matches cluster config
     echo "Validating backup configuration:"
-    local storage_names
     storage_names=$(kctl get perconaxtradbcluster "$CLUSTER_NAME" -n "$SOURCE_NAMESPACE" -o json 2>/dev/null | jq -r '.spec.backup.storages | keys[]' 2>/dev/null || echo "")
     
     if echo "$storage_names" | grep -q "^${BACKUP_STORAGE}$"; then
@@ -1089,7 +1108,6 @@ if [ "$DRY_RUN" = true ]; then
     fi
     
     # Verify backup exists and is accessible
-    local backup_state backup_destination
     backup_state=$(kctl get perconaxtradbclusterbackup "$BACKUP_NAME" -n "$SOURCE_NAMESPACE" -o jsonpath='{.status.state}' 2>/dev/null || echo "")
     backup_destination=$(kctl get perconaxtradbclusterbackup "$BACKUP_NAME" -n "$SOURCE_NAMESPACE" -o jsonpath='{.status.destination}' 2>/dev/null || echo "")
     
@@ -1110,7 +1128,6 @@ if [ "$DRY_RUN" = true ]; then
         log_dry "  Target namespace '$TARGET_NAMESPACE' exists"
         
         # Check for existing cluster with same name
-        local existing_cluster
         existing_cluster=$(kctl get perconaxtradbcluster "$TARGET_CLUSTER" -n "$TARGET_NAMESPACE" 2>/dev/null && echo "exists" || echo "")
         if [ "$existing_cluster" = "exists" ]; then
             log_error "  Cluster '$TARGET_CLUSTER' already exists in target namespace"
@@ -1125,7 +1142,6 @@ if [ "$DRY_RUN" = true ]; then
     
     # Show cluster spec that will be created
     echo "Cluster configuration to create:"
-    local pxc_size proxysql_size
     pxc_size=$(kctl get perconaxtradbcluster "$CLUSTER_NAME" -n "$SOURCE_NAMESPACE" -o jsonpath='{.spec.pxc.size}' 2>/dev/null || echo "?")
     proxysql_size=$(kctl get perconaxtradbcluster "$CLUSTER_NAME" -n "$SOURCE_NAMESPACE" -o jsonpath='{.spec.proxysql.size}' 2>/dev/null || echo "?")
     log_dry "  PXC nodes: $pxc_size"
