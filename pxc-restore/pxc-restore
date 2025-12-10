@@ -737,72 +737,108 @@ create_target_cluster() {
     log_header "Creating Target Cluster"
 
     # Get source cluster spec
+    log_info "Fetching source cluster spec..."
     local source_json
-    source_json=$(kctl get perconaxtradbcluster "$source_cluster" -n "$source_ns" -o json)
+    source_json=$(kctl get perconaxtradbcluster "$source_cluster" -n "$source_ns" -o json 2>&1)
 
-    if [ -z "$source_json" ]; then
-        log_error "Failed to get source cluster spec"
+    if [ -z "$source_json" ] || echo "$source_json" | grep -q "^Error\|not found"; then
+        log_error "Failed to get source cluster spec: $source_json"
+        return 1
+    fi
+
+    # Verify we got valid JSON
+    if ! echo "$source_json" | jq -e '.kind == "PerconaXtraDBCluster"' &>/dev/null; then
+        log_error "Invalid cluster spec received"
         return 1
     fi
 
     # Copy required secrets
     log_info "Copying secrets to target namespace..."
 
-    # 1. Main cluster secrets (MySQL passwords)
+    # 1. Main cluster secrets (MySQL passwords) - CRITICAL
     local secrets_name
     secrets_name=$(echo "$source_json" | jq -r '.spec.secretsName // ""')
     if [ -z "$secrets_name" ]; then
         secrets_name="${source_cluster}-secrets"
     fi
-    copy_secret "$secrets_name" "$source_ns" "$target_ns" || true
+    if ! copy_secret "$secrets_name" "$source_ns" "$target_ns"; then
+        log_error "Failed to copy cluster secrets - this is required"
+        return 1
+    fi
 
     # 2. SSL secrets (if TLS enabled)
     local ssl_secret
     ssl_secret=$(echo "$source_json" | jq -r '.spec.sslSecretName // ""')
     if [ -n "$ssl_secret" ]; then
-        copy_secret "$ssl_secret" "$source_ns" "$target_ns" || true
+        copy_secret "$ssl_secret" "$source_ns" "$target_ns" || log_warn "Could not copy SSL secret"
     fi
 
     local ssl_internal_secret
     ssl_internal_secret=$(echo "$source_json" | jq -r '.spec.sslInternalSecretName // ""')
     if [ -n "$ssl_internal_secret" ]; then
-        copy_secret "$ssl_internal_secret" "$source_ns" "$target_ns" || true
+        copy_secret "$ssl_internal_secret" "$source_ns" "$target_ns" || log_warn "Could not copy internal SSL secret"
     fi
 
-    # 3. Backup storage credentials (S3/MinIO)
+    # 3. Backup storage credentials (S3/MinIO) - CRITICAL for restore
     local backup_creds
     backup_creds=$(echo "$source_json" | jq -r '.spec.backup.storages[]?.s3?.credentialsSecret // empty' | head -1)
     if [ -n "$backup_creds" ]; then
-        copy_secret "$backup_creds" "$source_ns" "$target_ns" || true
+        if ! copy_secret "$backup_creds" "$source_ns" "$target_ns"; then
+            log_error "Failed to copy backup credentials - this is required for restore"
+            return 1
+        fi
     fi
 
     # 4. PITR storage credentials (may be different from backup storage)
     local pitr_creds
     pitr_creds=$(echo "$source_json" | jq -r '.spec.backup.pitr?.storageName as $sn | .spec.backup.storages[$sn]?.s3?.credentialsSecret // empty')
     if [ -n "$pitr_creds" ] && [ "$pitr_creds" != "$backup_creds" ]; then
-        copy_secret "$pitr_creds" "$source_ns" "$target_ns" || true
+        copy_secret "$pitr_creds" "$source_ns" "$target_ns" || log_warn "Could not copy PITR credentials"
     fi
 
-    # 5. PMM secrets (if monitoring enabled)
-    local pmm_secret
-    pmm_secret=$(echo "$source_json" | jq -r '.spec.pmm.serverUser // ""')
-    if [ -n "$pmm_secret" ]; then
-        # PMM uses a secret named <cluster>-pmm-secret by default
-        copy_secret "${source_cluster}-pmm-secret" "$source_ns" "$target_ns" || true
+    # 5. PMM secrets (if monitoring enabled) - optional
+    local pmm_enabled
+    pmm_enabled=$(echo "$source_json" | jq -r '.spec.pmm.enabled // false')
+    if [ "$pmm_enabled" = "true" ]; then
+        copy_secret "${source_cluster}-pmm-secret" "$source_ns" "$target_ns" || log_warn "Could not copy PMM secret"
     fi
 
     # 6. Vault token secret (if vault enabled)
     local vault_secret
     vault_secret=$(echo "$source_json" | jq -r '.spec.vault.secret // ""')
     if [ -n "$vault_secret" ]; then
-        copy_secret "$vault_secret" "$source_ns" "$target_ns" || true
+        copy_secret "$vault_secret" "$source_ns" "$target_ns" || log_warn "Could not copy Vault secret"
     fi
 
-    # Modify cluster spec for target
+    # 7. Copy image pull secrets if specified
+    local pull_secrets
+    pull_secrets=$(echo "$source_json" | jq -r '.spec.imagePullSecrets[]?.name // empty' 2>/dev/null)
+    for secret in $pull_secrets; do
+        if [ -n "$secret" ]; then
+            copy_secret "$secret" "$source_ns" "$target_ns" || log_warn "Could not copy image pull secret: $secret"
+        fi
+    done
+
+    # Verify storage class exists (if specified)
+    local storage_class
+    storage_class=$(echo "$source_json" | jq -r '.spec.pxc.volumeSpec.persistentVolumeClaim.storageClassName // ""')
+    if [ -n "$storage_class" ]; then
+        if ! kctl get storageclass "$storage_class" &>/dev/null; then
+            log_warn "Storage class '$storage_class' not found - cluster may fail to start"
+        else
+            log_info "Verified storage class exists: $storage_class"
+        fi
+    fi
+
+    # Modify cluster spec for target - strip ALL management cruft and potential issues
+    log_info "Preparing cluster spec for target namespace..."
     local target_json
     target_json=$(echo "$source_json" | jq --arg name "$target_cluster" --arg ns "$target_ns" '
+        # Set new identity
         .metadata.name = $name |
         .metadata.namespace = $ns |
+        
+        # Remove all server-side metadata
         del(.metadata.resourceVersion) |
         del(.metadata.uid) |
         del(.metadata.creationTimestamp) |
@@ -810,17 +846,102 @@ create_target_cluster() {
         del(.metadata.managedFields) |
         del(.metadata.ownerReferences) |
         del(.metadata.finalizers) |
-        del(.metadata.annotations["kubectl.kubernetes.io/last-applied-configuration"]) |
-        del(.status)
+        del(.metadata.selfLink) |
+        del(.status) |
+        
+        # Remove ALL annotations (start fresh - no management system tracking)
+        del(.metadata.annotations) |
+        
+        # Remove labels that reference old cluster or management systems
+        del(.metadata.labels["cattle.io/creator"]) |
+        del(.metadata.labels["field.cattle.io/projectId"]) |
+        del(.metadata.labels["helm.sh/chart"]) |
+        del(.metadata.labels["app.kubernetes.io/managed-by"]) |
+        del(.metadata.labels["argocd.argoproj.io/instance"]) |
+        del(.metadata.labels["fleet.cattle.io/managed"]) |
+        
+        # Update instance label to new cluster name
+        (if .metadata.labels["app.kubernetes.io/instance"] then .metadata.labels["app.kubernetes.io/instance"] = $name else . end) |
+        
+        # CRITICAL: Ensure cluster is NOT paused - we need it to start
+        .spec.pause = false |
+        
+        # CRITICAL: Remove scheduling constraints that could prevent pods from starting
+        del(.spec.pxc.nodeSelector) |
+        del(.spec.pxc.affinity) |
+        del(.spec.pxc.tolerations) |
+        del(.spec.proxysql.nodeSelector) |
+        del(.spec.proxysql.affinity) |
+        del(.spec.proxysql.tolerations) |
+        del(.spec.haproxy.nodeSelector) |
+        del(.spec.haproxy.affinity) |
+        del(.spec.haproxy.tolerations) |
+        del(.spec.logcollector.nodeSelector) |
+        del(.spec.logcollector.affinity) |
+        del(.spec.logcollector.tolerations) |
+        
+        # Remove custom scheduler (use default)
+        del(.spec.pxc.schedulerName) |
+        del(.spec.proxysql.schedulerName) |
+        del(.spec.haproxy.schedulerName) |
+        
+        # Remove priority class references (may not exist in target)
+        del(.spec.pxc.priorityClassName) |
+        del(.spec.proxysql.priorityClassName) |
+        del(.spec.haproxy.priorityClassName) |
+        
+        # Disable scheduled backups on restored cluster (we just want it running)
+        del(.spec.backup.schedule) |
+        
+        # Remove any upgrade strategy that might interfere
+        del(.spec.upgradeOptions) |
+        del(.spec.updateStrategy) |
+        
+        # Ensure allowUnsafeConfigurations is set appropriately
+        .spec.allowUnsafeConfigurations = true
     ')
+
+    # Validate the generated spec
+    if ! echo "$target_json" | jq -e '.metadata.name' &>/dev/null; then
+        log_error "Generated cluster spec is invalid"
+        return 1
+    fi
+
+    # Show what we're creating
+    local pxc_size proxysql_size haproxy_size
+    pxc_size=$(echo "$target_json" | jq -r '.spec.pxc.size // 0')
+    proxysql_size=$(echo "$target_json" | jq -r '.spec.proxysql.size // 0')
+    haproxy_size=$(echo "$target_json" | jq -r '.spec.haproxy.size // 0')
+    
+    log_info "Target cluster configuration:"
+    echo "  Name: $target_cluster"
+    echo "  Namespace: $target_ns"
+    echo "  PXC nodes: $pxc_size"
+    if [ "$proxysql_size" != "0" ] && [ "$proxysql_size" != "null" ]; then
+        echo "  ProxySQL nodes: $proxysql_size"
+    fi
+    if [ "$haproxy_size" != "0" ] && [ "$haproxy_size" != "null" ]; then
+        echo "  HAProxy nodes: $haproxy_size"
+    fi
+    echo "  Paused: false (forced)"
+    echo "  Node selectors: removed"
+    echo "  Affinity rules: removed"
+    echo "  Scheduled backups: disabled"
+    echo ""
 
     if [ "$DRY_RUN" = true ]; then
         log_dry "Would create PXC cluster: $target_cluster in namespace $target_ns"
-        log_dry "Cluster spec based on: $source_cluster"
+        log_dry "Stripped: annotations, management labels, finalizers, ownerReferences"
+        log_dry "Stripped: nodeSelector, affinity, tolerations, schedulerName, priorityClass"
+        log_dry "Disabled: scheduled backups, upgrade strategies"
+        log_dry "Set: pause=false, allowUnsafeConfigurations=true"
         if [ "$VERBOSE" = true ]; then
             echo ""
-            echo "Target cluster spec (abbreviated):"
-            echo "$target_json" | jq '{apiVersion, kind, metadata: {name: .metadata.name, namespace: .metadata.namespace}, spec: {pxc: {size: .spec.pxc.size}, proxysql: {size: .spec.proxysql.size}}}'
+            echo "Target cluster metadata:"
+            echo "$target_json" | jq '.metadata'
+            echo ""
+            echo "Full target cluster spec:"
+            echo "$target_json" | jq '.'
         fi
         return 0
     fi
@@ -832,12 +953,37 @@ create_target_cluster() {
     tmp_file=$(mktemp)
     echo "$target_json" > "$tmp_file"
 
-    if kctl apply -f "$tmp_file"; then
-        log_success "Cluster created: $target_cluster"
+    # Save spec for debugging if needed
+    if [ "$VERBOSE" = true ]; then
+        local debug_file="/tmp/pxc-restore-cluster-spec-$(date +%s).json"
+        cp "$tmp_file" "$debug_file"
+        log_info "Cluster spec saved to: $debug_file"
+    fi
+
+    local apply_output
+    apply_output=$(kctl apply -f "$tmp_file" 2>&1)
+    local apply_result=$?
+
+    if [ $apply_result -eq 0 ]; then
+        log_success "Cluster resource created: $target_cluster"
+        echo "$apply_output"
         rm -f "$tmp_file"
-        return 0
+        
+        # Verify the cluster resource was actually created
+        sleep 2
+        if kctl get perconaxtradbcluster "$target_cluster" -n "$target_ns" &>/dev/null; then
+            log_success "Verified cluster resource exists"
+            return 0
+        else
+            log_error "Cluster resource was not created despite successful apply"
+            return 1
+        fi
     else
-        log_error "Failed to create cluster"
+        log_error "Failed to create cluster resource"
+        echo "$apply_output"
+        echo ""
+        log_info "Cluster spec that failed:"
+        cat "$tmp_file" | jq '.metadata, {spec_keys: (.spec | keys)}'
         rm -f "$tmp_file"
         return 1
     fi
@@ -917,21 +1063,45 @@ wait_for_cluster_ready() {
     local target_ns="$1"
     local target_cluster="$2"
     local max_wait=600  # 10 minutes max - cluster startup can take time
+    local cluster_state=""
+    local pxc_ready=""
+    local pxc_size=""
+    local elapsed=0
 
     log_header "Waiting for Cluster to be Ready"
     log_info "The cluster must be fully ready before restore can begin..."
     log_info "This may take several minutes while pods start up."
     echo ""
+    
+    # First verify the cluster resource exists
+    if ! kctl get perconaxtradbcluster "$target_cluster" -n "$target_ns" &>/dev/null; then
+        log_error "Cluster resource $target_cluster does not exist in namespace $target_ns"
+        log_error "Something went wrong with cluster creation"
+        return 1
+    fi
+    
+    log_info "Cluster resource exists. Waiting for pods to start..."
+    echo ""
 
-    local elapsed=0
     while [ $elapsed -lt $max_wait ]; do
-        local cluster_state
+        # Get cluster state
         cluster_state=$(kctl get perconaxtradbcluster "$target_cluster" -n "$target_ns" -o jsonpath='{.status.state}' 2>/dev/null || echo "")
         
         # Get pod counts for progress display
-        local pxc_ready pxc_size
         pxc_ready=$(kctl get perconaxtradbcluster "$target_cluster" -n "$target_ns" -o jsonpath='{.status.pxc.ready}' 2>/dev/null || echo "0")
         pxc_size=$(kctl get perconaxtradbcluster "$target_cluster" -n "$target_ns" -o jsonpath='{.status.pxc.size}' 2>/dev/null || echo "?")
+        
+        # Also check actual pod status
+        local pod_count
+        pod_count=$(kctl get pods -n "$target_ns" -l "app.kubernetes.io/instance=$target_cluster,app.kubernetes.io/component=pxc" --no-headers 2>/dev/null | wc -l | tr -d ' ')
+        local running_pods
+        running_pods=$(kctl get pods -n "$target_ns" -l "app.kubernetes.io/instance=$target_cluster,app.kubernetes.io/component=pxc" --no-headers 2>/dev/null | grep -c "Running" || echo "0")
+        
+        # Debug output
+        if [ "$VERBOSE" = true ]; then
+            echo ""
+            echo "  DEBUG: cluster_state='$cluster_state' pxc_ready='$pxc_ready' pxc_size='$pxc_size' pods=$pod_count running=$running_pods"
+        fi
         
         if [ -n "$cluster_state" ]; then
             # Check for error states
@@ -940,6 +1110,9 @@ wait_for_cluster_ready() {
                 local error_msg
                 error_msg=$(kctl get perconaxtradbcluster "$target_cluster" -n "$target_ns" -o jsonpath='{.status.messages}' 2>/dev/null || echo "Unknown error")
                 log_error "Cluster entered error state: $error_msg"
+                echo ""
+                log_info "Describing cluster for troubleshooting:"
+                kctl describe perconaxtradbcluster "$target_cluster" -n "$target_ns" 2>/dev/null | tail -30
                 return 1
             fi
             
@@ -947,12 +1120,21 @@ wait_for_cluster_ready() {
             if [ "$cluster_state" = "ready" ]; then
                 echo ""
                 log_success "Cluster is ready (state: $cluster_state, nodes: $pxc_ready/$pxc_size)"
-                return 0
+                # Double check pods are actually running
+                sleep 5
+                running_pods=$(kctl get pods -n "$target_ns" -l "app.kubernetes.io/instance=$target_cluster,app.kubernetes.io/component=pxc" --no-headers 2>/dev/null | grep -c "Running" || echo "0")
+                if [ "$running_pods" -gt 0 ]; then
+                    log_success "Verified $running_pods PXC pod(s) running"
+                    return 0
+                else
+                    log_warn "Cluster reports ready but no running pods found, continuing to wait..."
+                fi
             fi
             
-            printf "\r  Cluster state: %-15s | PXC nodes: %s/%s | Elapsed: %ds     " "$cluster_state" "$pxc_ready" "$pxc_size" "$elapsed"
+            printf "\r  State: %-12s | PXC: %s/%s ready | Pods: %s (%s running) | %ds elapsed     " \
+                "$cluster_state" "$pxc_ready" "$pxc_size" "$pod_count" "$running_pods" "$elapsed"
         else
-            printf "\r  Waiting for operator to recognize cluster... (%ds)     " "$elapsed"
+            printf "\r  Waiting for operator to process cluster... (%ds)     " "$elapsed"
         fi
         
         sleep 10
@@ -961,8 +1143,15 @@ wait_for_cluster_ready() {
 
     echo ""
     log_error "Cluster did not reach ready state after ${max_wait}s"
-    log_info "Check cluster status: kubectl get pxc $target_cluster -n $target_ns"
-    log_info "Check pod status: kubectl get pods -n $target_ns"
+    echo ""
+    log_info "Current cluster status:"
+    kctl get perconaxtradbcluster "$target_cluster" -n "$target_ns" -o wide 2>/dev/null || echo "  Could not get cluster status"
+    echo ""
+    log_info "Current pods in namespace:"
+    kctl get pods -n "$target_ns" 2>/dev/null || echo "  Could not get pods"
+    echo ""
+    log_info "Cluster events:"
+    kctl describe perconaxtradbcluster "$target_cluster" -n "$target_ns" 2>/dev/null | grep -A 20 "Events:" || echo "  Could not get events"
     return 1
 }
 
@@ -1366,13 +1555,33 @@ if [[ ! "$confirm" =~ ^[Yy]$ ]]; then
     exit 0
 fi
 
-# Execute restore
-create_target_cluster "$SOURCE_NAMESPACE" "$TARGET_NAMESPACE" "$CLUSTER_NAME" || exit 1
+# Execute restore - STRICT ORDER: cluster must be fully ready before restore is created
+log_header "Step 1: Create Target Cluster"
+create_target_cluster "$SOURCE_NAMESPACE" "$TARGET_NAMESPACE" "$CLUSTER_NAME"
+if [ $? -ne 0 ]; then
+    log_error "Failed to create target cluster. Aborting."
+    exit 1
+fi
 
-# Wait for cluster to be FULLY READY before attempting restore
-wait_for_cluster_ready "$TARGET_NAMESPACE" "$TARGET_CLUSTER" || exit 1
+log_header "Step 2: Wait for Cluster to be FULLY READY"
+log_info "The restore resource will NOT be created until the cluster is ready."
+echo ""
+wait_for_cluster_ready "$TARGET_NAMESPACE" "$TARGET_CLUSTER"
+if [ $? -ne 0 ]; then
+    log_error "Cluster did not become ready. Aborting."
+    log_info "You may need to investigate why the cluster failed to start."
+    log_info "Check: kubectl describe pxc $TARGET_CLUSTER -n $TARGET_NAMESPACE"
+    log_info "Check: kubectl get pods -n $TARGET_NAMESPACE"
+    exit 1
+fi
 
-create_restore "$TARGET_NAMESPACE" "$TARGET_CLUSTER" "$BACKUP_NAME" "$RESTORE_TIME" "$BACKUP_STORAGE" "$SOURCE_NAMESPACE" || exit 1
+log_header "Step 3: Create Restore Resource"
+log_info "Cluster is ready. Now creating restore resource..."
+create_restore "$TARGET_NAMESPACE" "$TARGET_CLUSTER" "$BACKUP_NAME" "$RESTORE_TIME" "$BACKUP_STORAGE" "$SOURCE_NAMESPACE"
+if [ $? -ne 0 ]; then
+    log_error "Failed to create restore resource. Aborting."
+    exit 1
+fi
 
 wait_for_restore "$TARGET_NAMESPACE" "$RESTORE_NAME" "$TARGET_CLUSTER" || exit 1
 
