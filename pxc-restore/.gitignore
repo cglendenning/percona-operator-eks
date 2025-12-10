@@ -1,0 +1,16 @@
+# Binary
+pxc-restore-server
+dist/
+
+# Go build cache (if generated locally)
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+
+# Test binary
+*.test
+
+# Output of go coverage tool
+*.out

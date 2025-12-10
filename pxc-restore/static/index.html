@@ -1,0 +1,147 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>PXC Point-in-Time Restore</title>
+    <link rel="stylesheet" href="/static/styles.css">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+</head>
+<body>
+    <div class="gradient-bg"></div>
+    
+    <div class="container">
+        <header class="header">
+            <div class="header-content">
+                <h1 class="title">PXC Point-in-Time Restore</h1>
+                <p class="subtitle">Restore Percona XtraDB Cluster to any point in time</p>
+            </div>
+        </header>
+
+        <main class="main-content">
+            <!-- Step 1: Source Namespace -->
+            <section class="step-section" id="step-1">
+                <div class="step-header">
+                    <span class="step-number">1</span>
+                    <h2>Select Source Namespace</h2>
+                </div>
+                <div class="step-content">
+                    <div class="form-group">
+                        <label for="source-namespace">Source Namespace</label>
+                        <div class="input-with-button">
+                            <input type="text" id="source-namespace" placeholder="e.g., percona" autocomplete="off">
+                            <button class="btn btn-primary" id="load-backups-btn">Load Backups</button>
+                        </div>
+                    </div>
+                    <div id="source-error" class="error-message hidden"></div>
+                </div>
+            </section>
+
+            <!-- Step 2: Select Backup -->
+            <section class="step-section hidden" id="step-2">
+                <div class="step-header">
+                    <span class="step-number">2</span>
+                    <h2>Select Backup</h2>
+                </div>
+                <div class="step-content">
+                    <div class="cluster-info" id="cluster-info"></div>
+                    <div class="backups-list" id="backups-list">
+                        <div class="loading">Loading backups...</div>
+                    </div>
+                </div>
+            </section>
+
+            <!-- Step 3: Choose Restore Time -->
+            <section class="step-section hidden" id="step-3">
+                <div class="step-header">
+                    <span class="step-number">3</span>
+                    <h2>Choose Restore Time</h2>
+                </div>
+                <div class="step-content">
+                    <div class="time-range-info" id="time-range-info"></div>
+                    <div class="form-group">
+                        <label for="restore-time">Restore to (UTC)</label>
+                        <input type="text" id="restore-time" placeholder="YYYY-MM-DD HH:MM:SS" autocomplete="off">
+                        <p class="field-hint">Format: YYYY-MM-DD HH:MM:SS (e.g., 2025-01-15 14:30:00)</p>
+                    </div>
+                    <div id="time-error" class="error-message hidden"></div>
+                </div>
+            </section>
+
+            <!-- Step 4: Target Namespace -->
+            <section class="step-section hidden" id="step-4">
+                <div class="step-header">
+                    <span class="step-number">4</span>
+                    <h2>Target Namespace</h2>
+                </div>
+                <div class="step-content">
+                    <div class="form-group">
+                        <label for="target-namespace">Target Namespace</label>
+                        <div class="input-with-button">
+                            <input type="text" id="target-namespace" placeholder="e.g., percona-restored" autocomplete="off">
+                            <button class="btn btn-secondary" id="check-namespace-btn">Check</button>
+                        </div>
+                    </div>
+                    <div id="namespace-status" class="namespace-status hidden"></div>
+                    <div id="create-namespace-prompt" class="create-namespace-prompt hidden">
+                        <p>Namespace does not exist. Would you like to create it?</p>
+                        <button class="btn btn-primary" id="create-namespace-btn">Create Namespace</button>
+                    </div>
+                </div>
+            </section>
+
+            <!-- Step 5: Confirm & Restore -->
+            <section class="step-section hidden" id="step-5">
+                <div class="step-header">
+                    <span class="step-number">5</span>
+                    <h2>Confirm & Restore</h2>
+                </div>
+                <div class="step-content">
+                    <div class="restore-summary" id="restore-summary"></div>
+                    <div class="warning-box">
+                        <strong>Important:</strong> This will create a new PXC cluster in the target namespace. 
+                        No changes will be made to the source cluster or namespace.
+                    </div>
+                    <button class="btn btn-danger btn-large" id="start-restore-btn">Start Restore</button>
+                </div>
+            </section>
+
+            <!-- Step 6: Restore Progress -->
+            <section class="step-section hidden" id="step-6">
+                <div class="step-header">
+                    <span class="step-number">6</span>
+                    <h2>Restore Progress</h2>
+                </div>
+                <div class="step-content">
+                    <div class="progress-container" id="progress-container">
+                        <div class="progress-status" id="progress-status">Initiating restore...</div>
+                        <div class="progress-bar">
+                            <div class="progress-fill" id="progress-fill"></div>
+                        </div>
+                        <div class="progress-details" id="progress-details"></div>
+                    </div>
+                </div>
+            </section>
+
+            <!-- Step 7: Restore Summary -->
+            <section class="step-section hidden" id="step-7">
+                <div class="step-header completed">
+                    <span class="step-number">Done</span>
+                    <h2>Restore Complete</h2>
+                </div>
+                <div class="step-content">
+                    <div class="success-banner" id="success-banner"></div>
+                    <div class="database-summary" id="database-summary">
+                        <h3>Database Summary</h3>
+                        <div class="summary-loading">Loading database information...</div>
+                    </div>
+                </div>
+            </section>
+        </main>
+    </div>
+
+    <script src="/static/app.js"></script>
+</body>
+</html>
