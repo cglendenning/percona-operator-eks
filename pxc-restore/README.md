@@ -68,13 +68,16 @@ Example: `2025-01-15 14:30:00`
 ## Workflow
 
 1. **Prerequisites Check**: Verifies kubectl, jq, cluster connectivity, and PXC operator
-2. **List Backups**: Shows all completed backups with their restorable time windows
+2. **List Backups**: Shows all completed backups with completion time and latest restorable time
 3. **Select Backup**: Choose which backup to restore from
-4. **Choose Time**: Enter a point-in-time within the backup's restorable window
-5. **Target Namespace**: Specify where to create the restored cluster (creates if needed)
-6. **Confirmation**: Review summary before proceeding
-7. **Execute Restore**: Creates cluster, copies secrets, initiates PITR restore
-8. **Summary**: Displays databases and table counts in the restored cluster
+4. **Time Window**: Shows the specific restorable time range for the selected backup:
+   - **Earliest**: When the backup completed (can't restore before this)
+   - **Latest**: The `latestRestorableTime` based on available binlogs
+5. **Choose Time**: Enter a point-in-time within the backup's restorable window
+6. **Target Namespace**: Specify where to create the restored cluster (creates if needed)
+7. **Confirmation**: Review summary before proceeding
+8. **Execute Restore**: Creates cluster, copies secrets, initiates PITR restore
+9. **Summary**: Displays databases and table counts in the restored cluster
 
 ## Dry Run Mode
 
@@ -122,24 +125,29 @@ $ ./pxc-restore -n percona --dry-run
   Available Backups
 =====================================================
 
-#    BACKUP NAME                              STATE      PITR   LATEST RESTORABLE
---------------------------------------------------------------------------------
-[1]  daily-backup-20250115020000              Succeeded  Yes    2025-01-15 14:30:00
-[2]  weekly-backup-20250112010000             Succeeded  Yes    2025-01-12 23:59:00
-[3]  monthly-backup-20250101013000            Succeeded  No     N/A
-
-=====================================================
-  Restorable Time Window
-=====================================================
-
-  Earliest: 2025-01-01 01:30:00 UTC
-  Latest:   2025-01-15 14:30:00 UTC
-
-  You can restore to any point in time between these values.
-  Format: YYYY-MM-DD HH:MM:SS (e.g., 2025-01-15 14:30:00)
+#    BACKUP NAME                         STATE      PITR   COMPLETED (UTC)      LATEST RESTORABLE
+--------------------------------------------------------------------------------------------------------------
+[1]  daily-backup-20250115020000         Succeeded  Yes    2025-01-15 02:00:00  2025-01-15 14:30:00
+[2]  weekly-backup-20250112010000        Succeeded  Yes    2025-01-12 01:00:00  2025-01-12 23:59:00
+[3]  monthly-backup-20250101013000       Succeeded  No     2025-01-01 01:30:00  N/A
 
 Select backup number [1]: 1
 [OK] Selected backup: daily-backup-20250115020000
+
+=====================================================
+  Restorable Time Window for Selected Backup
+=====================================================
+
+  Earliest (backup completed):  2025-01-15 02:00:00 UTC
+  Latest (binlogs available):   2025-01-15 14:30:00 UTC
+
+  You can restore to any point in time between these two timestamps.
+  The earliest time is when the backup completed.
+  The latest time is based on available binlogs (latestRestorableTime).
+
+  Required format: YYYY-MM-DD HH:MM:SS
+
+Enter restore time [2025-01-15 14:30:00]: 2025-01-15 12:00:00
 [OK] Restore time: 2025-01-15 12:00:00 UTC
 
 ...

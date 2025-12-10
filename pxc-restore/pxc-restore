@@ -224,9 +224,6 @@ display_and_select_backup() {
     local -a backup_pitr=()
     local -a backup_storage=()
 
-    local earliest_time=""
-    local latest_time=""
-
     while IFS= read -r item; do
         local name state completed latest pitr storage
         name=$(echo "$item" | jq -r '.metadata.name')
@@ -251,18 +248,6 @@ display_and_select_backup() {
             backup_latest+=("$latest")
             backup_pitr+=("$pitr")
             backup_storage+=("$storage")
-
-            # Track time range
-            if [ -n "$completed" ]; then
-                if [ -z "$earliest_time" ] || [[ "$completed" < "$earliest_time" ]]; then
-                    earliest_time="$completed"
-                fi
-            fi
-            if [ -n "$latest" ]; then
-                if [ -z "$latest_time" ] || [[ "$latest" > "$latest_time" ]]; then
-                    latest_time="$latest"
-                fi
-            fi
         fi
     done < <(echo "$backups_json" | jq -c '.items[]')
 
@@ -272,40 +257,31 @@ display_and_select_backup() {
         exit 1
     fi
 
-    # Display table
-    printf "%-4s %-40s %-10s %-6s %-20s\n" "#" "BACKUP NAME" "STATE" "PITR" "LATEST RESTORABLE"
-    printf "%s\n" "--------------------------------------------------------------------------------"
+    # Display table with backup completed time and latest restorable time
+    printf "%-4s %-35s %-10s %-6s %-20s %-20s\n" "#" "BACKUP NAME" "STATE" "PITR" "COMPLETED (UTC)" "LATEST RESTORABLE"
+    printf "%s\n" "--------------------------------------------------------------------------------------------------------------"
 
     for i in "${!backup_names[@]}"; do
         local idx=$((i + 1))
+        local completed_display="${backup_completed[$i]}"
         local latest_display="${backup_latest[$i]}"
+        
+        if [ -n "$completed_display" ]; then
+            completed_display=$(echo "$completed_display" | sed 's/T/ /g' | sed 's/Z//g' | cut -c1-19)
+        else
+            completed_display="N/A"
+        fi
+        
         if [ -n "$latest_display" ]; then
             latest_display=$(echo "$latest_display" | sed 's/T/ /g' | sed 's/Z//g' | cut -c1-19)
         else
             latest_display="N/A"
         fi
-        printf "%-4s %-40s %-10s %-6s %-20s\n" "[$idx]" "${backup_names[$i]}" "${backup_states[$i]}" "${backup_pitr[$i]}" "$latest_display"
+        printf "%-4s %-35s %-10s %-6s %-20s %-20s\n" "[$idx]" "${backup_names[$i]}" "${backup_states[$i]}" "${backup_pitr[$i]}" "$completed_display" "$latest_display"
     done
     echo ""
 
-    # Display time range
-    log_header "Restorable Time Window"
-    if [ -n "$earliest_time" ]; then
-        local earliest_formatted
-        earliest_formatted=$(echo "$earliest_time" | sed 's/T/ /g' | sed 's/Z//g' | cut -c1-19)
-        echo -e "  ${CYAN}Earliest:${NC} ${earliest_formatted} UTC"
-    fi
-    if [ -n "$latest_time" ]; then
-        local latest_formatted
-        latest_formatted=$(echo "$latest_time" | sed 's/T/ /g' | sed 's/Z//g' | cut -c1-19)
-        echo -e "  ${CYAN}Latest:${NC}   ${latest_formatted} UTC"
-    fi
-    echo ""
-    echo "  You can restore to any point in time between these values."
-    echo -e "  ${BOLD}Format: YYYY-MM-DD HH:MM:SS${NC} (e.g., 2025-01-15 14:30:00)"
-    echo ""
-
-    # Select backup
+    # Select backup first
     local selected_idx
     if [ -n "$BACKUP_NAME" ]; then
         # Find index of specified backup
@@ -340,15 +316,46 @@ display_and_select_backup() {
     BACKUP_LATEST="${backup_latest[$selected_idx]}"
     BACKUP_STORAGE="${backup_storage[$selected_idx]}"
 
+    # Now show the restorable time window for this specific backup
+    log_header "Restorable Time Window for Selected Backup"
+
+    local earliest_formatted=""
+    local latest_formatted=""
+
+    if [ -n "$BACKUP_COMPLETED" ]; then
+        earliest_formatted=$(echo "$BACKUP_COMPLETED" | sed 's/T/ /g' | sed 's/Z//g' | cut -c1-19)
+    fi
+    if [ -n "$BACKUP_LATEST" ]; then
+        latest_formatted=$(echo "$BACKUP_LATEST" | sed 's/T/ /g' | sed 's/Z//g' | cut -c1-19)
+    fi
+
+    if [ -n "$earliest_formatted" ] && [ -n "$latest_formatted" ]; then
+        echo -e "  ${CYAN}Earliest (backup completed):${NC}  ${earliest_formatted} UTC"
+        echo -e "  ${CYAN}Latest (binlogs available):${NC}   ${latest_formatted} UTC"
+        echo ""
+        echo "  You can restore to any point in time between these two timestamps."
+        echo "  The earliest time is when the backup completed."
+        echo "  The latest time is based on available binlogs (latestRestorableTime)."
+    elif [ -n "$earliest_formatted" ]; then
+        echo -e "  ${CYAN}Backup completed:${NC} ${earliest_formatted} UTC"
+        echo ""
+        log_warn "No latestRestorableTime available - PITR may not be enabled for this backup."
+        echo "  You can restore to the backup completion time only."
+        latest_formatted="$earliest_formatted"
+    else
+        log_error "Cannot determine restorable time window for this backup."
+        exit 1
+    fi
+
+    echo ""
+    echo -e "  ${BOLD}Required format: YYYY-MM-DD HH:MM:SS${NC}"
+    echo ""
+
     # Get restore time
     if [ -z "$RESTORE_TIME" ]; then
-        local default_time=""
-        if [ -n "$BACKUP_LATEST" ]; then
-            default_time=$(echo "$BACKUP_LATEST" | sed 's/T/ /g' | sed 's/Z//g' | cut -c1-19)
-        fi
+        local default_time="${latest_formatted:-}"
 
-        echo ""
-        echo -n "Enter restore time (YYYY-MM-DD HH:MM:SS) [${default_time:-latest}]: "
+        echo -n "Enter restore time [${default_time}]: "
         read -r input_time
         RESTORE_TIME="${input_time:-$default_time}"
     fi
@@ -359,6 +366,20 @@ display_and_select_backup() {
             log_error "Invalid time format. Use: YYYY-MM-DD HH:MM:SS"
             exit 1
         fi
+        
+        # Validate time is within the window
+        if [ -n "$earliest_formatted" ] && [ -n "$latest_formatted" ]; then
+            if [[ "$RESTORE_TIME" < "$earliest_formatted" ]]; then
+                log_error "Restore time is before the backup completion time ($earliest_formatted)"
+                exit 1
+            fi
+            if [[ "$RESTORE_TIME" > "$latest_formatted" ]]; then
+                log_error "Restore time is after the latest restorable time ($latest_formatted)"
+                log_error "Binlogs are not available beyond this point."
+                exit 1
+            fi
+        fi
+        
         log_success "Restore time: ${RESTORE_TIME} UTC"
     else
         log_error "Restore time is required"
