@@ -1,6 +1,6 @@
 # PXC Point-in-Time Restore
 
-A complete solution for restoring Percona XtraDB Cluster (PXC) to any point in time. Includes a REST API backend, web UI, and CLI - all calling the same API.
+A standalone CLI tool for restoring Percona XtraDB Cluster (PXC) to any point in time using PITR backups.
 
 ## Features
 
@@ -10,176 +10,49 @@ A complete solution for restoring Percona XtraDB Cluster (PXC) to any point in t
 - Clone cluster configuration from source to target namespace
 - Automatic namespace creation
 - Post-restore database summary with table counts
+- Dry-run mode to verify prerequisites without making changes
 - No modifications to source cluster or namespace
 
-## Architecture
+## Prerequisites
 
-```
-+----------------+     +----------------+     +------------------+
-|   Web UI       |     |      CLI       |     |  Direct API      |
-|  (browser)     |     |  (pxc-restore) |     |  (curl/scripts)  |
-+-------+--------+     +-------+--------+     +--------+---------+
-        |                      |                       |
-        +----------------------+-----------------------+
-                               |
-                        +------v------+
-                        |  REST API   |
-                        |  (Go)       |
-                        +------+------+
-                               |
-                        +------v------+
-                        |  kubectl    |
-                        |  (K8s API)  |
-                        +-------------+
-```
+- `kubectl` - configured with cluster access
+- `jq` - for JSON parsing
+- Percona XtraDB Cluster operator installed in the cluster
+- At least one completed backup with PITR enabled
 
-## Quick Start
-
-### Prerequisites
-
-- Go 1.21+
-- kubectl configured with cluster access
-- jq (for CLI)
-- curl (for CLI)
-
-### Start the Server
-
-```bash
-cd pxc-restore
-./start.sh
-```
-
-The server starts on port 8081 by default. Open http://localhost:8081 for the web UI.
-
-### Use the CLI
+## Usage
 
 ```bash
 # Make executable (first time only)
-chmod +x cli/pxc-restore
+chmod +x pxc-restore
 
-# Run interactive restore
-./cli/pxc-restore -n percona
+# Interactive restore
+./pxc-restore -n percona
 
-# Or install globally
-make install-cli
-pxc-restore -n percona
+# Dry run to verify prerequisites
+./pxc-restore -n percona --dry-run
+
+# Non-interactive with all options
+./pxc-restore -n percona -t percona-restored -b daily-backup-20250115 -r "2025-01-15 14:30:00"
+
+# Dry run with specific target
+./pxc-restore -n percona -t test-restore --dry-run
 ```
 
-### Use the Web UI
-
-1. Open http://localhost:8081
-2. Enter source namespace
-3. Select a backup
-4. Choose restore time (within the shown range)
-5. Enter target namespace
-6. Confirm and start restore
-7. View restoration summary
-
-## API Endpoints
-
-### List Backups
-
-```bash
-GET /api/backups?namespace={namespace}
-```
-
-Returns all completed backups with their restorable time windows.
-
-**Response:**
-```json
-{
-  "namespace": "percona",
-  "clusterName": "pxc-cluster",
-  "backups": [
-    {
-      "name": "daily-backup-20250115",
-      "state": "Succeeded",
-      "completed": "2025-01-15T02:00:00Z",
-      "pitrReady": true,
-      "latestRestorableTime": "2025-01-15T14:30:00Z",
-      "storage": "minio-backup"
-    }
-  ],
-  "earliestRestorableTime": "2025-01-15 02:00:00",
-  "latestRestorableTime": "2025-01-15 14:30:00",
-  "timeFormat": "YYYY-MM-DD HH:MM:SS (UTC)"
-}
-```
-
-### Check Namespace
-
-```bash
-GET /api/namespace/check?namespace={namespace}
-```
-
-Validates if a target namespace exists and if it already has a PXC cluster.
-
-### Create Namespace
-
-```bash
-POST /api/namespace/create
-Content-Type: application/json
-
-{"namespace": "my-restore-ns"}
-```
-
-### Start Restore
-
-```bash
-POST /api/restore
-Content-Type: application/json
-
-{
-  "sourceNamespace": "percona",
-  "targetNamespace": "percona-restored",
-  "backupName": "daily-backup-20250115",
-  "restoreTime": "2025-01-15 14:30:00",
-  "createNamespace": false
-}
-```
-
-### Check Restore Status
-
-```bash
-GET /api/restore/status?namespace={namespace}&name={restoreName}
-```
-
-### Get Restore Summary
-
-```bash
-GET /api/restore/summary?namespace={namespace}&cluster={clusterName}
-```
-
-Returns database names and table counts after restore.
-
-### Get Cluster Status
-
-```bash
-GET /api/cluster/status?namespace={namespace}&cluster={clusterName}
-```
-
-## CLI Usage
+## Options
 
 ```
-PXC Point-in-Time Restore CLI
-
-Usage: pxc-restore [OPTIONS]
+REQUIRED:
+    -n, --namespace NAMESPACE   Source namespace containing the PXC cluster
 
 OPTIONS:
-    -n, --namespace NAMESPACE   Source namespace containing the PXC cluster
-    -a, --api-url URL           API server URL (default: http://localhost:8081)
+    -t, --target NAMESPACE      Target namespace (will prompt if not provided)
+    -b, --backup NAME           Backup name (will prompt if not provided)
+    -r, --restore-time TIME     Restore time in "YYYY-MM-DD HH:MM:SS" UTC format
+    --dry-run                   Show what would be done without making changes
+    --kubeconfig PATH           Path to kubeconfig file
     -v, --verbose               Enable verbose output
     -h, --help                  Show this help message
-
-ENVIRONMENT VARIABLES:
-    PXC_RESTORE_API             API server URL
-
-EXAMPLES:
-    # Interactive restore
-    pxc-restore -n percona
-
-    # Using a different API server
-    pxc-restore -n percona -a http://restore-api:8081
 ```
 
 ## Time Format
@@ -192,49 +65,131 @@ YYYY-MM-DD HH:MM:SS
 
 Example: `2025-01-15 14:30:00`
 
+## Workflow
+
+1. **Prerequisites Check**: Verifies kubectl, jq, cluster connectivity, and PXC operator
+2. **List Backups**: Shows all completed backups with their restorable time windows
+3. **Select Backup**: Choose which backup to restore from
+4. **Choose Time**: Enter a point-in-time within the backup's restorable window
+5. **Target Namespace**: Specify where to create the restored cluster (creates if needed)
+6. **Confirmation**: Review summary before proceeding
+7. **Execute Restore**: Creates cluster, copies secrets, initiates PITR restore
+8. **Summary**: Displays databases and table counts in the restored cluster
+
+## Dry Run Mode
+
+Use `--dry-run` to verify everything is in place without making changes:
+
+```bash
+./pxc-restore -n percona --dry-run
+```
+
+This will:
+- Check all prerequisites (kubectl, jq, cluster access, operator, backups)
+- Verify the source namespace and cluster exist
+- List available backups and their time windows
+- Validate the target namespace configuration
+- Show exactly what actions would be taken
+
+## Example Session
+
+```
+$ ./pxc-restore -n percona --dry-run
+
+=====================================================
+  PXC Point-in-Time Restore
+=====================================================
+
+*** DRY RUN MODE - No changes will be made ***
+
+=====================================================
+  Checking Prerequisites
+=====================================================
+
+[OK] kubectl installed: v1.28.0
+[OK] jq installed: jq-1.6
+[OK] Kubernetes cluster accessible (context: my-cluster)
+[OK] Source namespace exists: percona
+[OK] Percona XtraDB Cluster operator CRDs installed
+[OK] Found PXC cluster in source namespace: pxc-cluster
+[OK] Found 3 backup(s) in source namespace
+
+[OK] All prerequisites met
+
+[INFO] Source cluster: pxc-cluster
+
+=====================================================
+  Available Backups
+=====================================================
+
+#    BACKUP NAME                              STATE      PITR   LATEST RESTORABLE
+--------------------------------------------------------------------------------
+[1]  daily-backup-20250115020000              Succeeded  Yes    2025-01-15 14:30:00
+[2]  weekly-backup-20250112010000             Succeeded  Yes    2025-01-12 23:59:00
+[3]  monthly-backup-20250101013000            Succeeded  No     N/A
+
+=====================================================
+  Restorable Time Window
+=====================================================
+
+  Earliest: 2025-01-01 01:30:00 UTC
+  Latest:   2025-01-15 14:30:00 UTC
+
+  You can restore to any point in time between these values.
+  Format: YYYY-MM-DD HH:MM:SS (e.g., 2025-01-15 14:30:00)
+
+Select backup number [1]: 1
+[OK] Selected backup: daily-backup-20250115020000
+[OK] Restore time: 2025-01-15 12:00:00 UTC
+
+...
+
+=====================================================
+  Dry Run - Actions That Would Be Taken
+=====================================================
+
+[DRY-RUN] 1. Copy secrets from percona to percona-restored
+[DRY-RUN] 2. Create PXC cluster pxc-cluster-restored in percona-restored
+[DRY-RUN] 3. Create restore resource to restore from daily-backup-20250115020000
+[DRY-RUN] 4. Restore data to point in time: 2025-01-15 12:00:00
+
+[OK] Dry run complete. All prerequisites verified.
+[INFO] Remove --dry-run to perform the actual restore.
+```
+
 ## How It Works
 
-1. **List Backups**: Queries `PerconaXtraDBClusterBackup` resources to find all completed backups with their `latestRestorableTime`
+1. **List Backups**: Queries `PerconaXtraDBClusterBackup` resources to find all completed backups with their `latestRestorableTime` from the status field
 
-2. **Clone Cluster**: Copies the source cluster's `PerconaXtraDBCluster` spec to the target namespace, adjusting the name and namespace
+2. **Clone Cluster**: Copies the source cluster's `PerconaXtraDBCluster` spec to the target namespace, modifying name and namespace
 
-3. **Copy Secrets**: Automatically copies cluster secrets and backup credentials to the target namespace
+3. **Copy Secrets**: Copies cluster secrets and backup credentials from source to target namespace
 
-4. **Create Restore**: Creates a `PerconaXtraDBClusterRestore` resource with PITR configuration pointing to the selected backup and restore time
+4. **Create Restore**: Creates a `PerconaXtraDBClusterRestore` resource with PITR configuration:
+   ```yaml
+   apiVersion: pxc.percona.com/v1
+   kind: PerconaXtraDBClusterRestore
+   spec:
+     pxcCluster: <cluster>-restored
+     backupName: <selected-backup>
+     pitr:
+       type: date
+       date: "YYYY-MM-DD HH:MM:SS"
+       backupSource:
+         storageName: <backup-storage>
+   ```
 
 5. **Monitor Progress**: Polls restore and cluster status until completion
 
 6. **Summary**: Queries the restored MySQL instance for database and table counts
 
-## Configuration
-
-### Environment Variables
-
-| Variable | Default | Description |
-|----------|---------|-------------|
-| PORT | 8081 | Server port |
-| KUBECONFIG | (default) | Path to kubeconfig file |
-| PXC_RESTORE_API | http://localhost:8081 | API URL for CLI |
-
-### Server Options
-
-Set the port:
-```bash
-PORT=9090 ./start.sh
-```
-
-Use a specific kubeconfig:
-```bash
-KUBECONFIG=/path/to/kubeconfig ./start.sh
-```
-
 ## Troubleshooting
 
-### "Cannot connect to API server"
+### "No PXC cluster found"
 
-Ensure the server is running:
+Ensure the source namespace has a running PXC cluster:
 ```bash
-./start.sh
+kubectl get pxc -n <namespace>
 ```
 
 ### "No backups found"
@@ -260,25 +215,12 @@ kubectl logs -l name=percona-xtradb-cluster-operator -n <operator-namespace>
 
 The cluster may still be initializing. Wait for the cluster to reach `ready` state:
 ```bash
-kubectl get pxc <cluster-name> -n <namespace>
-```
-
-## Building
-
-```bash
-# Build binary
-make build
-
-# Build for multiple platforms
-make build-all
-
-# Install CLI globally
-make install-cli
+kubectl get pxc <cluster-name> -n <namespace> -w
 ```
 
 ## Security Notes
 
-- The API server requires kubectl access to the cluster
 - Secrets are copied from source to target namespace (required for restore)
 - The source cluster is never modified
 - Database queries are read-only (information_schema)
+- Root password is only used locally within the target cluster pod
