@@ -15,6 +15,7 @@ SOURCE_NAMESPACE=""
 TARGET_NAMESPACE=""
 BACKUP_NAME=""
 RESTORE_TIME=""
+PITR_AVAILABLE=false
 
 # Colors
 RED='\033[0;31m'
@@ -553,7 +554,11 @@ display_and_select_backup() {
         latest_formatted=$(echo "$BACKUP_LATEST" | sed 's/T/ /g' | sed 's/Z//g' | cut -c1-19)
     fi
 
-    if [ -n "$earliest_formatted" ] && [ -n "$latest_formatted" ]; then
+    # Track if PITR is available
+    PITR_AVAILABLE=false
+    
+    if [ -n "$earliest_formatted" ] && [ -n "$latest_formatted" ] && [ "$earliest_formatted" != "$latest_formatted" ]; then
+        PITR_AVAILABLE=true
         echo -e "  ${CYAN}Earliest (backup completed):${NC}  ${earliest_formatted} UTC"
         echo -e "  ${CYAN}Latest (binlogs available):${NC}   ${latest_formatted} UTC"
         echo ""
@@ -563,8 +568,14 @@ display_and_select_backup() {
     elif [ -n "$earliest_formatted" ]; then
         echo -e "  ${CYAN}Backup completed:${NC} ${earliest_formatted} UTC"
         echo ""
-        log_warn "No latestRestorableTime available - PITR may not be enabled for this backup."
-        echo "  You can restore to the backup completion time only."
+        if [ -z "$BACKUP_LATEST" ]; then
+            log_warn "No latestRestorableTime available - this backup has no PITR binlogs."
+            log_info "This is normal for a freshly taken backup."
+            echo "  Will restore to the backup state (non-PITR restore)."
+        else
+            log_info "Backup completion time equals latest restorable time."
+            echo "  Will restore to the backup state."
+        fi
         latest_formatted="$earliest_formatted"
     else
         log_error "Cannot determine restorable time window for this backup."
@@ -739,18 +750,18 @@ create_target_cluster() {
     # Get source cluster spec
     log_info "Fetching source cluster spec..."
     local source_json
-    source_json=$(kctl get perconaxtradbcluster "$source_cluster" -n "$source_ns" -o json 2>&1)
-
-    if [ -z "$source_json" ] || echo "$source_json" | grep -q "^Error\|not found"; then
-        log_error "Failed to get source cluster spec: $source_json"
+    if ! source_json=$(kctl get perconaxtradbcluster "$source_cluster" -n "$source_ns" -o json 2>/dev/null); then
+        log_error "Failed to get source cluster: $source_cluster in namespace $source_ns"
         return 1
     fi
 
-    # Verify we got valid JSON
-    if ! echo "$source_json" | jq -e '.kind == "PerconaXtraDBCluster"' &>/dev/null; then
-        log_error "Invalid cluster spec received"
+    # Verify we got valid JSON with correct kind
+    if [ -z "$source_json" ] || ! echo "$source_json" | jq -e '.kind == "PerconaXtraDBCluster"' &>/dev/null; then
+        log_error "Invalid cluster spec received - not a PerconaXtraDBCluster"
         return 1
     fi
+    
+    log_success "Retrieved source cluster spec"
 
     # Copy required secrets
     log_info "Copying secrets to target namespace..."
@@ -1172,7 +1183,11 @@ create_restore() {
     copy_backup_resource "$backup_name" "$source_ns" "$target_ns"
 
     local restore_yaml
-    restore_yaml=$(cat <<EOF
+    
+    if [ "$PITR_AVAILABLE" = true ]; then
+        # PITR restore - restore to specific point in time
+        log_info "Creating PITR restore to: $restore_time"
+        restore_yaml=$(cat <<EOF
 apiVersion: pxc.percona.com/v1
 kind: PerconaXtraDBClusterRestore
 metadata:
@@ -1188,6 +1203,21 @@ spec:
       storageName: ${storage_name}
 EOF
 )
+    else
+        # Non-PITR restore - restore from backup only (no binlogs)
+        log_info "Creating non-PITR restore from backup: $backup_name"
+        restore_yaml=$(cat <<EOF
+apiVersion: pxc.percona.com/v1
+kind: PerconaXtraDBClusterRestore
+metadata:
+  name: ${restore_name}
+  namespace: ${target_ns}
+spec:
+  pxcCluster: ${target_cluster}
+  backupName: ${backup_name}
+EOF
+)
+    fi
 
     if [ "$DRY_RUN" = true ]; then
         log_dry "Would create restore resource:"
