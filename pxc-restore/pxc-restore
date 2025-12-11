@@ -591,8 +591,64 @@ create_restore() {
     
     if [ "$PITR_AVAILABLE" = true ]; then
         # PITR restore - restore to specific point in time
+        # We need to specify the SOURCE bucket where binlogs are stored, not the target bucket
         log_info "Creating PITR restore to: $restore_time"
-        restore_yaml=$(cat <<EOF
+        
+        # Get the backup destination to find the source bucket
+        local backup_dest
+        backup_dest=$(kctl get perconaxtradbclusterbackup "$backup_name" -n "$source_ns" -o jsonpath='{.status.destination}' 2>/dev/null || echo "")
+        
+        # Parse source bucket from destination (format: s3://bucket/path)
+        local source_bucket=""
+        if [ -n "$backup_dest" ]; then
+            source_bucket=$(echo "$backup_dest" | sed 's|s3://||' | cut -d'/' -f1)
+        fi
+        
+        # Get the storage config from target cluster to get endpoint and credentials
+        local storage_config
+        storage_config=$(kctl get perconaxtradbcluster "$target_cluster" -n "$target_ns" -o json 2>/dev/null | jq -r ".spec.backup.storages[\"$storage_name\"].s3 // empty")
+        
+        local s3_endpoint s3_region s3_creds_secret
+        s3_endpoint=$(echo "$storage_config" | jq -r '.endpointUrl // empty')
+        s3_region=$(echo "$storage_config" | jq -r '.region // "us-east-1"')
+        s3_creds_secret=$(echo "$storage_config" | jq -r '.credentialsSecret // empty')
+        
+        log_info "Source bucket for PITR: $source_bucket"
+        log_info "Endpoint: ${s3_endpoint:-AWS S3}"
+        log_info "Credentials secret: $s3_creds_secret"
+        
+        # Build the restore spec with explicit backupSource pointing to SOURCE bucket
+        if [ -n "$source_bucket" ] && [ -n "$s3_creds_secret" ]; then
+            # Use explicit S3 config to point to the SOURCE bucket
+            restore_yaml=$(cat <<EOF
+apiVersion: pxc.percona.com/v1
+kind: PerconaXtraDBClusterRestore
+metadata:
+  name: ${restore_name}
+  namespace: ${target_ns}
+spec:
+  pxcCluster: ${target_cluster}
+  backupName: ${backup_name}
+  pitr:
+    type: date
+    date: "${restore_time}"
+    backupSource:
+      destination: ${backup_dest}
+      s3:
+        bucket: ${source_bucket}
+        credentialsSecret: ${s3_creds_secret}
+        region: ${s3_region}
+EOF
+)
+            # Add endpoint if specified (for MinIO)
+            if [ -n "$s3_endpoint" ]; then
+                restore_yaml="${restore_yaml}
+        endpointUrl: ${s3_endpoint}"
+            fi
+        else
+            # Fallback to storageName if we can't determine source bucket
+            log_warn "Could not determine source bucket, using storageName reference"
+            restore_yaml=$(cat <<EOF
 apiVersion: pxc.percona.com/v1
 kind: PerconaXtraDBClusterRestore
 metadata:
@@ -608,6 +664,7 @@ spec:
       storageName: ${storage_name}
 EOF
 )
+        fi
     else
         # Non-PITR restore - restore from backup only (no binlogs)
         log_info "Creating non-PITR restore from backup: $backup_name"
