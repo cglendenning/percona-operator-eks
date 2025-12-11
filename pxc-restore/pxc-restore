@@ -821,31 +821,91 @@ get_database_summary() {
 
     # Get databases and table counts
     local pod_name="${target_cluster}-pxc-0"
-    local db_query="SELECT SCHEMA_NAME FROM information_schema.SCHEMATA WHERE SCHEMA_NAME NOT IN ('information_schema', 'mysql', 'performance_schema', 'sys')"
+    
+    log_info "Querying database information..."
+    
+    # Use a simple, reliable query with a delimiter we can parse
+    # Output format: db_name|table_count
+    local db_summary_query="SELECT CONCAT(s.SCHEMA_NAME, '|', IFNULL(t.table_count, 0)) FROM information_schema.SCHEMATA s LEFT JOIN (SELECT TABLE_SCHEMA, COUNT(*) as table_count FROM information_schema.TABLES GROUP BY TABLE_SCHEMA) t ON s.SCHEMA_NAME = t.TABLE_SCHEMA WHERE s.SCHEMA_NAME NOT IN ('information_schema', 'mysql', 'performance_schema', 'sys') ORDER BY s.SCHEMA_NAME"
 
-    local databases
-    databases=$(kctl exec -n "$target_ns" "$pod_name" -c pxc -- mysql -uroot -p"$root_pwd" -N -e "$db_query" 2>/dev/null || echo "")
+    local db_results
+    db_results=$(kctl exec -n "$target_ns" "$pod_name" -c pxc -- mysql -uroot -p"$root_pwd" -N -e "$db_summary_query" 2>/dev/null)
+    local query_exit=$?
 
-    if [ -z "$databases" ]; then
-        echo "  No user databases found (only system databases exist)."
+    if [ $query_exit -ne 0 ] || [ -z "$db_results" ]; then
+        # Try a simpler fallback - just list databases
+        log_info "Trying alternative query..."
+        local db_list
+        db_list=$(kctl exec -n "$target_ns" "$pod_name" -c pxc -- mysql -uroot -p"$root_pwd" -N -e "SHOW DATABASES" 2>/dev/null)
+        
+        if [ -z "$db_list" ]; then
+            log_warn "Could not query databases"
+            echo ""
+            echo "  Connect to the restored cluster:"
+            echo -e "  ${CYAN}kubectl exec -it ${target_cluster}-pxc-0 -n ${target_ns} -c pxc -- mysql -uroot -p${NC}"
+            return
+        fi
+        
+        # Filter out system databases and show what we have
+        echo ""
+        printf "  %-30s\n" "USER DATABASES"
+        printf "  %s\n" "----------------------------------------"
+        
+        local db_count=0
+        while IFS= read -r db; do
+            db=$(echo "$db" | tr -d '\r\n' | xargs)
+            case "$db" in
+                information_schema|mysql|performance_schema|sys|"") ;;
+                *)
+                    printf "  %s\n" "$db"
+                    ((db_count++))
+                    ;;
+            esac
+        done <<< "$db_list"
+        
+        printf "  %s\n" "----------------------------------------"
+        if [ "$db_count" -eq 0 ]; then
+            echo "  No user databases found (only system databases exist)."
+        else
+            echo "  Total: $db_count database(s)"
+        fi
     else
+        # Parse the results (format: db_name|table_count)
+        echo ""
         printf "  %-30s %s\n" "DATABASE" "TABLES"
         printf "  %s\n" "----------------------------------------"
 
         local total_tables=0
-        while IFS= read -r db; do
-            db=$(echo "$db" | tr -d '\r' | xargs)
-            if [ -n "$db" ]; then
-                local table_count
-                table_count=$(kctl exec -n "$target_ns" "$pod_name" -c pxc -- mysql -uroot -p"$root_pwd" -N -e "SELECT COUNT(*) FROM information_schema.TABLES WHERE TABLE_SCHEMA = '$db'" 2>/dev/null || echo "0")
-                table_count=$(echo "$table_count" | tr -d '\r' | xargs)
-                printf "  %-30s %s\n" "$db" "$table_count"
-                total_tables=$((total_tables + table_count))
+        local total_dbs=0
+        
+        # Use here-string to avoid subshell issues with pipe
+        while IFS= read -r line; do
+            # Clean up the line
+            line=$(echo "$line" | tr -d '\r\n')
+            
+            if [ -n "$line" ]; then
+                # Split on pipe delimiter
+                local db_name="${line%%|*}"
+                local table_count="${line##*|}"
+                
+                # Clean up values
+                db_name=$(echo "$db_name" | xargs)
+                table_count=$(echo "$table_count" | xargs)
+                
+                if [ -n "$db_name" ]; then
+                    # Ensure table_count is numeric
+                    if ! [[ "$table_count" =~ ^[0-9]+$ ]]; then
+                        table_count="0"
+                    fi
+                    printf "  %-30s %s\n" "$db_name" "$table_count"
+                    ((total_dbs++))
+                    total_tables=$((total_tables + table_count))
+                fi
             fi
-        done <<< "$databases"
-
+        done <<< "$db_results"
+        
         printf "  %s\n" "----------------------------------------"
-        printf "  %-30s %s\n" "TOTAL" "$total_tables"
+        printf "  %-30s %s\n" "TOTAL ($total_dbs databases)" "$total_tables tables"
     fi
 
     echo ""
