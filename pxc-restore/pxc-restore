@@ -147,16 +147,6 @@ check_prerequisites() {
         ((errors++))
     fi
 
-    # Check AWS CLI (for S3/MinIO validation during dry-run)
-    if command -v aws &> /dev/null; then
-        local aws_version
-        aws_version=$(aws --version 2>&1 | head -1)
-        log_success "AWS CLI installed: $aws_version"
-    else
-        log_warn "AWS CLI not installed (optional, but recommended for --dry-run S3 validation)"
-        ((warnings++))
-    fi
-
     # Check cluster connectivity
     if kctl cluster-info &>/dev/null; then
         local context
@@ -1054,6 +1044,8 @@ if [ "$DRY_RUN" = true ]; then
     
     if [ -z "$storage_config" ] || [ "$storage_config" = "null" ]; then
         log_error "  Storage '$BACKUP_STORAGE' not found in target cluster config"
+        log_error "  The target cluster must have a backup storage named '$BACKUP_STORAGE' configured"
+        log_error "  Check: kubectl get pxc $TARGET_CLUSTER -n $TARGET_NAMESPACE -o jsonpath='{.spec.backup.storages}'"
         ((dry_errors++))
     else
         s3_bucket=$(echo "$storage_config" | jq -r '.bucket // empty')
@@ -1061,12 +1053,27 @@ if [ "$DRY_RUN" = true ]; then
         s3_region=$(echo "$storage_config" | jq -r '.region // "us-east-1"')
         s3_creds_secret=$(echo "$storage_config" | jq -r '.credentialsSecret // empty')
         
-        log_dry "  S3 endpoint: ${s3_endpoint:-AWS S3}"
-        log_dry "  S3 bucket: $s3_bucket"
-        log_dry "  S3 region: $s3_region"
-        log_dry "  Credentials secret: $s3_creds_secret"
+        # Critical check: bucket must be configured
+        if [ -z "$s3_bucket" ]; then
+            log_error "  Storage '$BACKUP_STORAGE' exists but has no bucket configured"
+            log_error "  This will cause restore to fail with: 'no bucket in storage'"
+            log_error "  Fix the target cluster's backup storage configuration"
+            ((dry_errors++))
+        else
+            log_dry "  S3 bucket: $s3_bucket"
+        fi
         
-        if [ -n "$s3_creds_secret" ]; then
+        log_dry "  S3 endpoint: ${s3_endpoint:-AWS S3}"
+        log_dry "  S3 region: $s3_region"
+        
+        if [ -z "$s3_creds_secret" ]; then
+            log_error "  No credentials secret configured for storage '$BACKUP_STORAGE'"
+            ((dry_errors++))
+        else
+            log_dry "  Credentials secret: $s3_creds_secret"
+        fi
+        
+        if [ -n "$s3_creds_secret" ] && [ -n "$s3_bucket" ]; then
             # Get credentials from secret
             aws_access_key=$(kctl get secret "$s3_creds_secret" -n "$TARGET_NAMESPACE" -o jsonpath='{.data.AWS_ACCESS_KEY_ID}' 2>/dev/null | base64 -d 2>/dev/null || echo "")
             aws_secret_key=$(kctl get secret "$s3_creds_secret" -n "$TARGET_NAMESPACE" -o jsonpath='{.data.AWS_SECRET_ACCESS_KEY}' 2>/dev/null | base64 -d 2>/dev/null || echo "")
@@ -1077,63 +1084,82 @@ if [ "$DRY_RUN" = true ]; then
             else
                 log_dry "  Credentials retrieved successfully"
                 
-                # Test S3 connectivity
+                # Test MinIO connectivity by exec'ing into a MinIO pod
                 echo ""
-                echo "  Testing S3/MinIO connectivity..."
+                echo "  Testing MinIO connectivity..."
                 
-                # Check if aws CLI is available
-                if command -v aws &>/dev/null; then
-                    # Set up AWS credentials for this test
-                    export AWS_ACCESS_KEY_ID="$aws_access_key"
-                    export AWS_SECRET_ACCESS_KEY="$aws_secret_key"
-                    export AWS_DEFAULT_REGION="$s3_region"
+                # Find MinIO pod - try common namespaces and labels
+                local minio_pod=""
+                local minio_ns=""
+                for ns in "minio" "minio-operator" "default" "$TARGET_NAMESPACE" "$SOURCE_NAMESPACE"; do
+                    if [ -n "$ns" ] && kctl get namespace "$ns" &>/dev/null; then
+                        # Try different label selectors
+                        minio_pod=$(kctl get pods -n "$ns" -l "app=minio" -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || echo "")
+                        if [ -z "$minio_pod" ]; then
+                            minio_pod=$(kctl get pods -n "$ns" -l "app.kubernetes.io/name=minio" -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || echo "")
+                        fi
+                        if [ -z "$minio_pod" ]; then
+                            # Fallback: find any pod with minio in the name
+                            minio_pod=$(kctl get pods -n "$ns" --no-headers 2>/dev/null | grep -i "^minio" | grep "Running" | head -1 | awk '{print $1}' || echo "")
+                        fi
+                        if [ -n "$minio_pod" ]; then
+                            minio_ns="$ns"
+                            break
+                        fi
+                    fi
+                done
+                
+                if [ -n "$minio_pod" ] && [ -n "$minio_ns" ]; then
+                    log_dry "  Found MinIO pod: $minio_pod in namespace $minio_ns"
                     
-                    # Build endpoint URL argument if needed
-                    endpoint_arg=""
-                    if [ -n "$s3_endpoint" ]; then
-                        endpoint_arg="--endpoint-url $s3_endpoint"
+                    # Configure mc alias and test bucket access
+                    # Use the endpoint from storage config, or construct from service
+                    local mc_endpoint="$s3_endpoint"
+                    if [ -z "$mc_endpoint" ]; then
+                        mc_endpoint="http://minio.${minio_ns}.svc:9000"
                     fi
                     
-                    # Test bucket access
-                    if eval aws s3 ls "s3://$s3_bucket" $endpoint_arg --no-sign-request 2>/dev/null || \
-                       eval aws s3 ls "s3://$s3_bucket" $endpoint_arg 2>/dev/null; then
-                        log_success "  Successfully connected to S3/MinIO bucket: $s3_bucket"
+                    # Test bucket listing using mc
+                    local mc_test
+                    mc_test=$(kctl exec -n "$minio_ns" "$minio_pod" -- mc alias set testbackup "$mc_endpoint" "$aws_access_key" "$aws_secret_key" 2>&1) || true
+                    
+                    if kctl exec -n "$minio_ns" "$minio_pod" -- mc ls "testbackup/$s3_bucket" &>/dev/null; then
+                        log_success "  Successfully connected to MinIO bucket: $s3_bucket"
                         
-                        # Extract the backup path from destination and verify it exists
-                        # backup_destination format is typically: s3://bucket/path/to/backup
+                        # Check if backup path exists
                         if [ -n "$backup_destination" ]; then
                             # Extract path from destination (remove s3://bucket/ prefix)
                             backup_path=$(echo "$backup_destination" | sed "s|s3://$s3_bucket/||" | sed 's|s3://[^/]*/||')
                             
                             if [ -n "$backup_path" ]; then
                                 echo ""
-                                echo "  Checking backup path exists: $backup_path"
+                                echo "  Checking backup path: $backup_path"
                                 
-                                # Check if the backup path exists in the bucket
-                                if eval aws s3 ls "s3://$s3_bucket/$backup_path" $endpoint_arg 2>/dev/null | head -5; then
-                                    log_success "  Backup data found at: s3://$s3_bucket/$backup_path"
+                                local backup_list
+                                backup_list=$(kctl exec -n "$minio_ns" "$minio_pod" -- mc ls "testbackup/$s3_bucket/$backup_path" 2>/dev/null | head -5)
+                                if [ -n "$backup_list" ]; then
+                                    echo "$backup_list" | sed 's/^/    /'
+                                    log_success "  Backup data found at: $s3_bucket/$backup_path"
                                 else
-                                    log_warn "  Could not list backup path - may still work if path is correct"
+                                    log_warn "  Could not list backup path (may still work)"
                                 fi
                             fi
                         fi
+                        
+                        # Clean up the alias
+                        kctl exec -n "$minio_ns" "$minio_pod" -- mc alias rm testbackup &>/dev/null || true
                     else
-                        log_error "  Failed to connect to S3/MinIO bucket: $s3_bucket"
-                        log_error "  Check credentials and endpoint configuration"
+                        log_error "  Failed to connect to MinIO bucket: $s3_bucket"
+                        log_error "  Endpoint: $mc_endpoint"
                         ((dry_errors++))
+                        # Clean up the alias
+                        kctl exec -n "$minio_ns" "$minio_pod" -- mc alias rm testbackup &>/dev/null || true
                     fi
-                    
-                    # Clean up environment
-                    unset AWS_ACCESS_KEY_ID
-                    unset AWS_SECRET_ACCESS_KEY
-                    unset AWS_DEFAULT_REGION
                 else
-                    log_warn "  AWS CLI not available - skipping S3 connectivity test"
-                    log_info "  Install AWS CLI to enable full validation: pip install awscli"
+                    log_warn "  Could not find MinIO pod - skipping bucket connectivity test"
+                    log_info "  Bucket and credentials configuration looks correct"
                 fi
             fi
-        else
-            log_warn "  No credentials secret configured (may use IAM roles)"
         fi
     fi
     echo ""
