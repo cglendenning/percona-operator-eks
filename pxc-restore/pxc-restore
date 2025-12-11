@@ -13,7 +13,6 @@ set -euo pipefail
 
 # Configuration
 KUBECONFIG="${KUBECONFIG:-}"
-VERBOSE=false
 DRY_RUN=false
 SOURCE_NAMESPACE=""
 TARGET_NAMESPACE=""
@@ -31,7 +30,7 @@ CYAN='\033[0;36m'
 BOLD='\033[1m'
 NC='\033[0m' # No Color
 
-# Logging functions
+# Logging functions - colored output for different message types
 log_info() { echo -e "${BLUE}[INFO]${NC} $1"; }
 log_success() { echo -e "${GREEN}[OK]${NC} $1"; }
 log_warn() { echo -e "${YELLOW}[WARN]${NC} $1"; }
@@ -45,7 +44,7 @@ log_header() {
     echo ""
 }
 
-# kubectl wrapper
+# Wraps kubectl with optional custom kubeconfig.
 kctl() {
     if [ -n "$KUBECONFIG" ]; then
         kubectl --kubeconfig="$KUBECONFIG" "$@"
@@ -54,7 +53,46 @@ kctl() {
     fi
 }
 
-# Usage
+# Converts ISO8601 timestamp to display format (YYYY-MM-DD HH:MM:SS).
+format_timestamp() {
+    local ts="$1"
+    if [ -n "$ts" ]; then
+        echo "$ts" | sed 's/T/ /g' | sed 's/Z//g' | cut -c1-19
+    fi
+}
+
+# Finds a MinIO pod for mc commands. Sets minio_pod and minio_ns variables.
+# Returns 0 if found, 1 if not found.
+find_minio_pod() {
+    minio_pod=""
+    minio_ns=""
+    local namespaces_to_check=("minio" "minio-operator" "default")
+    
+    # Add source/target namespaces if provided
+    [ -n "$SOURCE_NAMESPACE" ] && namespaces_to_check+=("$SOURCE_NAMESPACE")
+    [ -n "$TARGET_NAMESPACE" ] && namespaces_to_check+=("$TARGET_NAMESPACE")
+    
+    for ns in "${namespaces_to_check[@]}"; do
+        if [ -n "$ns" ] && kctl get namespace "$ns" &>/dev/null; then
+            # Try label selector first
+            minio_pod=$(kctl get pods -n "$ns" -l "app=minio" -o jsonpath='{.items[0].metadata.name}' 2>/dev/null) || minio_pod=""
+            if [ -z "$minio_pod" ]; then
+                minio_pod=$(kctl get pods -n "$ns" -l "app.kubernetes.io/name=minio" -o jsonpath='{.items[0].metadata.name}' 2>/dev/null) || minio_pod=""
+            fi
+            # Fallback: find any running pod with minio in name
+            if [ -z "$minio_pod" ]; then
+                minio_pod=$(kctl get pods -n "$ns" --no-headers 2>/dev/null | grep -i "^minio" | grep "Running" | head -1 | awk '{print $1}') || minio_pod=""
+            fi
+            if [ -n "$minio_pod" ]; then
+                minio_ns="$ns"
+                return 0
+            fi
+        fi
+    done
+    return 1
+}
+
+# Displays help text and exits.
 usage() {
     cat << EOF
 PXC Point-in-Time Restore CLI
@@ -114,7 +152,8 @@ EOF
     exit 0
 }
 
-# Check prerequisites
+# Validates all prerequisites: required tools, cluster connectivity, source backups, and target cluster health.
+# Returns 0 if all checks pass, 1 otherwise.
 check_prerequisites() {
     local errors=0
     local warnings=0
@@ -290,19 +329,20 @@ check_prerequisites() {
     fi
 }
 
-# Get cluster name from namespace
+# Returns the first PXC cluster name in a namespace.
 get_cluster_name() {
     local ns="$1"
     kctl get perconaxtradbcluster -n "$ns" -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || echo ""
 }
 
-# List backups and return JSON
+# Returns all backups in a namespace as JSON.
 get_backups() {
     local ns="$1"
     kctl get perconaxtradbclusterbackup -n "$ns" -o json 2>/dev/null || echo '{"items":[]}'
 }
 
-# Display backups and let user select
+# Displays available backups in a table and prompts user to select one.
+# Also determines PITR availability and prompts for restore time.
 display_and_select_backup() {
     local ns="$1"
     local backups_json
@@ -375,13 +415,13 @@ display_and_select_backup() {
         local latest_display="${backup_latest[$i]}"
         
         if [ -n "$completed_display" ]; then
-            completed_display=$(echo "$completed_display" | sed 's/T/ /g' | sed 's/Z//g' | cut -c1-19)
+            completed_display=$(format_timestamp "$completed_display")
         else
             completed_display="N/A"
         fi
         
         if [ -n "$latest_display" ]; then
-            latest_display=$(echo "$latest_display" | sed 's/T/ /g' | sed 's/Z//g' | cut -c1-19)
+            latest_display=$(format_timestamp "$latest_display")
         else
             latest_display="N/A"
         fi
@@ -450,10 +490,10 @@ display_and_select_backup() {
     local safe_latest_formatted=""
 
     if [ -n "$BACKUP_COMPLETED" ]; then
-        earliest_formatted=$(echo "$BACKUP_COMPLETED" | sed 's/T/ /g' | sed 's/Z//g' | cut -c1-19 || true)
+        earliest_formatted=$(format_timestamp "$BACKUP_COMPLETED") || true
     fi
     if [ -n "$BACKUP_LATEST" ]; then
-        latest_formatted=$(echo "$BACKUP_LATEST" | sed 's/T/ /g' | sed 's/Z//g' | cut -c1-19 || true)
+        latest_formatted=$(format_timestamp "$BACKUP_LATEST") || true
     fi
 
     # Track if PITR is available
@@ -490,22 +530,7 @@ display_and_select_backup() {
                     log_info "Last safe binlog should be: $last_safe_binlog"
                     
                     # Try to get the timestamp of the last safe binlog from MinIO
-                    # First, find MinIO pod
-                    local minio_pod="" minio_ns=""
-                    for check_ns in "minio" "minio-operator" "default"; do
-                        if kctl get namespace "$check_ns" &>/dev/null; then
-                            minio_pod=$(kctl get pods -n "$check_ns" -l "app=minio" -o jsonpath='{.items[0].metadata.name}' 2>/dev/null) || minio_pod=""
-                            if [ -z "$minio_pod" ]; then
-                                minio_pod=$(kctl get pods -n "$check_ns" --no-headers 2>/dev/null | grep -i "^minio" | grep "Running" | head -1 | awk '{print $1}') || minio_pod=""
-                            fi
-                            if [ -n "$minio_pod" ]; then
-                                minio_ns="$check_ns"
-                                break
-                            fi
-                        fi
-                    done
-                    
-                    if [ -n "$minio_pod" ] && [ -n "$minio_ns" ]; then
+                    if find_minio_pod; then
                         # Get backup destination to find the binlog path
                         local backup_dest=""
                         backup_dest=$(kctl get perconaxtradbclusterbackup "$BACKUP_NAME" -n "$ns" -o jsonpath='{.status.destination}' 2>/dev/null) || backup_dest=""
@@ -658,9 +683,8 @@ display_and_select_backup() {
     fi
 }
 
-
-
-# Copy backup resource from source to target namespace
+# Copies a backup CR from source to target namespace, including status subresource.
+# Required because restore references the backup by name in the target namespace.
 copy_backup_resource() {
     local backup_name="$1"
     local source_ns="$2"
@@ -729,8 +753,8 @@ copy_backup_resource() {
     return 0
 }
 
-
-# Create restore resource
+# Creates a PerconaXtraDBClusterRestore resource to trigger the restore.
+# Handles both PITR and non-PITR restores, configuring S3 source bucket explicitly.
 create_restore() {
     local target_ns="$1"
     local target_cluster="$2"
@@ -860,7 +884,8 @@ EOF
     fi
 }
 
-# Wait for restore to complete
+# Polls restore and cluster status until completion, failure, or timeout (10 min).
+# Displays real-time progress with elapsed time and pod status.
 wait_for_restore() {
     local target_ns="$1"
     local restore_name="$2"
@@ -990,7 +1015,8 @@ wait_for_restore() {
     return 1
 }
 
-# Get database summary
+# Queries MySQL to display user databases and table counts after restore.
+# Falls back to simpler query if the detailed query fails.
 get_database_summary() {
     local target_ns="$1"
     local target_cluster="$2"
@@ -1332,28 +1358,7 @@ if [ "$DRY_RUN" = true ]; then
                 echo ""
                 echo "  Testing MinIO connectivity to source bucket..."
                 
-                # Find MinIO pod - try common namespaces and labels
-                minio_pod=""
-                minio_ns=""
-                for ns in "minio" "minio-operator" "default" "$TARGET_NAMESPACE" "$SOURCE_NAMESPACE"; do
-                    if [ -n "$ns" ] && kctl get namespace "$ns" &>/dev/null; then
-                        # Try different label selectors
-                        minio_pod=$(kctl get pods -n "$ns" -l "app=minio" -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || echo "")
-                        if [ -z "$minio_pod" ]; then
-                            minio_pod=$(kctl get pods -n "$ns" -l "app.kubernetes.io/name=minio" -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || echo "")
-                        fi
-                        if [ -z "$minio_pod" ]; then
-                            # Fallback: find any pod with minio in the name
-                            minio_pod=$(kctl get pods -n "$ns" --no-headers 2>/dev/null | grep -i "^minio" | grep "Running" | head -1 | awk '{print $1}' || echo "")
-                        fi
-                        if [ -n "$minio_pod" ]; then
-                            minio_ns="$ns"
-                            break
-                        fi
-                    fi
-                done
-                
-                if [ -n "$minio_pod" ] && [ -n "$minio_ns" ]; then
+                if find_minio_pod; then
                     log_dry "  Found MinIO pod: $minio_pod in namespace $minio_ns"
                     
                     # Configure mc alias and test bucket access
