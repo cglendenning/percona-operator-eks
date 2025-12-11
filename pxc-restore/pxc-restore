@@ -1089,8 +1089,8 @@ if [ "$DRY_RUN" = true ]; then
                 echo "  Testing MinIO connectivity..."
                 
                 # Find MinIO pod - try common namespaces and labels
-                local minio_pod=""
-                local minio_ns=""
+                minio_pod=""
+                minio_ns=""
                 for ns in "minio" "minio-operator" "default" "$TARGET_NAMESPACE" "$SOURCE_NAMESPACE"; do
                     if [ -n "$ns" ] && kctl get namespace "$ns" &>/dev/null; then
                         # Try different label selectors
@@ -1114,13 +1114,12 @@ if [ "$DRY_RUN" = true ]; then
                     
                     # Configure mc alias and test bucket access
                     # Use the endpoint from storage config, or construct from service
-                    local mc_endpoint="$s3_endpoint"
+                    mc_endpoint="$s3_endpoint"
                     if [ -z "$mc_endpoint" ]; then
                         mc_endpoint="http://minio.${minio_ns}.svc:9000"
                     fi
                     
                     # Test bucket listing using mc
-                    local mc_test
                     mc_test=$(kctl exec -n "$minio_ns" "$minio_pod" -- mc alias set testbackup "$mc_endpoint" "$aws_access_key" "$aws_secret_key" 2>&1) || true
                     
                     if kctl exec -n "$minio_ns" "$minio_pod" -- mc ls "testbackup/$s3_bucket" &>/dev/null; then
@@ -1135,7 +1134,6 @@ if [ "$DRY_RUN" = true ]; then
                                 echo ""
                                 echo "  Checking backup path: $backup_path"
                                 
-                                local backup_list
                                 backup_list=$(kctl exec -n "$minio_ns" "$minio_pod" -- mc ls "testbackup/$s3_bucket/$backup_path" 2>/dev/null | head -5)
                                 if [ -n "$backup_list" ]; then
                                     echo "$backup_list" | sed 's/^/    /'
