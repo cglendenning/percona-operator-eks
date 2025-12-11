@@ -334,12 +334,18 @@ display_and_select_backup() {
         latest=$(echo "$item" | jq -r '.status.latestRestorableTime // ""')
         storage=$(echo "$item" | jq -r '.spec.storageName // ""')
         
-        # Check PITRReady condition
-        pitr=$(echo "$item" | jq -r '.status.conditions[]? | select(.type=="PITRReady") | .status' 2>/dev/null || echo "")
-        if [ "$pitr" = "True" ]; then
+        # Check if PITR is available - latestRestorableTime > completed means binlogs exist
+        pitr="No"
+        if [ -n "$latest" ] && [ -n "$completed" ] && [ "$latest" != "$completed" ]; then
             pitr="Yes"
-        else
-            pitr="No"
+        fi
+        # Also check PITRReady condition as fallback
+        if [ "$pitr" = "No" ]; then
+            local pitr_condition=""
+            pitr_condition=$(echo "$item" | jq -r '.status.conditions[]? | select(.type=="PITRReady") | .status // empty' 2>/dev/null) || true
+            if [ "$pitr_condition" = "True" ]; then
+                pitr="Yes"
+            fi
         fi
 
         # Only include succeeded backups
