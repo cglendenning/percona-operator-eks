@@ -15,6 +15,7 @@ set -euo pipefail
 KUBECONFIG="${KUBECONFIG:-}"
 VERBOSE=false
 DRY_RUN=false
+FORCE_PITR=false
 SOURCE_NAMESPACE=""
 TARGET_NAMESPACE=""
 TARGET_CLUSTER=""
@@ -76,6 +77,7 @@ OPTIONS:
     -c, --cluster NAME          Target cluster name (auto-detected if only one cluster exists)
     -b, --backup NAME           Backup name (will prompt if not provided)
     -r, --restore-time TIME     Restore time in "YYYY-MM-DD HH:MM:SS" UTC format
+    --force-pitr                Force PITR even if backup has binlog gaps (use with caution)
     --dry-run                   Show what would be done without making changes
     --kubeconfig PATH           Path to kubeconfig file
     -v, --verbose               Enable verbose output
@@ -589,6 +591,14 @@ create_restore() {
 
     local restore_yaml
     
+    # Build annotations section if force-pitr is enabled
+    local annotations_yaml=""
+    if [ "$FORCE_PITR" = true ] && [ "$PITR_AVAILABLE" = true ]; then
+        log_warn "Force PITR enabled - adding unsafe-pitr annotation"
+        annotations_yaml="  annotations:
+    percona.com/unsafe-pitr: \"true\""
+    fi
+    
     if [ "$PITR_AVAILABLE" = true ]; then
         # PITR restore - restore to specific point in time
         # We need to specify the SOURCE bucket where binlogs are stored, not the target bucket
@@ -620,7 +630,30 @@ create_restore() {
         # Build the restore spec with explicit backupSource pointing to SOURCE bucket
         if [ -n "$source_bucket" ] && [ -n "$s3_creds_secret" ]; then
             # Use explicit S3 config to point to the SOURCE bucket
-            restore_yaml=$(cat <<EOF
+            if [ -n "$annotations_yaml" ]; then
+                restore_yaml=$(cat <<EOF
+apiVersion: pxc.percona.com/v1
+kind: PerconaXtraDBClusterRestore
+metadata:
+  name: ${restore_name}
+  namespace: ${target_ns}
+${annotations_yaml}
+spec:
+  pxcCluster: ${target_cluster}
+  backupName: ${backup_name}
+  pitr:
+    type: date
+    date: "${restore_time}"
+    backupSource:
+      destination: ${backup_dest}
+      s3:
+        bucket: ${source_bucket}
+        credentialsSecret: ${s3_creds_secret}
+        region: ${s3_region}
+EOF
+)
+            else
+                restore_yaml=$(cat <<EOF
 apiVersion: pxc.percona.com/v1
 kind: PerconaXtraDBClusterRestore
 metadata:
@@ -640,6 +673,7 @@ spec:
         region: ${s3_region}
 EOF
 )
+            fi
             # Add endpoint if specified (for MinIO)
             if [ -n "$s3_endpoint" ]; then
                 restore_yaml="${restore_yaml}
@@ -648,7 +682,26 @@ EOF
         else
             # Fallback to storageName if we can't determine source bucket
             log_warn "Could not determine source bucket, using storageName reference"
-            restore_yaml=$(cat <<EOF
+            if [ -n "$annotations_yaml" ]; then
+                restore_yaml=$(cat <<EOF
+apiVersion: pxc.percona.com/v1
+kind: PerconaXtraDBClusterRestore
+metadata:
+  name: ${restore_name}
+  namespace: ${target_ns}
+${annotations_yaml}
+spec:
+  pxcCluster: ${target_cluster}
+  backupName: ${backup_name}
+  pitr:
+    type: date
+    date: "${restore_time}"
+    backupSource:
+      storageName: ${storage_name}
+EOF
+)
+            else
+                restore_yaml=$(cat <<EOF
 apiVersion: pxc.percona.com/v1
 kind: PerconaXtraDBClusterRestore
 metadata:
@@ -664,6 +717,7 @@ spec:
       storageName: ${storage_name}
 EOF
 )
+            fi
         fi
     else
         # Non-PITR restore - restore from backup only (no binlogs)
@@ -987,6 +1041,10 @@ while [[ $# -gt 0 ]]; do
             DRY_RUN=true
             shift
             ;;
+        --force-pitr)
+            FORCE_PITR=true
+            shift
+            ;;
         --kubeconfig)
             KUBECONFIG="$2"
             shift 2
@@ -1074,6 +1132,31 @@ if [ "$DRY_RUN" = true ]; then
     else
         log_error "  Backup '$BACKUP_NAME' is not in Succeeded state (current: ${backup_state:-unknown})"
         ((dry_errors++))
+    fi
+    
+    # Check for binlog gap conditions on the backup (PITR safety)
+    if [ "$PITR_AVAILABLE" = true ]; then
+        binlog_gap=$(kctl get perconaxtradbclusterbackup "$BACKUP_NAME" -n "$SOURCE_NAMESPACE" -o json 2>/dev/null | jq -r '.status.conditions[]? | select(.reason == "BinlogGapDetected") | .message' 2>/dev/null || echo "")
+        
+        if [ -n "$binlog_gap" ]; then
+            echo ""
+            log_warn "  BINLOG GAP DETECTED on this backup!"
+            log_warn "  $binlog_gap"
+            echo ""
+            if [ "$FORCE_PITR" = true ]; then
+                log_warn "  --force-pitr is set: Will proceed with unsafe PITR annotation"
+                log_warn "  Data at the gap point may be incomplete or inconsistent"
+            else
+                log_error "  PITR restore will fail without --force-pitr flag"
+                log_error "  Options:"
+                log_error "    1. Add --force-pitr to proceed (accept potential data gaps)"
+                log_error "    2. Choose a different backup without binlog gaps"
+                log_error "    3. Do a non-PITR restore (backup state only, no binlog replay)"
+                ((dry_errors++))
+            fi
+        else
+            log_dry "  No binlog gaps detected - PITR should be safe"
+        fi
     fi
     echo ""
     
