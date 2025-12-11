@@ -1058,15 +1058,15 @@ get_database_summary() {
         
         local db_count=0
         while IFS= read -r db; do
-            db=$(echo "$db" | tr -d '\r\n' | xargs)
+            db=$(echo "$db" | tr -d '\r\n' | xargs 2>/dev/null || echo "$db")
             case "$db" in
                 information_schema|mysql|performance_schema|sys|"") ;;
                 *)
                     printf "  %s\n" "$db"
-                    ((db_count++))
+                    db_count=$((db_count + 1))
                     ;;
             esac
-        done <<< "$db_list"
+        done <<< "$db_list" || true
         
         printf "  %s\n" "----------------------------------------"
         if [ "$db_count" -eq 0 ]; then
@@ -1094,8 +1094,8 @@ get_database_summary() {
                 local table_count="${line##*|}"
                 
                 # Clean up values
-                db_name=$(echo "$db_name" | xargs)
-                table_count=$(echo "$table_count" | xargs)
+                db_name=$(echo "$db_name" | xargs 2>/dev/null || echo "$db_name")
+                table_count=$(echo "$table_count" | xargs 2>/dev/null || echo "$table_count")
                 
                 if [ -n "$db_name" ]; then
                     # Ensure table_count is numeric
@@ -1103,11 +1103,12 @@ get_database_summary() {
                         table_count="0"
                     fi
                     printf "  %-30s %s\n" "$db_name" "$table_count"
-                    ((total_dbs++))
+                    # Use || true to prevent set -e from breaking on arithmetic
+                    total_dbs=$((total_dbs + 1))
                     total_tables=$((total_tables + table_count))
                 fi
             fi
-        done <<< "$db_results"
+        done <<< "$db_results" || true
         
         printf "  %s\n" "----------------------------------------"
         printf "  %-30s %s\n" "TOTAL ($total_dbs databases)" "$total_tables tables"
