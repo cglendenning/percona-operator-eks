@@ -753,7 +753,7 @@ if [ "$SCAN_ALL_PODS" = true ]; then
         
         if [[ "$result" == FOUND* ]]; then
             # Parse: FOUND|timestamp|statement
-            local rest="${result#FOUND|}"
+            rest="${result#FOUND|}"
             FOUND_TIMESTAMP="${rest%%|*}"
             FOUND_STATEMENT="${rest#*|}"
             FOUND_POD="$pod"
@@ -770,7 +770,7 @@ else
     
     if [[ "$result" == FOUND* ]]; then
         # Parse: FOUND|timestamp|statement
-        local rest="${result#FOUND|}"
+        rest="${result#FOUND|}"
         FOUND_TIMESTAMP="${rest%%|*}"
         FOUND_STATEMENT="${rest#*|}"
         FOUND_POD="$POD_NAME"
