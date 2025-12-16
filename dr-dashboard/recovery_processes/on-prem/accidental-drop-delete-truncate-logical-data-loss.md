@@ -37,6 +37,19 @@ Point-in-time restore from MinIO backup + binlogs to side instance; recover affe
    ```
 
 2. **Identify the exact timestamp of data loss**
+   
+   Use the `pitr-timestamp-finder` script to scan binlogs and find the timestamp just before the destructive operation:
+   ```bash
+   # Interactive mode - prompts for operation type and table name
+   ./pxc-restore/pitr-timestamp-finder -n ${NAMESPACE}
+   
+   # Or specify operation and table directly
+   ./pxc-restore/pitr-timestamp-finder -n ${NAMESPACE} -o DROP -d <database> -t <table>
+   ```
+   
+   The script will output a timestamp in the format `YYYY-MM-DD HH:MM:SS` (UTC) that can be used directly with `pxc-restore -r` for point-in-time recovery.
+   
+   Alternative manual method using audit logs or application logs:
    ```bash
    # Check audit logs, application logs, or binlogs
    # Find the exact time BEFORE the destructive operation

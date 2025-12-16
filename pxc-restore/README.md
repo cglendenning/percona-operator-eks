@@ -2,6 +2,13 @@
 
 A standalone CLI tool for restoring Percona XtraDB Cluster (PXC) to any point in time using PITR backups.
 
+## Tools
+
+This directory contains two complementary scripts:
+
+- **`pxc-restore`** - Performs point-in-time restores from PITR backups
+- **`pitr-timestamp-finder`** - Scans binlogs to find the timestamp just before a destructive operation
+
 ## Features
 
 - List all backups in a source namespace
@@ -308,9 +315,130 @@ The cluster may still be initializing. Wait for the cluster to reach `ready` sta
 kubectl get pxc <cluster-name> -n <namespace> -w
 ```
 
+## PITR Timestamp Finder
+
+The `pitr-timestamp-finder` script helps identify the exact timestamp to use for point-in-time recovery after accidental data loss (DROP, DELETE, TRUNCATE).
+
+### Usage
+
+```bash
+# Make executable (first time only)
+chmod +x pitr-timestamp-finder
+
+# Interactive mode - prompts for all inputs
+./pitr-timestamp-finder -n percona
+
+# Specify operation and table directly
+./pitr-timestamp-finder -n percona -o DROP -d mydb -t users
+
+# Specify exact pod
+./pitr-timestamp-finder -n percona -p db-pxc-0 -o DELETE -t orders
+```
+
+### Options
+
+```
+REQUIRED:
+    -n, --namespace NAMESPACE   Namespace containing the PXC cluster
+
+OPTIONS:
+    -p, --pod POD               PXC pod name (auto-detected if only one cluster)
+    -o, --operation TYPE        Destructive operation: DROP, DELETE, TRUNCATE
+    -d, --database DATABASE     Database name (optional, narrows search)
+    -t, --table TABLE           Table name to search for
+    --kubeconfig PATH           Path to kubeconfig file
+    -h, --help                  Show this help message
+```
+
+### How It Works
+
+1. Connects to a PXC pod and lists available binlog files
+2. Starting from the newest binlog, displays the timestamp range (earliest and latest events)
+3. Asks if the destructive operation occurred within that time range
+4. If yes, scans the binlog for the specified operation on the target table
+5. Returns the timestamp just BEFORE the destructive operation (1 second prior)
+6. If the operation is not in that binlog, moves to the previous one and repeats
+
+### Example Session
+
+```
+$ ./pitr-timestamp-finder -n percona
+
+=====================================================
+  PITR Timestamp Finder
+=====================================================
+
+[INFO] This script helps find the timestamp just before a destructive operation
+[INFO] for use with pxc-restore point-in-time recovery.
+
+[WARN] This is a READ-ONLY operation - no data will be modified.
+
+[INFO] Finding PXC pod in namespace: percona
+[OK] Found PXC pod: db-pxc-0
+
+Select the destructive operation to search for:
+  [1] DROP TABLE
+  [2] DELETE FROM
+  [3] TRUNCATE TABLE
+
+Enter selection [1-3]: 1
+[OK] Searching for: DROP
+
+Enter database name (optional, press Enter to skip): mydb
+[INFO] Filtering by database: mydb
+
+Enter table name: users
+[OK] Searching for table: users
+
+=====================================================
+  Scanning Binlogs
+=====================================================
+
+[INFO] Binlog directory: /var/lib/mysql
+[INFO] Found 5 binlog file(s)
+
+[INFO] Examining binlog: mysql-bin.000005 (1 of 5 from newest)
+
+  Binlog time range:
+    Earliest: 2025-01-15 12:00:00
+    Latest:   2025-01-15 14:30:00
+
+  Was the DROP on 'users' between these times? [y/n/q]: y
+[INFO]   Searching for DROP operation on 'users'...
+
+=====================================================
+  Result
+=====================================================
+
+  Found timestamp for PITR restore:
+
+  2025-01-15 14:25:32
+
+  This timestamp represents the moment just BEFORE the DROP operation.
+  Use this timestamp with pxc-restore for point-in-time recovery:
+
+  pxc-restore -n percona -t <target-namespace> -r "2025-01-15 14:25:32"
+
+[OK] Done.
+```
+
+### Combining with pxc-restore
+
+After finding the timestamp with `pitr-timestamp-finder`, use it directly with `pxc-restore`:
+
+```bash
+# Find the timestamp before data loss
+./pitr-timestamp-finder -n percona -o DROP -d mydb -t users
+# Output: 2025-01-15 14:25:32
+
+# Restore to that point in time
+./pxc-restore -n percona -t percona-restored -r "2025-01-15 14:25:32"
+```
+
 ## Security Notes
 
 - Secrets are copied from source to target namespace (required for restore)
 - The source cluster is never modified
 - Database queries are read-only (information_schema)
 - Root password is only used locally within the target cluster pod
+- The pitr-timestamp-finder script is read-only and makes no changes to data
