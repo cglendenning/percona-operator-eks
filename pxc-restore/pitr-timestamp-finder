@@ -33,7 +33,6 @@ NC='\033[0m'
 # Logging functions - all go to stderr so they display when stdout is captured
 log_info() { echo -e "${BLUE}[INFO]${NC} $1" >&2; }
 log_success() { echo -e "${GREEN}[OK]${NC} $1" >&2; }
-log_warn() { echo -e "${YELLOW}[WARN]${NC} $1" >&2; }
 log_error() { echo -e "${RED}[ERROR]${NC} $1" >&2; }
 log_header() {
     echo "" >&2
@@ -205,30 +204,72 @@ get_binlog_timestamps() {
     
     local binlog_path="${binlog_dir}/${binlog}"
     
-    # Get first and last timestamps from binlog
-    local output
-    output=$(kctl exec -n "$ns" "$pod" -c pxc -- mysqlbinlog --base64-output=DECODE-ROWS "$binlog_path" 2>/dev/null | grep -E "^#[0-9]{6}" | head -1) || output=""
+    log_info "    Reading binlog: $binlog_path"
     
+    # Run mysqlbinlog and capture output
+    local binlog_output
+    binlog_output=$(kctl exec -n "$ns" "$pod" -c pxc -- mysqlbinlog --base64-output=DECODE-ROWS "$binlog_path" 2>&1) || binlog_output=""
+    
+    if [ -z "$binlog_output" ]; then
+        log_info "    Binlog output is empty - mysqlbinlog may have failed"
+        echo "|"
+        return
+    fi
+    
+    # Check for errors in output
+    if echo "$binlog_output" | grep -qi "error\|errno\|failed"; then
+        log_info "    mysqlbinlog returned an error:"
+        echo "$binlog_output" | head -5 >&2
+        echo "|"
+        return
+    fi
+    
+    # Extract timestamp lines - format: #YYMMDD HH:MM:SS
+    local ts_lines
+    ts_lines=$(echo "$binlog_output" | grep -E '^#[0-9]{6} +[0-9]{1,2}:[0-9]{2}:[0-9]{2}') || ts_lines=""
+    
+    if [ -z "$ts_lines" ]; then
+        log_info "    No timestamp lines found in binlog (pattern: #YYMMDD HH:MM:SS)"
+        log_info "    First 10 lines of binlog output:"
+        echo "$binlog_output" | head -10 >&2
+        echo "|"
+        return
+    fi
+    
+    # Get first timestamp
+    local first_line
+    first_line=$(echo "$ts_lines" | head -1)
+    # Extract: #YYMMDD -> 20YY-MM-DD and HH:MM:SS
     local first_ts=""
-    if [ -n "$output" ]; then
-        # Format: #241215 14:30:00 -> 2024-12-15 14:30:00
-        first_ts=$(echo "$output" | sed -E 's/^#([0-9]{2})([0-9]{2})([0-9]{2}) +([0-9]{2}:[0-9]{2}:[0-9]{2}).*/20\1-\2-\3 \4/')
+    if [ -n "$first_line" ]; then
+        # Parse #YYMMDD HH:MM:SS
+        local yy mm dd time_part
+        yy=$(echo "$first_line" | sed 's/^#\([0-9][0-9]\).*/\1/')
+        mm=$(echo "$first_line" | sed 's/^#[0-9][0-9]\([0-9][0-9]\).*/\1/')
+        dd=$(echo "$first_line" | sed 's/^#[0-9][0-9][0-9][0-9]\([0-9][0-9]\).*/\1/')
+        time_part=$(echo "$first_line" | sed 's/^#[0-9]* *\([0-9:]*\).*/\1/')
+        first_ts="20${yy}-${mm}-${dd} ${time_part}"
     fi
     
-    local last_output
-    last_output=$(kctl exec -n "$ns" "$pod" -c pxc -- mysqlbinlog --base64-output=DECODE-ROWS "$binlog_path" 2>/dev/null | grep -E "^#[0-9]{6}" | tail -1) || last_output=""
-    
+    # Get last timestamp
+    local last_line
+    last_line=$(echo "$ts_lines" | tail -1)
     local last_ts=""
-    if [ -n "$last_output" ]; then
-        last_ts=$(echo "$last_output" | sed -E 's/^#([0-9]{2})([0-9]{2})([0-9]{2}) +([0-9]{2}:[0-9]{2}:[0-9]{2}).*/20\1-\2-\3 \4/')
+    if [ -n "$last_line" ]; then
+        local yy mm dd time_part
+        yy=$(echo "$last_line" | sed 's/^#\([0-9][0-9]\).*/\1/')
+        mm=$(echo "$last_line" | sed 's/^#[0-9][0-9]\([0-9][0-9]\).*/\1/')
+        dd=$(echo "$last_line" | sed 's/^#[0-9][0-9][0-9][0-9]\([0-9][0-9]\).*/\1/')
+        time_part=$(echo "$last_line" | sed 's/^#[0-9]* *\([0-9:]*\).*/\1/')
+        last_ts="20${yy}-${mm}-${dd} ${time_part}"
     fi
     
+    log_info "    Parsed timestamps: first='$first_ts' last='$last_ts'"
     echo "${first_ts}|${last_ts}"
 }
 
 # Search binlog for ALL destructive operations matching the pattern
 # Returns: Multiple lines of "TIMESTAMP|||MATCHED_STATEMENT" or "NOT_FOUND" or "ERROR"
-# Each match is on a separate line
 search_binlog_for_all_operations() {
     local ns="$1"
     local pod="$2"
@@ -240,111 +281,69 @@ search_binlog_for_all_operations() {
     
     local binlog_path="${binlog_dir}/${binlog}"
     
-    # Build search pattern - escape special regex characters in table/database names
-    local escaped_table
-    local escaped_database
-    escaped_table=$(printf '%s' "$table" | sed 's/[[\.*^$()+?{|]/\\&/g')
-    escaped_database=""
-    if [ -n "$database" ]; then
-        escaped_database=$(printf '%s' "$database" | sed 's/[[\.*^$()+?{|]/\\&/g')
+    log_info "    Searching binlog for $operation on table '$table'..."
+    
+    # Get the binlog content
+    local binlog_content
+    binlog_content=$(kctl exec -n "$ns" "$pod" -c pxc -- mysqlbinlog --base64-output=DECODE-ROWS -v "$binlog_path" 2>/dev/null) || binlog_content=""
+    
+    if [ -z "$binlog_content" ]; then
+        log_info "    Could not read binlog content"
+        echo "ERROR"
+        return
     fi
     
-    # Build pattern - match the operation keyword followed by table reference
-    local pattern=""
+    # Build grep pattern based on operation (case insensitive)
+    local grep_pattern=""
     case "$operation" in
         DROP)
-            if [ -n "$escaped_database" ]; then
-                pattern="DROP[[:space:]]+TABLE[[:space:]]+(IF[[:space:]]+EXISTS[[:space:]]+)?.*\`?${escaped_database}\`?\\.\`?${escaped_table}\`?"
-            else
-                pattern="DROP[[:space:]]+TABLE[[:space:]]+(IF[[:space:]]+EXISTS[[:space:]]+)?.*\`?${escaped_table}\`?"
-            fi
+            grep_pattern="[Dd][Rr][Oo][Pp].*[Tt][Aa][Bb][Ll][Ee].*${table}"
             ;;
         DELETE)
-            if [ -n "$escaped_database" ]; then
-                pattern="DELETE[[:space:]]+FROM[[:space:]]+.*\`?${escaped_database}\`?\\.\`?${escaped_table}\`?"
-            else
-                pattern="DELETE[[:space:]]+FROM[[:space:]]+.*\`?${escaped_table}\`?"
-            fi
+            grep_pattern="[Dd][Ee][Ll][Ee][Tt][Ee].*[Ff][Rr][Oo][Mm].*${table}"
             ;;
         TRUNCATE)
-            if [ -n "$escaped_database" ]; then
-                pattern="TRUNCATE[[:space:]]+(TABLE[[:space:]]+)?.*\`?${escaped_database}\`?\\.\`?${escaped_table}\`?"
-            else
-                pattern="TRUNCATE[[:space:]]+(TABLE[[:space:]]+)?.*\`?${escaped_table}\`?"
-            fi
+            grep_pattern="[Tt][Rr][Uu][Nn][Cc][Aa][Tt][Ee].*${table}"
             ;;
     esac
     
-    log_info "    Pattern: $pattern"
+    log_info "    Using grep pattern: $grep_pattern"
     
-    # Parse binlog and find ALL matching operations
-    # Returns multiple lines: timestamp|||statement
-    local result
-    result=$(kctl exec -n "$ns" "$pod" -c pxc -- bash -c "
-        mysqlbinlog --base64-output=DECODE-ROWS -v '${binlog_path}' 2>/dev/null | awk '
-        BEGIN { 
-            prev_ts = \"\"
-            current_ts = \"\"
-            current_stmt = \"\"
-            match_count = 0
-        }
-        /^#[0-9]{6}/ {
-            # Extract timestamp: #241215 14:30:00 -> 2024-12-15 14:30:00
-            match(\$0, /^#([0-9]{2})([0-9]{2})([0-9]{2}) +([0-9]{2}:[0-9]{2}:[0-9]{2})/, arr)
-            if (arr[1] != \"\") {
-                prev_ts = current_ts
-                current_ts = \"20\" arr[1] \"-\" arr[2] \"-\" arr[3] \" \" arr[4]
-            }
-            # Reset statement buffer at new timestamp
-            current_stmt = \"\"
-        }
-        # Skip comment lines and metadata
-        /^#/ { next }
-        /^\/\*!/ { next }
-        /^SET / { next }
-        /^DELIMITER/ { next }
-        /^BINLOG/ { next }
-        /^ROLLBACK/ { next }
-        /^BEGIN/ { next }
-        /^COMMIT/ { next }
-        # Accumulate SQL statement lines
-        {
-            if (\$0 != \"\" && \$0 !~ /^[[:space:]]*\$/) {
-                if (current_stmt != \"\") {
-                    current_stmt = current_stmt \" \" \$0
-                } else {
-                    current_stmt = \$0
-                }
-            }
-        }
-        /${pattern}/i {
-            ts_to_use = prev_ts
-            if (ts_to_use == \"\") {
-                ts_to_use = current_ts
-            }
-            # Use the accumulated statement or current line
-            matched = current_stmt
-            if (matched == \"\") {
-                matched = \$0
-            }
-            # Truncate to 300 chars and clean up
-            matched = substr(matched, 1, 300)
-            gsub(/\n/, \" \", matched)
-            gsub(/[|]/, \":\", matched)  # Escape pipe chars
-            print ts_to_use \"|||\" matched
-            match_count++
-            # Reset to find next match
-            current_stmt = \"\"
-        }
-        END {
-            if (match_count == 0) {
-                print \"NOT_FOUND\"
-            }
-        }
-        '
-    " 2>/dev/null) || result="ERROR"
+    # Find matching lines and their context
+    # We need to find the timestamp that precedes each match
+    local results=""
+    local current_ts=""
+    local prev_ts=""
+    local found_count=0
     
-    echo "$result"
+    while IFS= read -r line; do
+        # Check for timestamp line: #YYMMDD HH:MM:SS
+        if [[ "$line" =~ ^#([0-9]{2})([0-9]{2})([0-9]{2})\ +([0-9]{1,2}:[0-9]{2}:[0-9]{2}) ]]; then
+            prev_ts="$current_ts"
+            current_ts="20${BASH_REMATCH[1]}-${BASH_REMATCH[2]}-${BASH_REMATCH[3]} ${BASH_REMATCH[4]}"
+        fi
+        
+        # Check if line matches our pattern (case insensitive)
+        if echo "$line" | grep -qiE "$grep_pattern"; then
+            # Use previous timestamp (the one before this statement)
+            local ts_to_use="${prev_ts:-$current_ts}"
+            if [ -n "$ts_to_use" ]; then
+                # Clean up the matched line
+                local clean_line="${line//|/:}"
+                clean_line="${clean_line:0:300}"
+                results="${results}${ts_to_use}|||${clean_line}"$'\n'
+                ((found_count++))
+            fi
+        fi
+    done <<< "$binlog_content"
+    
+    log_info "    Found $found_count match(es)"
+    
+    if [ "$found_count" -eq 0 ]; then
+        echo "NOT_FOUND"
+    else
+        echo -n "$results"
+    fi
 }
 
 # Subtract one second from a timestamp
@@ -373,8 +372,7 @@ subtract_one_second() {
 }
 
 # Scan a single pod's binlogs for the operation
-# Returns via stdout: "FOUND|timestamp" or "NOT_FOUND" or "QUIT" or "ERROR"
-# Progress messages go to stderr so they display when stdout is captured
+# Returns via stdout: "FOUND|timestamp|statement" or "NOT_FOUND" or "QUIT" or "ERROR"
 scan_pod_binlogs() {
     local ns="$1"
     local pod="$2"
@@ -390,7 +388,7 @@ scan_pod_binlogs() {
     local binlog_dir
     binlog_dir=$(get_binlog_dir "$ns" "$pod" "$password")
     if [ -z "$binlog_dir" ]; then
-        log_warn "  Could not determine binlog directory on $pod"
+        log_info "  Could not determine binlog directory on $pod"
         echo "ERROR"
         return
     fi
@@ -401,7 +399,7 @@ scan_pod_binlogs() {
     binlog_list=$(get_binlog_list "$ns" "$pod" "$password")
     
     if [ -z "$binlog_list" ]; then
-        log_warn "  No binlogs found on $pod. Binary logging may not be enabled."
+        log_info "  No binlogs found on $pod. Binary logging may not be enabled."
         echo "NOT_FOUND"
         return
     fi
@@ -410,7 +408,7 @@ scan_pod_binlogs() {
     local binlogs
     mapfile -t binlogs <<< "$binlog_list"
     local binlog_count=${#binlogs[@]}
-    log_info "  Found $binlog_count binlog file(s)"
+    log_info "  Found $binlog_count binlog file(s): ${binlogs[*]}"
     
     # Iterate through binlogs from newest to oldest
     for ((i = binlog_count - 1; i >= 0; i--)); do
@@ -426,7 +424,7 @@ scan_pod_binlogs() {
         local last_ts="${timestamps##*|}"
         
         if [ -z "$first_ts" ] || [ -z "$last_ts" ]; then
-            log_warn "    Could not read timestamps from this binlog, skipping..."
+            log_info "    No valid timestamps found in this binlog, trying next..."
             continue
         fi
         
@@ -447,13 +445,11 @@ scan_pod_binlogs() {
         fi
         
         if [ "$should_search" = "y" ]; then
-            log_info "    Searching for $operation operation on '$table'..."
-            
             local result
             result=$(search_binlog_for_all_operations "$ns" "$pod" "$binlog" "$binlog_dir" "$operation" "$table" "$database")
             
             if [ "$result" = "NOT_FOUND" ]; then
-                log_warn "    Operation NOT FOUND in this binlog."
+                log_info "    Operation NOT FOUND in this binlog."
                 if [ "$interactive" = "true" ]; then
                     read -p "    Try previous binlog? [y/n]: " try_prev </dev/tty
                     if [[ ! "$try_prev" =~ ^[Yy]$ ]]; then
@@ -482,7 +478,7 @@ scan_pod_binlogs() {
                 local match_count=${#matches[@]}
                 
                 if [ "$match_count" -eq 0 ]; then
-                    log_warn "    Operation NOT FOUND in this binlog."
+                    log_info "    Operation NOT FOUND in this binlog."
                     continue
                 fi
                 
@@ -523,7 +519,7 @@ scan_pod_binlogs() {
                         return
                     fi
                 else
-                    log_warn "    Invalid selection, continuing to previous binlog..."
+                    log_info "    Invalid selection, continuing to previous binlog..."
                     continue
                 fi
             fi
@@ -534,7 +530,7 @@ scan_pod_binlogs() {
     done
     
     # Exhausted all binlogs on this pod
-    log_warn "  Searched all binlogs on $pod - operation not found."
+    log_info "  Searched all binlogs on $pod - operation not found."
     echo "NOT_FOUND"
 }
 
@@ -591,8 +587,7 @@ log_header "PITR Timestamp Finder"
 
 log_info "This script helps find the timestamp just before a destructive operation"
 log_info "for use with pxc-restore point-in-time recovery."
-echo ""
-log_warn "This is a READ-ONLY operation - no data will be modified."
+log_info "This is a READ-ONLY operation - no data will be modified."
 echo ""
 
 # Get all PXC pods
@@ -634,9 +629,9 @@ else
     # Prompt user to select pod or scan all
     if [ "$POD_COUNT" -gt 1 ]; then
         echo ""
-        log_warn "IMPORTANT: In a PXC cluster, binlogs are local to each pod."
-        log_warn "If the primary (writer) changed, the destructive operation may be"
-        log_warn "in a DIFFERENT pod's binlogs than the current primary."
+        log_info "In a PXC cluster, binlogs are local to each pod."
+        log_info "If the primary (writer) changed, the destructive operation may be"
+        log_info "in a DIFFERENT pod's binlogs than the current primary."
         echo ""
         echo "Select which pod(s) to scan:"
         echo "  [0] Scan ALL pods (recommended if unsure)"
@@ -717,7 +712,7 @@ fi
 
 log_success "Searching for table: $TABLE_NAME"
 
-# Interactive mode - always interactive unless we add a --non-interactive flag later
+# Interactive mode - always interactive
 INTERACTIVE="true"
 
 # Get cluster name and MySQL root password
