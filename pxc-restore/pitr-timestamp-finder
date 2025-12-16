@@ -17,6 +17,7 @@ POD_NAME=""
 OPERATION=""
 TABLE_NAME=""
 DATABASE_NAME=""
+SCAN_ALL_PODS=false
 
 # Colors
 RED='\033[0;31m'
@@ -63,7 +64,8 @@ REQUIRED:
     -n, --namespace NAMESPACE   Namespace containing the PXC cluster
 
 OPTIONS:
-    -p, --pod POD               PXC pod name (auto-detected if only one cluster)
+    -p, --pod POD               PXC pod name (will prompt to select if not provided)
+    -a, --all-pods              Scan all PXC pods (useful if primary changed)
     -o, --operation TYPE        Destructive operation: DROP, DELETE, TRUNCATE
     -d, --database DATABASE     Database name (optional, narrows search)
     -t, --table TABLE           Table name to search for
@@ -73,6 +75,9 @@ OPTIONS:
 EXAMPLES:
     # Interactive mode - prompts for all inputs
     $0 -n percona
+
+    # Scan all pods (recommended if unsure which was primary)
+    $0 -n percona --all-pods -o DROP -t users
 
     # Specify operation and table
     $0 -n percona -o DROP -d mydb -t users
@@ -87,26 +92,31 @@ OUTPUT:
     This timestamp represents the moment just BEFORE the destructive operation
     occurred, suitable for point-in-time recovery.
 
+PXC CLUSTER NOTE:
+    In a PXC cluster, each node has its own binlogs. If a primary failover
+    occurred, the destructive operation may be in a different pod's binlogs.
+    Use --all-pods to scan all pods, or specify -p to target a specific pod.
+
 NOTE:
     This script is READ-ONLY. It only examines binlogs and makes no changes.
 EOF
     exit 0
 }
 
-# Find PXC pod in namespace
-find_pxc_pod() {
+# Get all PXC pods in namespace
+get_pxc_pods() {
     local ns="$1"
-    local pod=""
+    local pods=""
     
-    # Try to find a running PXC pod
-    pod=$(kctl get pods -n "$ns" -l "app.kubernetes.io/component=pxc" -o jsonpath='{.items[0].metadata.name}' 2>/dev/null) || pod=""
+    # Try to find running PXC pods by label
+    pods=$(kctl get pods -n "$ns" -l "app.kubernetes.io/component=pxc" --field-selector=status.phase=Running -o jsonpath='{.items[*].metadata.name}' 2>/dev/null) || pods=""
     
-    if [ -z "$pod" ]; then
-        # Fallback: find pod with pxc in name
-        pod=$(kctl get pods -n "$ns" --no-headers 2>/dev/null | grep -E "pxc-[0-9]" | grep "Running" | head -1 | awk '{print $1}') || pod=""
+    if [ -z "$pods" ]; then
+        # Fallback: find pods with pxc in name
+        pods=$(kctl get pods -n "$ns" --no-headers 2>/dev/null | grep -E "pxc-[0-9]" | grep "Running" | awk '{print $1}' | tr '\n' ' ') || pods=""
     fi
     
-    echo "$pod"
+    echo "$pods"
 }
 
 # Get list of binlog files from MySQL
@@ -143,8 +153,6 @@ get_binlog_timestamps() {
     local binlog_path="${binlog_dir}/${binlog}"
     
     # Get first and last timestamps from binlog
-    # Use mysqlbinlog with --start-datetime far in past and --stop-datetime far in future
-    # to capture all events, then extract timestamps
     local output
     output=$(kctl exec -n "$ns" "$pod" -c pxc -- mysqlbinlog --base64-output=DECODE-ROWS "$binlog_path" 2>/dev/null | grep -E "^#[0-9]{6}" | head -1) || output=""
     
@@ -177,31 +185,41 @@ search_binlog_for_operation() {
     
     local binlog_path="${binlog_dir}/${binlog}"
     
-    # Build search pattern
+    # Build search pattern - escape special regex characters in table/database names
+    local escaped_table
+    local escaped_database
+    escaped_table=$(printf '%s' "$table" | sed 's/[[\.*^$()+?{|]/\\&/g')
+    escaped_database=""
+    if [ -n "$database" ]; then
+        escaped_database=$(printf '%s' "$database" | sed 's/[[\.*^$()+?{|]/\\&/g')
+    fi
+    
     local pattern=""
     case "$operation" in
         DROP)
-            if [ -n "$database" ]; then
-                pattern="DROP[[:space:]]+TABLE.*\`?${database}\`?\.\`?${table}\`?"
+            if [ -n "$escaped_database" ]; then
+                pattern="DROP[[:space:]]+TABLE.*\`?${escaped_database}\`?\\.\`?${escaped_table}\`?"
             else
-                pattern="DROP[[:space:]]+TABLE.*\`?${table}\`?"
+                pattern="DROP[[:space:]]+TABLE.*\`?${escaped_table}\`?"
             fi
             ;;
         DELETE)
-            if [ -n "$database" ]; then
-                pattern="DELETE[[:space:]]+FROM[[:space:]]+\`?${database}\`?\.\`?${table}\`?"
+            if [ -n "$escaped_database" ]; then
+                pattern="DELETE[[:space:]]+FROM[[:space:]]+\`?${escaped_database}\`?\\.\`?${escaped_table}\`?"
             else
-                pattern="DELETE[[:space:]]+FROM[[:space:]]+\`?${table}\`?"
+                pattern="DELETE[[:space:]]+FROM[[:space:]]+\`?${escaped_table}\`?"
             fi
             ;;
         TRUNCATE)
-            if [ -n "$database" ]; then
-                pattern="TRUNCATE[[:space:]]+(TABLE[[:space:]]+)?\`?${database}\`?\.\`?${table}\`?"
+            if [ -n "$escaped_database" ]; then
+                pattern="TRUNCATE[[:space:]]+(TABLE[[:space:]]+)?\`?${escaped_database}\`?\\.\`?${escaped_table}\`?"
             else
-                pattern="TRUNCATE[[:space:]]+(TABLE[[:space:]]+)?\`?${table}\`?"
+                pattern="TRUNCATE[[:space:]]+(TABLE[[:space:]]+)?\`?${escaped_table}\`?"
             fi
             ;;
     esac
+    
+    log_info "    Pattern: $pattern"
     
     # Parse binlog and find the operation
     # We need to track the timestamp of each event and return the one just before the match
@@ -269,6 +287,115 @@ subtract_one_second() {
     fi
 }
 
+# Scan a single pod's binlogs for the operation
+# Returns: "FOUND|timestamp" or "NOT_FOUND" or "ERROR"
+scan_pod_binlogs() {
+    local ns="$1"
+    local pod="$2"
+    local operation="$3"
+    local table="$4"
+    local database="$5"
+    local interactive="$6"
+    
+    log_info "Scanning binlogs on pod: $pod"
+    
+    # Get binlog directory
+    local binlog_dir
+    binlog_dir=$(get_binlog_dir "$ns" "$pod")
+    if [ -z "$binlog_dir" ]; then
+        log_warn "  Could not determine binlog directory on $pod"
+        echo "ERROR"
+        return
+    fi
+    log_info "  Binlog directory: $binlog_dir"
+    
+    # Get list of binlogs
+    local binlog_list
+    binlog_list=$(get_binlog_list "$ns" "$pod")
+    
+    if [ -z "$binlog_list" ]; then
+        log_warn "  No binlogs found on $pod. Binary logging may not be enabled."
+        echo "NOT_FOUND"
+        return
+    fi
+    
+    # Convert to array
+    local binlogs
+    mapfile -t binlogs <<< "$binlog_list"
+    local binlog_count=${#binlogs[@]}
+    log_info "  Found $binlog_count binlog file(s)"
+    
+    # Iterate through binlogs from newest to oldest
+    for ((i = binlog_count - 1; i >= 0; i--)); do
+        local binlog="${binlogs[$i]}"
+        
+        echo ""
+        log_info "  Examining binlog: $binlog ($((binlog_count - i)) of $binlog_count from newest)"
+        
+        # Get timestamp range
+        local timestamps
+        timestamps=$(get_binlog_timestamps "$ns" "$pod" "$binlog" "$binlog_dir")
+        local first_ts="${timestamps%%|*}"
+        local last_ts="${timestamps##*|}"
+        
+        if [ -z "$first_ts" ] || [ -z "$last_ts" ]; then
+            log_warn "    Could not read timestamps from this binlog, skipping..."
+            continue
+        fi
+        
+        echo ""
+        echo "    Binlog time range:"
+        echo -e "      ${CYAN}Earliest:${NC} $first_ts"
+        echo -e "      ${CYAN}Latest:${NC}   $last_ts"
+        echo ""
+        
+        local should_search="y"
+        if [ "$interactive" = "true" ]; then
+            read -p "    Was the $operation on '$table' between these times? [y/n/q]: " confirm
+            case "$confirm" in
+                [Yy]*) should_search="y" ;;
+                [Qq]*) echo "QUIT"; return ;;
+                *) should_search="n" ;;
+            esac
+        fi
+        
+        if [ "$should_search" = "y" ]; then
+            log_info "    Searching for $operation operation on '$table'..."
+            
+            local result
+            result=$(search_binlog_for_operation "$ns" "$pod" "$binlog" "$binlog_dir" "$operation" "$table" "$database")
+            
+            if [ "$result" = "NOT_FOUND" ]; then
+                log_warn "    Operation NOT FOUND in this binlog."
+                if [ "$interactive" = "true" ]; then
+                    read -p "    Try previous binlog? [y/n]: " try_prev
+                    if [[ ! "$try_prev" =~ ^[Yy]$ ]]; then
+                        echo "NOT_FOUND"
+                        return
+                    fi
+                fi
+                continue
+            elif [ "$result" = "ERROR" ]; then
+                log_error "    Error reading binlog"
+                continue
+            else
+                # Found it!
+                local safe_ts
+                safe_ts=$(subtract_one_second "$result")
+                echo "FOUND|$safe_ts"
+                return
+            fi
+        else
+            log_info "    Skipping to previous binlog..."
+            continue
+        fi
+    done
+    
+    # Exhausted all binlogs on this pod
+    log_warn "  Searched all binlogs on $pod - operation not found."
+    echo "NOT_FOUND"
+}
+
 # Parse arguments
 while [[ $# -gt 0 ]]; do
     case $1 in
@@ -279,6 +406,10 @@ while [[ $# -gt 0 ]]; do
         -p|--pod)
             POD_NAME="$2"
             shift 2
+            ;;
+        -a|--all-pods)
+            SCAN_ALL_PODS=true
+            shift
             ;;
         -o|--operation)
             OPERATION="$2"
@@ -322,23 +453,71 @@ echo ""
 log_warn "This is a READ-ONLY operation - no data will be modified."
 echo ""
 
-# Find or validate PXC pod
-if [ -z "$POD_NAME" ]; then
-    log_info "Finding PXC pod in namespace: $NAMESPACE"
-    POD_NAME=$(find_pxc_pod "$NAMESPACE")
-    
-    if [ -z "$POD_NAME" ]; then
-        log_error "No PXC pod found in namespace: $NAMESPACE"
+# Get all PXC pods
+ALL_PODS=$(get_pxc_pods "$NAMESPACE")
+if [ -z "$ALL_PODS" ]; then
+    log_error "No running PXC pods found in namespace: $NAMESPACE"
+    exit 1
+fi
+
+# Convert to array
+read -ra POD_ARRAY <<< "$ALL_PODS"
+POD_COUNT=${#POD_ARRAY[@]}
+
+log_info "Found $POD_COUNT PXC pod(s) in namespace $NAMESPACE:"
+for p in "${POD_ARRAY[@]}"; do
+    echo "    - $p"
+done
+echo ""
+
+# Handle pod selection
+if [ "$SCAN_ALL_PODS" = true ]; then
+    log_info "Will scan ALL pods (--all-pods specified)"
+elif [ -n "$POD_NAME" ]; then
+    # Validate provided pod exists in our list
+    pod_found=false
+    for p in "${POD_ARRAY[@]}"; do
+        if [ "$p" = "$POD_NAME" ]; then
+            pod_found=true
+            break
+        fi
+    done
+    if [ "$pod_found" = false ]; then
+        log_error "Specified pod '$POD_NAME' not found in PXC cluster."
+        log_info "Available pods: ${POD_ARRAY[*]}"
         exit 1
     fi
-    log_success "Found PXC pod: $POD_NAME"
+    log_success "Using specified pod: $POD_NAME"
 else
-    # Validate provided pod exists
-    if ! kctl get pod "$POD_NAME" -n "$NAMESPACE" &>/dev/null; then
-        log_error "Pod not found: $POD_NAME in namespace $NAMESPACE"
-        exit 1
+    # Prompt user to select pod or scan all
+    if [ "$POD_COUNT" -gt 1 ]; then
+        echo ""
+        log_warn "IMPORTANT: In a PXC cluster, binlogs are local to each pod."
+        log_warn "If the primary (writer) changed, the destructive operation may be"
+        log_warn "in a DIFFERENT pod's binlogs than the current primary."
+        echo ""
+        echo "Select which pod(s) to scan:"
+        echo "  [0] Scan ALL pods (recommended if unsure)"
+        for i in "${!POD_ARRAY[@]}"; do
+            echo "  [$((i+1))] ${POD_ARRAY[$i]}"
+        done
+        echo ""
+        read -p "Enter selection [0-$POD_COUNT]: " pod_choice
+        
+        if [ "$pod_choice" = "0" ]; then
+            SCAN_ALL_PODS=true
+            log_info "Will scan all pods."
+        elif [[ "$pod_choice" =~ ^[0-9]+$ ]] && [ "$pod_choice" -ge 1 ] && [ "$pod_choice" -le "$POD_COUNT" ]; then
+            POD_NAME="${POD_ARRAY[$((pod_choice-1))]}"
+            log_success "Selected pod: $POD_NAME"
+        else
+            log_error "Invalid selection"
+            exit 1
+        fi
+    else
+        POD_NAME="${POD_ARRAY[0]}"
+        log_success "Using pod: $POD_NAME"
     fi
-    log_success "Using pod: $POD_NAME"
 fi
 
 # Get destructive operation type if not provided
@@ -396,97 +575,73 @@ fi
 
 log_success "Searching for table: $TABLE_NAME"
 
+# Determine interactive mode
+INTERACTIVE="true"
+if [ -n "$OPERATION" ] && [ -n "$TABLE_NAME" ] && [ "$SCAN_ALL_PODS" = true ]; then
+    # Non-interactive when scanning all pods with operation/table specified
+    INTERACTIVE="false"
+fi
+
 echo ""
 log_header "Scanning Binlogs"
 
-# Get binlog directory
-BINLOG_DIR=$(get_binlog_dir "$NAMESPACE" "$POD_NAME")
-log_info "Binlog directory: $BINLOG_DIR"
-
-# Get list of binlogs (newest first)
-BINLOG_LIST=$(get_binlog_list "$NAMESPACE" "$POD_NAME")
-
-if [ -z "$BINLOG_LIST" ]; then
-    log_error "No binlogs found. Binary logging may not be enabled."
-    exit 1
-fi
-
-# Convert to array and reverse (newest first)
-mapfile -t BINLOGS <<< "$BINLOG_LIST"
-BINLOG_COUNT=${#BINLOGS[@]}
-log_info "Found $BINLOG_COUNT binlog file(s)"
-
-# Iterate through binlogs from newest to oldest
 FOUND_TIMESTAMP=""
-for ((i = BINLOG_COUNT - 1; i >= 0; i--)); do
-    binlog="${BINLOGS[$i]}"
-    
-    echo ""
-    log_info "Examining binlog: $binlog ($(($BINLOG_COUNT - $i)) of $BINLOG_COUNT from newest)"
-    
-    # Get timestamp range
-    timestamps=$(get_binlog_timestamps "$NAMESPACE" "$POD_NAME" "$binlog" "$BINLOG_DIR")
-    first_ts="${timestamps%%|*}"
-    last_ts="${timestamps##*|}"
-    
-    if [ -z "$first_ts" ] || [ -z "$last_ts" ]; then
-        log_warn "  Could not read timestamps from this binlog, skipping..."
-        continue
-    fi
-    
-    echo ""
-    echo "  Binlog time range:"
-    echo -e "    ${CYAN}Earliest:${NC} $first_ts"
-    echo -e "    ${CYAN}Latest:${NC}   $last_ts"
-    echo ""
-    
-    # Ask user if the destructive action was between these timestamps
-    read -p "  Was the $OPERATION on '$TABLE_NAME' between these times? [y/n/q]: " confirm
-    
-    case "$confirm" in
-        [Yy]*)
-            # Search this binlog for the operation
-            log_info "  Searching for $OPERATION operation on '$TABLE_NAME'..."
-            
-            result=$(search_binlog_for_operation "$NAMESPACE" "$POD_NAME" "$binlog" "$BINLOG_DIR" "$OPERATION" "$TABLE_NAME" "$DATABASE_NAME")
-            
-            if [ "$result" = "NOT_FOUND" ]; then
-                log_warn "  Operation not found in this binlog."
-                read -p "  Try previous binlog? [y/n]: " try_prev
-                if [[ ! "$try_prev" =~ ^[Yy]$ ]]; then
-                    log_info "Exiting without finding timestamp."
-                    exit 0
-                fi
-                continue
-            elif [ "$result" = "ERROR" ]; then
-                log_error "  Error reading binlog"
-                continue
-            else
-                # Found it! Subtract one second to get the safe restore point
-                FOUND_TIMESTAMP=$(subtract_one_second "$result")
-                break
-            fi
-            ;;
-        [Qq]*)
-            log_info "Exiting."
+FOUND_POD=""
+
+if [ "$SCAN_ALL_PODS" = true ]; then
+    # Scan all pods
+    for pod in "${POD_ARRAY[@]}"; do
+        echo ""
+        echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+        result=$(scan_pod_binlogs "$NAMESPACE" "$pod" "$OPERATION" "$TABLE_NAME" "$DATABASE_NAME" "$INTERACTIVE")
+        
+        if [[ "$result" == FOUND* ]]; then
+            FOUND_TIMESTAMP="${result#FOUND|}"
+            FOUND_POD="$pod"
+            break
+        elif [ "$result" = "QUIT" ]; then
+            log_info "Exiting at user request."
             exit 0
-            ;;
-        *)
-            # Not in this binlog, continue to previous
-            log_info "  Continuing to previous binlog..."
-            continue
-            ;;
-    esac
-done
+        fi
+        # Continue to next pod if NOT_FOUND or ERROR
+    done
+else
+    # Scan single pod
+    result=$(scan_pod_binlogs "$NAMESPACE" "$POD_NAME" "$OPERATION" "$TABLE_NAME" "$DATABASE_NAME" "$INTERACTIVE")
+    
+    if [[ "$result" == FOUND* ]]; then
+        FOUND_TIMESTAMP="${result#FOUND|}"
+        FOUND_POD="$POD_NAME"
+    elif [ "$result" = "QUIT" ]; then
+        log_info "Exiting at user request."
+        exit 0
+    fi
+fi
 
 echo ""
 
 if [ -z "$FOUND_TIMESTAMP" ]; then
-    log_error "Could not find the $OPERATION operation in any binlog."
+    log_header "Search Complete - NOT FOUND"
+    
+    log_error "Could not find '$OPERATION ... $TABLE_NAME' in any scanned binlog."
+    echo ""
     log_info "Possible reasons:"
-    log_info "  - The operation occurred before the oldest available binlog"
-    log_info "  - The table name or database name doesn't match exactly"
-    log_info "  - Binary logging was not enabled at the time"
+    log_info "  1. The table name does not match exactly (check spelling, case)"
+    if [ -n "$DATABASE_NAME" ]; then
+        log_info "  2. The database name '$DATABASE_NAME' does not match exactly"
+    else
+        log_info "  2. Try specifying the database name with -d to narrow the search"
+    fi
+    log_info "  3. The operation occurred before the oldest available binlog"
+    log_info "  4. Binary logging was not enabled at the time of the operation"
+    if [ "$SCAN_ALL_PODS" = false ] && [ "$POD_COUNT" -gt 1 ]; then
+        log_info "  5. The operation may be in a different pod's binlogs (try --all-pods)"
+    fi
+    echo ""
+    log_info "Tips:"
+    log_info "  - Table names are case-sensitive in the binlog"
+    log_info "  - Try searching without the database name first"
+    log_info "  - Check if the table ever existed: SHOW TABLES LIKE '%$TABLE_NAME%'"
     exit 1
 fi
 
@@ -496,10 +651,11 @@ echo -e "  ${GREEN}${BOLD}Found timestamp for PITR restore:${NC}"
 echo ""
 echo -e "  ${CYAN}${BOLD}$FOUND_TIMESTAMP${NC}"
 echo ""
+echo "  Found on pod: $FOUND_POD"
+echo ""
 echo "  This timestamp represents the moment just BEFORE the $OPERATION operation."
 echo "  Use this timestamp with pxc-restore for point-in-time recovery:"
 echo ""
 echo -e "  ${YELLOW}pxc-restore -n $NAMESPACE -t <target-namespace> -r \"$FOUND_TIMESTAMP\"${NC}"
 echo ""
 log_success "Done."
-

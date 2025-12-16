@@ -328,6 +328,9 @@ chmod +x pitr-timestamp-finder
 # Interactive mode - prompts for all inputs
 ./pitr-timestamp-finder -n percona
 
+# Scan all pods (recommended if primary may have changed)
+./pitr-timestamp-finder -n percona --all-pods -o DROP -t users
+
 # Specify operation and table directly
 ./pitr-timestamp-finder -n percona -o DROP -d mydb -t users
 
@@ -342,13 +345,25 @@ REQUIRED:
     -n, --namespace NAMESPACE   Namespace containing the PXC cluster
 
 OPTIONS:
-    -p, --pod POD               PXC pod name (auto-detected if only one cluster)
+    -p, --pod POD               PXC pod name (will prompt to select if not provided)
+    -a, --all-pods              Scan all PXC pods (useful if primary changed)
     -o, --operation TYPE        Destructive operation: DROP, DELETE, TRUNCATE
     -d, --database DATABASE     Database name (optional, narrows search)
     -t, --table TABLE           Table name to search for
     --kubeconfig PATH           Path to kubeconfig file
     -h, --help                  Show this help message
 ```
+
+### PXC Cluster Considerations
+
+In a PXC (Galera) cluster, each node maintains its own binlogs. If the primary (writer) node changed due to a failover, the destructive operation may be recorded in a different pod's binlogs than the current primary.
+
+The script handles this by:
+- Listing all available PXC pods
+- Prompting you to select a specific pod or scan all pods
+- Using `--all-pods` to automatically scan all pods until the operation is found
+
+**Recommendation**: If you're unsure which pod was the primary when the destructive operation occurred, use `--all-pods` to scan all pods.
 
 ### How It Works
 
@@ -373,8 +388,23 @@ $ ./pitr-timestamp-finder -n percona
 
 [WARN] This is a READ-ONLY operation - no data will be modified.
 
-[INFO] Finding PXC pod in namespace: percona
-[OK] Found PXC pod: db-pxc-0
+[INFO] Found 3 PXC pod(s) in namespace percona:
+    - db-pxc-0
+    - db-pxc-1
+    - db-pxc-2
+
+[WARN] IMPORTANT: In a PXC cluster, binlogs are local to each pod.
+[WARN] If the primary (writer) changed, the destructive operation may be
+[WARN] in a DIFFERENT pod's binlogs than the current primary.
+
+Select which pod(s) to scan:
+  [0] Scan ALL pods (recommended if unsure)
+  [1] db-pxc-0
+  [2] db-pxc-1
+  [3] db-pxc-2
+
+Enter selection [0-3]: 1
+[OK] Selected pod: db-pxc-0
 
 Select the destructive operation to search for:
   [1] DROP TABLE
@@ -394,17 +424,18 @@ Enter table name: users
   Scanning Binlogs
 =====================================================
 
-[INFO] Binlog directory: /var/lib/mysql
-[INFO] Found 5 binlog file(s)
+[INFO] Scanning binlogs on pod: db-pxc-0
+[INFO]   Binlog directory: /var/lib/mysql
+[INFO]   Found 5 binlog file(s)
 
-[INFO] Examining binlog: mysql-bin.000005 (1 of 5 from newest)
+[INFO]   Examining binlog: mysql-bin.000005 (1 of 5 from newest)
 
-  Binlog time range:
-    Earliest: 2025-01-15 12:00:00
-    Latest:   2025-01-15 14:30:00
+    Binlog time range:
+      Earliest: 2025-01-15 12:00:00
+      Latest:   2025-01-15 14:30:00
 
-  Was the DROP on 'users' between these times? [y/n/q]: y
-[INFO]   Searching for DROP operation on 'users'...
+    Was the DROP on 'users' between these times? [y/n/q]: y
+[INFO]     Searching for DROP operation on 'users'...
 
 =====================================================
   Result
@@ -414,12 +445,38 @@ Enter table name: users
 
   2025-01-15 14:25:32
 
+  Found on pod: db-pxc-0
+
   This timestamp represents the moment just BEFORE the DROP operation.
   Use this timestamp with pxc-restore for point-in-time recovery:
 
   pxc-restore -n percona -t <target-namespace> -r "2025-01-15 14:25:32"
 
 [OK] Done.
+```
+
+### When Operation Is Not Found
+
+If the operation is not found, the script provides helpful diagnostic information:
+
+```
+=====================================================
+  Search Complete - NOT FOUND
+=====================================================
+
+[ERROR] Could not find 'DROP ... users' in any scanned binlog.
+
+[INFO] Possible reasons:
+[INFO]   1. The table name does not match exactly (check spelling, case)
+[INFO]   2. Try specifying the database name with -d to narrow the search
+[INFO]   3. The operation occurred before the oldest available binlog
+[INFO]   4. Binary logging was not enabled at the time of the operation
+[INFO]   5. The operation may be in a different pod's binlogs (try --all-pods)
+
+[INFO] Tips:
+[INFO]   - Table names are case-sensitive in the binlog
+[INFO]   - Try searching without the database name first
+[INFO]   - Check if the table ever existed: SHOW TABLES LIKE '%users%'
 ```
 
 ### Combining with pxc-restore
