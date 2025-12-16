@@ -28,18 +28,21 @@ CYAN='\033[0;36m'
 BOLD='\033[1m'
 NC='\033[0m'
 
-# Logging functions
-log_info() { echo -e "${BLUE}[INFO]${NC} $1"; }
-log_success() { echo -e "${GREEN}[OK]${NC} $1"; }
-log_warn() { echo -e "${YELLOW}[WARN]${NC} $1"; }
+# Logging functions - all go to stderr so they display when stdout is captured
+log_info() { echo -e "${BLUE}[INFO]${NC} $1" >&2; }
+log_success() { echo -e "${GREEN}[OK]${NC} $1" >&2; }
+log_warn() { echo -e "${YELLOW}[WARN]${NC} $1" >&2; }
 log_error() { echo -e "${RED}[ERROR]${NC} $1" >&2; }
 log_header() {
-    echo ""
-    echo -e "${CYAN}=====================================================${NC}"
-    echo -e "${CYAN}  $1${NC}"
-    echo -e "${CYAN}=====================================================${NC}"
-    echo ""
+    echo "" >&2
+    echo -e "${CYAN}=====================================================${NC}" >&2
+    echo -e "${CYAN}  $1${NC}" >&2
+    echo -e "${CYAN}=====================================================${NC}" >&2
+    echo "" >&2
 }
+
+# Echo to stderr (for use in functions whose stdout is captured)
+echo_err() { echo -e "$@" >&2; }
 
 # Wraps kubectl with optional custom kubeconfig
 kctl() {
@@ -288,7 +291,8 @@ subtract_one_second() {
 }
 
 # Scan a single pod's binlogs for the operation
-# Returns: "FOUND|timestamp" or "NOT_FOUND" or "ERROR"
+# Returns via stdout: "FOUND|timestamp" or "NOT_FOUND" or "QUIT" or "ERROR"
+# Progress messages go to stderr so they display when stdout is captured
 scan_pod_binlogs() {
     local ns="$1"
     local pod="$2"
@@ -329,7 +333,7 @@ scan_pod_binlogs() {
     for ((i = binlog_count - 1; i >= 0; i--)); do
         local binlog="${binlogs[$i]}"
         
-        echo ""
+        echo_err ""
         log_info "  Examining binlog: $binlog ($((binlog_count - i)) of $binlog_count from newest)"
         
         # Get timestamp range
@@ -343,15 +347,15 @@ scan_pod_binlogs() {
             continue
         fi
         
-        echo ""
-        echo "    Binlog time range:"
-        echo -e "      ${CYAN}Earliest:${NC} $first_ts"
-        echo -e "      ${CYAN}Latest:${NC}   $last_ts"
-        echo ""
+        echo_err ""
+        echo_err "    Binlog time range:"
+        echo_err "      ${CYAN}Earliest:${NC} $first_ts"
+        echo_err "      ${CYAN}Latest:${NC}   $last_ts"
+        echo_err ""
         
         local should_search="y"
         if [ "$interactive" = "true" ]; then
-            read -p "    Was the $operation on '$table' between these times? [y/n/q]: " confirm
+            read -p "    Was the $operation on '$table' between these times? [y/n/q]: " confirm </dev/tty
             case "$confirm" in
                 [Yy]*) should_search="y" ;;
                 [Qq]*) echo "QUIT"; return ;;
@@ -368,7 +372,7 @@ scan_pod_binlogs() {
             if [ "$result" = "NOT_FOUND" ]; then
                 log_warn "    Operation NOT FOUND in this binlog."
                 if [ "$interactive" = "true" ]; then
-                    read -p "    Try previous binlog? [y/n]: " try_prev
+                    read -p "    Try previous binlog? [y/n]: " try_prev </dev/tty
                     if [[ ! "$try_prev" =~ ^[Yy]$ ]]; then
                         echo "NOT_FOUND"
                         return
