@@ -43,17 +43,23 @@ else
     FULL_IMAGE="${IMAGE_NAME}:${TAG}"
 fi
 
-# Check Docker is available
+# Determine if we need sudo for docker
+DOCKER_CMD="docker"
 if ! docker info > /dev/null 2>&1; then
-    echo "ERROR: Docker is not running"
-    echo "  On WSL: sudo service docker start"
-    echo "  On macOS: Start Docker Desktop"
-    exit 1
+    if sudo docker info > /dev/null 2>&1; then
+        DOCKER_CMD="sudo docker"
+        echo "Using sudo for docker commands"
+    else
+        echo "ERROR: Docker is not running or not accessible"
+        echo "  On WSL: sudo service docker start"
+        echo "  On macOS: Start Docker Desktop"
+        exit 1
+    fi
 fi
 
 # Build the image
 echo "Building: $FULL_IMAGE"
-docker build \
+$DOCKER_CMD build \
     -f "$SCRIPT_DIR/Dockerfile" \
     -t "$FULL_IMAGE" \
     "$REPO_ROOT"
@@ -62,4 +68,4 @@ echo ""
 echo "Build complete: $FULL_IMAGE"
 echo ""
 echo "Run locally:"
-echo "  docker run -p 8080:8080 $FULL_IMAGE"
+echo "  $DOCKER_CMD run -p 8080:8080 $FULL_IMAGE"
