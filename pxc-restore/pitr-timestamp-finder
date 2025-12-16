@@ -18,6 +18,8 @@ OPERATION=""
 TABLE_NAME=""
 DATABASE_NAME=""
 SCAN_ALL_PODS=false
+MYSQL_ROOT_PASSWORD=""
+CLUSTER_NAME=""
 
 # Colors
 RED='\033[0;31m'
@@ -122,21 +124,69 @@ get_pxc_pods() {
     echo "$pods"
 }
 
+# Get the PXC cluster name from namespace
+get_cluster_name() {
+    local ns="$1"
+    kctl get perconaxtradbcluster -n "$ns" -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || echo ""
+}
+
+# Get MySQL root password from cluster secrets
+get_mysql_root_password() {
+    local ns="$1"
+    local cluster="$2"
+    
+    # First, check what secretsName the cluster uses
+    local secrets_name
+    secrets_name=$(kctl get perconaxtradbcluster "$cluster" -n "$ns" -o jsonpath='{.spec.secretsName}' 2>/dev/null) || secrets_name=""
+    
+    if [ -z "$secrets_name" ]; then
+        # Try common naming conventions
+        secrets_name="${cluster}-secrets"
+    fi
+    
+    # Get the root password from the secret
+    local root_pwd_b64
+    root_pwd_b64=$(kctl get secret "$secrets_name" -n "$ns" -o jsonpath='{.data.root}' 2>/dev/null) || root_pwd_b64=""
+    
+    if [ -z "$root_pwd_b64" ]; then
+        # Try alternate secret name patterns
+        for try_secret in "${cluster}-secrets" "internal-${cluster}" "${cluster}-pxc-secrets"; do
+            root_pwd_b64=$(kctl get secret "$try_secret" -n "$ns" -o jsonpath='{.data.root}' 2>/dev/null) || root_pwd_b64=""
+            if [ -n "$root_pwd_b64" ]; then
+                break
+            fi
+        done
+    fi
+    
+    if [ -n "$root_pwd_b64" ]; then
+        echo "$root_pwd_b64" | base64 -d 2>/dev/null || echo ""
+    else
+        echo ""
+    fi
+}
+
 # Get list of binlog files from MySQL
 get_binlog_list() {
     local ns="$1"
     local pod="$2"
+    local password="$3"
     
-    kctl exec -n "$ns" "$pod" -c pxc -- mysql -N -e "SHOW BINARY LOGS;" 2>/dev/null | awk '{print $1}'
+    local result
+    result=$(kctl exec -n "$ns" "$pod" -c pxc -- mysql -uroot -p"${password}" -N -e "SHOW BINARY LOGS;" 2>/dev/null) || result=""
+    
+    if [ -n "$result" ]; then
+        echo "$result" | awk '{print $1}'
+    fi
 }
 
 # Get binlog directory path
 get_binlog_dir() {
     local ns="$1"
     local pod="$2"
+    local password="$3"
     
     local binlog_dir
-    binlog_dir=$(kctl exec -n "$ns" "$pod" -c pxc -- mysql -N -e "SELECT @@log_bin_basename;" 2>/dev/null | xargs dirname 2>/dev/null) || binlog_dir=""
+    binlog_dir=$(kctl exec -n "$ns" "$pod" -c pxc -- mysql -uroot -p"${password}" -N -e "SELECT @@log_bin_basename;" 2>/dev/null | xargs dirname 2>/dev/null) || binlog_dir=""
     
     if [ -z "$binlog_dir" ] || [ "$binlog_dir" = "." ]; then
         # Default MySQL data directory
@@ -300,12 +350,13 @@ scan_pod_binlogs() {
     local table="$4"
     local database="$5"
     local interactive="$6"
+    local password="$7"
     
     log_info "Scanning binlogs on pod: $pod"
     
     # Get binlog directory
     local binlog_dir
-    binlog_dir=$(get_binlog_dir "$ns" "$pod")
+    binlog_dir=$(get_binlog_dir "$ns" "$pod" "$password")
     if [ -z "$binlog_dir" ]; then
         log_warn "  Could not determine binlog directory on $pod"
         echo "ERROR"
@@ -315,7 +366,7 @@ scan_pod_binlogs() {
     
     # Get list of binlogs
     local binlog_list
-    binlog_list=$(get_binlog_list "$ns" "$pod")
+    binlog_list=$(get_binlog_list "$ns" "$pod" "$password")
     
     if [ -z "$binlog_list" ]; then
         log_warn "  No binlogs found on $pod. Binary logging may not be enabled."
@@ -586,6 +637,23 @@ if [ -n "$OPERATION" ] && [ -n "$TABLE_NAME" ] && [ "$SCAN_ALL_PODS" = true ]; t
     INTERACTIVE="false"
 fi
 
+# Get cluster name and MySQL root password
+log_info "Getting cluster credentials..."
+CLUSTER_NAME=$(get_cluster_name "$NAMESPACE")
+if [ -z "$CLUSTER_NAME" ]; then
+    log_error "Could not find PXC cluster in namespace: $NAMESPACE"
+    exit 1
+fi
+log_success "Found cluster: $CLUSTER_NAME"
+
+MYSQL_ROOT_PASSWORD=$(get_mysql_root_password "$NAMESPACE" "$CLUSTER_NAME")
+if [ -z "$MYSQL_ROOT_PASSWORD" ]; then
+    log_error "Could not get MySQL root password from cluster secrets"
+    log_info "Checked secrets: ${CLUSTER_NAME}-secrets, internal-${CLUSTER_NAME}, ${CLUSTER_NAME}-pxc-secrets"
+    exit 1
+fi
+log_success "Retrieved MySQL credentials"
+
 echo ""
 log_header "Scanning Binlogs"
 
@@ -597,7 +665,7 @@ if [ "$SCAN_ALL_PODS" = true ]; then
     for pod in "${POD_ARRAY[@]}"; do
         echo ""
         echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
-        result=$(scan_pod_binlogs "$NAMESPACE" "$pod" "$OPERATION" "$TABLE_NAME" "$DATABASE_NAME" "$INTERACTIVE")
+        result=$(scan_pod_binlogs "$NAMESPACE" "$pod" "$OPERATION" "$TABLE_NAME" "$DATABASE_NAME" "$INTERACTIVE" "$MYSQL_ROOT_PASSWORD")
         
         if [[ "$result" == FOUND* ]]; then
             FOUND_TIMESTAMP="${result#FOUND|}"
@@ -611,7 +679,7 @@ if [ "$SCAN_ALL_PODS" = true ]; then
     done
 else
     # Scan single pod
-    result=$(scan_pod_binlogs "$NAMESPACE" "$POD_NAME" "$OPERATION" "$TABLE_NAME" "$DATABASE_NAME" "$INTERACTIVE")
+    result=$(scan_pod_binlogs "$NAMESPACE" "$POD_NAME" "$OPERATION" "$TABLE_NAME" "$DATABASE_NAME" "$INTERACTIVE" "$MYSQL_ROOT_PASSWORD")
     
     if [[ "$result" == FOUND* ]]; then
         FOUND_TIMESTAMP="${result#FOUND|}"
