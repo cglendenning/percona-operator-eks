@@ -216,14 +216,6 @@ get_binlog_timestamps() {
         return
     fi
     
-    # Check for errors in output
-    if echo "$binlog_output" | grep -qi "error\|errno\|failed"; then
-        log_info "    mysqlbinlog returned an error:"
-        echo "$binlog_output" | head -5 >&2
-        echo "|"
-        return
-    fi
-    
     # Extract timestamp lines - format: #YYMMDD HH:MM:SS
     local ts_lines
     ts_lines=$(echo "$binlog_output" | grep -E '^#[0-9]{6} +[0-9]{1,2}:[0-9]{2}:[0-9]{2}') || ts_lines=""
