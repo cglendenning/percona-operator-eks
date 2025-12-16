@@ -245,20 +245,21 @@ Build for Linux, run in WSL, access from Windows browser at `http://localhost:80
 
 ```
 dr-dashboard/
-├── Dockerfile                 # Multi-stage Docker build (shared)
 ├── k8s/                       # Kubernetes manifests
 │   ├── deployment-on-prem.yaml
 │   └── deployment-eks.yaml
 ├── on-prem/                   # On-premises environment
+│   ├── Dockerfile
 │   ├── main.go
 │   ├── go.mod
-│   ├── build.sh              # Docker build script
+│   ├── build.sh
 │   ├── start.sh
 │   └── static/
 ├── eks/                       # EKS environment
+│   ├── Dockerfile
 │   ├── main.go
 │   ├── go.mod
-│   ├── build.sh              # Docker build script
+│   ├── build.sh
 │   ├── start.sh
 │   └── static/
 ├── recovery_processes/        # Recovery documentation

@@ -54,8 +54,7 @@ fi
 # Build the image
 echo "Building: $FULL_IMAGE"
 docker build \
-    -f "$DR_DASHBOARD_DIR/Dockerfile" \
-    --build-arg ENVIRONMENT=on-prem \
+    -f "$SCRIPT_DIR/Dockerfile" \
     -t "$FULL_IMAGE" \
     "$REPO_ROOT"
 
