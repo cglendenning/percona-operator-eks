@@ -280,7 +280,14 @@ search_binlog_for_operation() {
     log_info "    Pattern: $pattern"
     
     # Parse binlog and find the operation
-    # Returns: timestamp|||matched_line
+    # Returns: timestamp|||matched_statement
+    # 
+    # mysqlbinlog output format:
+    #   #241215 14:30:00 server id ...  <- timestamp line
+    #   SET TIMESTAMP=...
+    #   DROP TABLE `db`.`table`         <- SQL statement
+    #   /*!*/;
+    #
     local result
     result=$(kctl exec -n "$ns" "$pod" -c pxc -- bash -c "
         mysqlbinlog --base64-output=DECODE-ROWS -v '${binlog_path}' 2>/dev/null | awk '
@@ -288,6 +295,8 @@ search_binlog_for_operation() {
             prev_ts = \"\"
             current_ts = \"\"
             found = 0
+            in_statement = 0
+            current_stmt = \"\"
         }
         /^#[0-9]{6}/ {
             # Extract timestamp: #241215 14:30:00 -> 2024-12-15 14:30:00
@@ -296,6 +305,28 @@ search_binlog_for_operation() {
                 prev_ts = current_ts
                 current_ts = \"20\" arr[1] \"-\" arr[2] \"-\" arr[3] \" \" arr[4]
             }
+            # Reset statement buffer at new timestamp
+            current_stmt = \"\"
+            in_statement = 0
+        }
+        # Skip comment lines and metadata
+        /^#/ { next }
+        /^\/\*!/ { next }
+        /^SET / { next }
+        /^DELIMITER/ { next }
+        /^BINLOG/ { next }
+        /^ROLLBACK/ { next }
+        /^BEGIN/ { next }
+        /^COMMIT/ { next }
+        # Accumulate SQL statement lines
+        {
+            if (\$0 != \"\" && \$0 !~ /^[[:space:]]*\$/) {
+                if (current_stmt != \"\") {
+                    current_stmt = current_stmt \" \" \$0
+                } else {
+                    current_stmt = \$0
+                }
+            }
         }
         /${pattern}/i {
             if (!found) {
@@ -303,10 +334,15 @@ search_binlog_for_operation() {
                 if (ts_to_use == \"\") {
                     ts_to_use = current_ts
                 }
-                # Print timestamp and the matched line, separated by |||
-                # Truncate matched line to first 200 chars for safety
-                matched = substr(\$0, 1, 200)
+                # Use the accumulated statement or current line
+                matched = current_stmt
+                if (matched == \"\") {
+                    matched = \$0
+                }
+                # Truncate to 300 chars and clean up
+                matched = substr(matched, 1, 300)
                 gsub(/\n/, \" \", matched)
+                gsub(/[|]/, \":\", matched)  # Escape pipe chars
                 print ts_to_use \"|||\" matched
                 found = 1
                 exit
