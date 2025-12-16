@@ -226,9 +226,10 @@ get_binlog_timestamps() {
     echo "${first_ts}|${last_ts}"
 }
 
-# Search binlog for destructive operation and return timestamp just before it
-# Returns: "TIMESTAMP|||MATCHED_STATEMENT" or "NOT_FOUND" or "ERROR"
-search_binlog_for_operation() {
+# Search binlog for ALL destructive operations matching the pattern
+# Returns: Multiple lines of "TIMESTAMP|||MATCHED_STATEMENT" or "NOT_FOUND" or "ERROR"
+# Each match is on a separate line
+search_binlog_for_all_operations() {
     local ns="$1"
     local pod="$2"
     local binlog="$3"
@@ -240,7 +241,6 @@ search_binlog_for_operation() {
     local binlog_path="${binlog_dir}/${binlog}"
     
     # Build search pattern - escape special regex characters in table/database names
-    # Use word boundaries to avoid partial matches
     local escaped_table
     local escaped_database
     escaped_table=$(printf '%s' "$table" | sed 's/[[\.*^$()+?{|]/\\&/g')
@@ -249,54 +249,44 @@ search_binlog_for_operation() {
         escaped_database=$(printf '%s' "$database" | sed 's/[[\.*^$()+?{|]/\\&/g')
     fi
     
-    # Build pattern that requires the table name to be a complete word (with backticks or word boundaries)
+    # Build pattern - match the operation keyword followed by table reference
     local pattern=""
     case "$operation" in
         DROP)
             if [ -n "$escaped_database" ]; then
-                # Match: DROP TABLE `db`.`table` or DROP TABLE db.table
-                pattern="DROP[[:space:]]+TABLE[[:space:]]+(IF[[:space:]]+EXISTS[[:space:]]+)?(\`${escaped_database}\`|${escaped_database})\\.(\`${escaped_table}\`|${escaped_table})"
+                pattern="DROP[[:space:]]+TABLE[[:space:]]+(IF[[:space:]]+EXISTS[[:space:]]+)?.*\`?${escaped_database}\`?\\.\`?${escaped_table}\`?"
             else
-                # Match: DROP TABLE `table` or DROP TABLE table (with word boundary)
-                pattern="DROP[[:space:]]+TABLE[[:space:]]+(IF[[:space:]]+EXISTS[[:space:]]+)?(\`${escaped_table}\`|[^.\`]*[[:space:]\`]${escaped_table}[[:space:]\`\$])"
+                pattern="DROP[[:space:]]+TABLE[[:space:]]+(IF[[:space:]]+EXISTS[[:space:]]+)?.*\`?${escaped_table}\`?"
             fi
             ;;
         DELETE)
             if [ -n "$escaped_database" ]; then
-                pattern="DELETE[[:space:]]+FROM[[:space:]]+(\`${escaped_database}\`|${escaped_database})\\.(\`${escaped_table}\`|${escaped_table})"
+                pattern="DELETE[[:space:]]+FROM[[:space:]]+.*\`?${escaped_database}\`?\\.\`?${escaped_table}\`?"
             else
-                pattern="DELETE[[:space:]]+FROM[[:space:]]+(\`${escaped_table}\`|${escaped_table})([[:space:]]|\$|;)"
+                pattern="DELETE[[:space:]]+FROM[[:space:]]+.*\`?${escaped_table}\`?"
             fi
             ;;
         TRUNCATE)
             if [ -n "$escaped_database" ]; then
-                pattern="TRUNCATE[[:space:]]+(TABLE[[:space:]]+)?(\`${escaped_database}\`|${escaped_database})\\.(\`${escaped_table}\`|${escaped_table})"
+                pattern="TRUNCATE[[:space:]]+(TABLE[[:space:]]+)?.*\`?${escaped_database}\`?\\.\`?${escaped_table}\`?"
             else
-                pattern="TRUNCATE[[:space:]]+(TABLE[[:space:]]+)?(\`${escaped_table}\`|${escaped_table})([[:space:]]|\$|;)"
+                pattern="TRUNCATE[[:space:]]+(TABLE[[:space:]]+)?.*\`?${escaped_table}\`?"
             fi
             ;;
     esac
     
     log_info "    Pattern: $pattern"
     
-    # Parse binlog and find the operation
-    # Returns: timestamp|||matched_statement
-    # 
-    # mysqlbinlog output format:
-    #   #241215 14:30:00 server id ...  <- timestamp line
-    #   SET TIMESTAMP=...
-    #   DROP TABLE `db`.`table`         <- SQL statement
-    #   /*!*/;
-    #
+    # Parse binlog and find ALL matching operations
+    # Returns multiple lines: timestamp|||statement
     local result
     result=$(kctl exec -n "$ns" "$pod" -c pxc -- bash -c "
         mysqlbinlog --base64-output=DECODE-ROWS -v '${binlog_path}' 2>/dev/null | awk '
         BEGIN { 
             prev_ts = \"\"
             current_ts = \"\"
-            found = 0
-            in_statement = 0
             current_stmt = \"\"
+            match_count = 0
         }
         /^#[0-9]{6}/ {
             # Extract timestamp: #241215 14:30:00 -> 2024-12-15 14:30:00
@@ -307,7 +297,6 @@ search_binlog_for_operation() {
             }
             # Reset statement buffer at new timestamp
             current_stmt = \"\"
-            in_statement = 0
         }
         # Skip comment lines and metadata
         /^#/ { next }
@@ -329,27 +318,26 @@ search_binlog_for_operation() {
             }
         }
         /${pattern}/i {
-            if (!found) {
-                ts_to_use = prev_ts
-                if (ts_to_use == \"\") {
-                    ts_to_use = current_ts
-                }
-                # Use the accumulated statement or current line
-                matched = current_stmt
-                if (matched == \"\") {
-                    matched = \$0
-                }
-                # Truncate to 300 chars and clean up
-                matched = substr(matched, 1, 300)
-                gsub(/\n/, \" \", matched)
-                gsub(/[|]/, \":\", matched)  # Escape pipe chars
-                print ts_to_use \"|||\" matched
-                found = 1
-                exit
+            ts_to_use = prev_ts
+            if (ts_to_use == \"\") {
+                ts_to_use = current_ts
             }
+            # Use the accumulated statement or current line
+            matched = current_stmt
+            if (matched == \"\") {
+                matched = \$0
+            }
+            # Truncate to 300 chars and clean up
+            matched = substr(matched, 1, 300)
+            gsub(/\n/, \" \", matched)
+            gsub(/[|]/, \":\", matched)  # Escape pipe chars
+            print ts_to_use \"|||\" matched
+            match_count++
+            # Reset to find next match
+            current_stmt = \"\"
         }
         END {
-            if (!found) {
+            if (match_count == 0) {
                 print \"NOT_FOUND\"
             }
         }
@@ -462,7 +450,7 @@ scan_pod_binlogs() {
             log_info "    Searching for $operation operation on '$table'..."
             
             local result
-            result=$(search_binlog_for_operation "$ns" "$pod" "$binlog" "$binlog_dir" "$operation" "$table" "$database")
+            result=$(search_binlog_for_all_operations "$ns" "$pod" "$binlog" "$binlog_dir" "$operation" "$table" "$database")
             
             if [ "$result" = "NOT_FOUND" ]; then
                 log_warn "    Operation NOT FOUND in this binlog."
@@ -478,33 +466,64 @@ scan_pod_binlogs() {
                 log_error "    Error reading binlog"
                 continue
             else
-                # Found something! Parse the result (format: timestamp|||matched_statement)
-                local found_ts="${result%%|||*}"
-                local matched_stmt="${result##*|||}"
+                # Found matches! Parse and display all of them
+                local -a matches=()
+                local -a timestamps=()
+                local -a statements=()
                 
-                echo_err ""
-                log_success "    Found a potential match!"
-                echo_err ""
-                echo_err "      ${CYAN}Timestamp:${NC} $found_ts"
-                echo_err "      ${CYAN}Statement:${NC}"
-                echo_err "      ${YELLOW}$matched_stmt${NC}"
-                echo_err ""
+                while IFS= read -r line; do
+                    if [ -n "$line" ] && [ "$line" != "NOT_FOUND" ]; then
+                        matches+=("$line")
+                        timestamps+=("${line%%|||*}")
+                        statements+=("${line##*|||}")
+                    fi
+                done <<< "$result"
                 
-                # Ask user to confirm this is the correct statement
-                local confirm_match="y"
-                if [ "$interactive" = "true" ]; then
-                    read -p "    Is this the correct destructive statement? [y/n]: " confirm_match </dev/tty
+                local match_count=${#matches[@]}
+                
+                if [ "$match_count" -eq 0 ]; then
+                    log_warn "    Operation NOT FOUND in this binlog."
+                    continue
                 fi
                 
-                if [[ "$confirm_match" =~ ^[Yy]$ ]]; then
-                    local safe_ts
-                    safe_ts=$(subtract_one_second "$found_ts")
-                    echo "FOUND|$safe_ts|$matched_stmt"
-                    return
+                echo_err ""
+                log_success "    Found $match_count potential match(es) in this binlog:"
+                echo_err ""
+                
+                for idx in "${!matches[@]}"; do
+                    local num=$((idx + 1))
+                    echo_err "      ${CYAN}[$num]${NC} ${BOLD}${timestamps[$idx]}${NC}"
+                    echo_err "          ${YELLOW}${statements[$idx]}${NC}"
+                    echo_err ""
+                done
+                
+                echo_err "      ${CYAN}[0]${NC} None of these - continue to previous binlog"
+                echo_err ""
+                
+                # Ask user to select
+                local selection=""
+                if [ "$interactive" = "true" ]; then
+                    read -p "    Select the correct statement [0-$match_count]: " selection </dev/tty
                 else
-                    log_info "    Continuing to search for other matches..."
-                    # Continue searching - need to modify the search to skip this match
-                    # For now, just continue to next binlog
+                    selection="1"  # Auto-select first match in non-interactive mode
+                fi
+                
+                # Validate selection
+                if [[ "$selection" =~ ^[0-9]+$ ]] && [ "$selection" -ge 0 ] && [ "$selection" -le "$match_count" ]; then
+                    if [ "$selection" -eq 0 ]; then
+                        log_info "    None selected, continuing to previous binlog..."
+                        continue
+                    else
+                        local sel_idx=$((selection - 1))
+                        local found_ts="${timestamps[$sel_idx]}"
+                        local matched_stmt="${statements[$sel_idx]}"
+                        local safe_ts
+                        safe_ts=$(subtract_one_second "$found_ts")
+                        echo "FOUND|$safe_ts|$matched_stmt"
+                        return
+                    fi
+                else
+                    log_warn "    Invalid selection, continuing to previous binlog..."
                     continue
                 fi
             fi
