@@ -56,23 +56,39 @@ type ScenarioResponse struct {
 var scenarios []DisasterScenario
 var discardedScenarios []DiscardedScenario
 var baseDir string
+var dataDir string
+var staticDir string
 
 func main() {
-	// Determine base directory (dr-dashboard/)
-	// Get current working directory
-	cwd, err := os.Getwd()
-	if err != nil {
-		log.Fatalf("Failed to get working directory: %v", err)
+	// Check for DATA_DIR environment variable (used in container deployments)
+	dataDir = os.Getenv("DATA_DIR")
+	staticDir = os.Getenv("STATIC_DIR")
+
+	if dataDir != "" {
+		// Container mode: use DATA_DIR for scenarios and recovery processes
+		log.Printf("Running in container mode with DATA_DIR=%s", dataDir)
+		baseDir = dataDir // For recovery processes path construction
+	} else {
+		// Local development mode: use relative paths
+		cwd, err := os.Getwd()
+		if err != nil {
+			log.Fatalf("Failed to get working directory: %v", err)
+		}
+
+		// If we're in on-prem/ or eks/ subdirectory, go up one level
+		baseDir = cwd
+		if filepath.Base(cwd) == "on-prem" || filepath.Base(cwd) == "eks" {
+			baseDir = filepath.Dir(cwd)
+		}
+		log.Printf("Running in local mode")
+		log.Printf("Base directory: %s", baseDir)
+		log.Printf("Current working directory: %s", cwd)
 	}
 
-	// If we're in on-prem/ or eks/ subdirectory, go up one level
-	baseDir = cwd
-	if filepath.Base(cwd) == "on-prem" || filepath.Base(cwd) == "eks" {
-		baseDir = filepath.Dir(cwd)
+	// Set static directory
+	if staticDir == "" {
+		staticDir = "./static"
 	}
-
-	log.Printf("Base directory: %s", baseDir)
-	log.Printf("Current working directory: %s", cwd)
 
 	// Load scenarios from JSON file
 	if err := loadScenarios(); err != nil {
@@ -83,7 +99,7 @@ func main() {
 	http.HandleFunc("/", handleIndex)
 	http.HandleFunc("/api/scenarios", handleScenarios)
 	http.HandleFunc("/api/recovery-process", handleRecoveryProcess)
-	http.Handle("/static/", http.StripPrefix("/static/", http.FileServer(http.Dir("./static"))))
+	http.Handle("/static/", http.StripPrefix("/static/", http.FileServer(http.Dir(staticDir))))
 
 	port := os.Getenv("PORT")
 	if port == "" {
@@ -96,13 +112,22 @@ func main() {
 }
 
 // loadScenarios reads disaster scenarios from the testing framework's JSON file
-// Single source of truth: ../../testing/on-prem/disaster_scenarios/disaster_scenarios.json
+// Local mode: ../../testing/on-prem/disaster_scenarios/disaster_scenarios.json
+// Container mode: $DATA_DIR/scenarios/disaster_scenarios.json
 func loadScenarios() error {
-	jsonPath := filepath.Join(baseDir, "..", "testing", environment, "disaster_scenarios", "disaster_scenarios.json")
+	var jsonPath string
+	if dataDir != "" {
+		// Container mode: scenarios are at DATA_DIR/scenarios/disaster_scenarios.json
+		jsonPath = filepath.Join(dataDir, "scenarios", "disaster_scenarios.json")
+	} else {
+		// Local mode: relative path to testing directory
+		jsonPath = filepath.Join(baseDir, "..", "testing", environment, "disaster_scenarios", "disaster_scenarios.json")
+	}
 
+	log.Printf("Loading scenarios from: %s", jsonPath)
 	data, err := os.ReadFile(jsonPath)
 	if err != nil {
-		return fmt.Errorf("failed to read %s scenarios: %w", environment, err)
+		return fmt.Errorf("failed to read %s scenarios from %s: %w", environment, jsonPath, err)
 	}
 
 	var scenariosFile DisasterScenariosFile
@@ -192,7 +217,7 @@ func handleIndex(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
-	http.ServeFile(w, r, "./static/index.html")
+	http.ServeFile(w, r, filepath.Join(staticDir, "index.html"))
 }
 
 func handleScenarios(w http.ResponseWriter, r *http.Request) {
@@ -225,8 +250,15 @@ func handleRecoveryProcess(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Use base directory to construct path
-	mdPath := filepath.Join(baseDir, "recovery_processes", environment, filename)
+	// Construct path based on mode
+	var mdPath string
+	if dataDir != "" {
+		// Container mode: recovery processes at DATA_DIR/recovery_processes/
+		mdPath = filepath.Join(dataDir, "recovery_processes", filename)
+	} else {
+		// Local mode: relative to base directory
+		mdPath = filepath.Join(baseDir, "recovery_processes", environment, filename)
+	}
 	absPath, _ := filepath.Abs(mdPath)
 	log.Printf("Loading recovery process: %s (absolute: %s)", filename, absPath)
 

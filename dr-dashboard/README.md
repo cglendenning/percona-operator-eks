@@ -21,7 +21,8 @@ cd dr-dashboard
 
 ## Prerequisites
 
-- Go 1.21+
+- Go 1.21+ (for local development)
+- Docker (for containerized deployment)
 - Modern browser (Chrome 90+, Firefox 88+, Safari 14+, Edge 90+)
 
 ## Running
@@ -244,18 +245,25 @@ Build for Linux, run in WSL, access from Windows browser at `http://localhost:80
 
 ```
 dr-dashboard/
-├── main.go                    # Go HTTP server (legacy, use on-prem/eks)
-├── on-prem/                   # On-premises environment server
+├── Dockerfile                 # Multi-stage Docker build (shared)
+├── k8s/                       # Kubernetes manifests
+│   ├── deployment-on-prem.yaml
+│   └── deployment-eks.yaml
+├── on-prem/                   # On-premises environment
 │   ├── main.go
+│   ├── go.mod
+│   ├── build.sh              # Docker build script
 │   ├── start.sh
 │   └── static/
-├── eks/                       # EKS environment server
+├── eks/                       # EKS environment
 │   ├── main.go
+│   ├── go.mod
+│   ├── build.sh              # Docker build script
 │   ├── start.sh
 │   └── static/
 ├── recovery_processes/        # Recovery documentation
-│   ├── on-prem/              # On-prem recovery processes
-│   └── eks/                  # EKS recovery processes
+│   ├── on-prem/
+│   └── eks/
 ├── start-dev.sh              # Development startup
 ├── start.sh                  # Production startup
 └── Makefile                  # Build tasks
@@ -278,16 +286,46 @@ The dashboard integrates with the testing framework through shared data sources:
 ```
 
 ### Docker Container
-```dockerfile
-FROM golang:1.21-alpine
-WORKDIR /app
-COPY . .
-RUN go build -o dr-dashboard main.go
-CMD ["./dr-dashboard"]
-EXPOSE 8080
+
+Build images:
+```bash
+# Build on-prem image
+cd on-prem && ./build.sh
+
+# Build eks image
+cd eks && ./build.sh
+
+# Build with specific tag
+./build.sh v1.0.0
+
+# Build with custom registry
+REGISTRY=myregistry.example.com ./build.sh v1.0.0
 ```
 
+Run locally:
+```bash
+# On-prem environment
+docker run -p 8080:8080 dr-dashboard-on-prem:latest
+
+# EKS environment
+docker run -p 8080:8080 dr-dashboard-eks:latest
+```
+
+The build scripts work on both macOS and WSL/Linux. They require Docker to be installed and running.
+
 ### Kubernetes Deployment
+
+Pre-built manifests are available in `k8s/`:
+
+```bash
+# Deploy on-prem dashboard
+kubectl apply -f k8s/deployment-on-prem.yaml
+
+# Deploy EKS dashboard
+kubectl apply -f k8s/deployment-eks.yaml
+```
+
+Custom deployment:
 ```yaml
 apiVersion: apps/v1
 kind: Deployment
@@ -299,10 +337,29 @@ spec:
     spec:
       containers:
       - name: dr-dashboard
-        image: dr-dashboard:latest
+        image: dr-dashboard:on-prem-latest
         ports:
         - containerPort: 8080
+        env:
+        - name: PORT
+          value: "8080"
+        - name: DATA_DIR
+          value: "/app/data"
+        - name: STATIC_DIR
+          value: "/app/static"
 ```
+
+### Environment Variables
+
+| Variable    | Description                           | Default      |
+|-------------|---------------------------------------|--------------|
+| PORT        | HTTP server port                      | 8080         |
+| DATA_DIR    | Path to scenarios and recovery docs   | (local mode) |
+| STATIC_DIR  | Path to static assets                 | ./static     |
+
+When `DATA_DIR` is set, the app runs in container mode and expects:
+- `$DATA_DIR/scenarios/disaster_scenarios.json`
+- `$DATA_DIR/recovery_processes/*.md`
 
 ### Systemd Service (Linux)
 ```ini
