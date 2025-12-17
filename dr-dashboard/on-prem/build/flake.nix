@@ -14,8 +14,12 @@
     in
     {
       packages = forAllSystems (system:
+        let
+          pkgs = nixpkgs.legacyPackages.${system};
+          drDashboardLib = dr-dashboard.lib { inherit pkgs; };
+        in
         {
-          default = dr-dashboard.lib.${system}.mkManifests {
+          default = drDashboardLib.mkManifests {
             imageTag = "latest";
             namespace = "default";
             ingressHost = "wookie.eko.dev.cookie.com";
