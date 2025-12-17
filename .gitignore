@@ -95,7 +95,7 @@ dr-dashboard/*/dr-dashboard
 dr-dashboard/*/dr-dashboard-*
 
 # DR Dashboard build output
-dr-dashboard/on-prem/build/manifests.yaml
+dr-dashboard/on-prem/build/manifest.yaml
 
 # App Database operator
 percona/app-database/*secret*.yaml

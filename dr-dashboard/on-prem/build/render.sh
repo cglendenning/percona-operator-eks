@@ -11,7 +11,7 @@ set -e
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR"
 
-OUTPUT_FILE="manifests.yaml"
+OUTPUT_FILE="manifest.yaml"
 NIX_FLAGS="--extra-experimental-features nix-command --extra-experimental-features flakes"
 
 case "${1:-}" in
@@ -29,7 +29,7 @@ esac
 echo "Building DR Dashboard manifests..."
 nix $NIX_FLAGS build --out-link result
 
-cp result/manifests.yaml "$OUTPUT_FILE"
+cp result/manifest.yaml "$OUTPUT_FILE"
 rm result
 
 echo "Generated: $OUTPUT_FILE"

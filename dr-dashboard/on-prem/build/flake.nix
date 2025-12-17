@@ -103,12 +103,12 @@
             in
             pkgs.runCommand "dr-dashboard-manifests" { } ''
               mkdir -p $out
-              echo "---" > $out/manifests.yaml
-              cat ${yaml.generate "deployment.yaml" deployment} >> $out/manifests.yaml
-              echo "---" >> $out/manifests.yaml
-              cat ${yaml.generate "service.yaml" service} >> $out/manifests.yaml
-              echo "---" >> $out/manifests.yaml
-              cat ${yaml.generate "ingress.yaml" ingress} >> $out/manifests.yaml
+              echo "---" > $out/manifest.yaml
+              cat ${yaml.generate "deployment.yaml" deployment} >> $out/manifest.yaml
+              echo "---" >> $out/manifest.yaml
+              cat ${yaml.generate "service.yaml" service} >> $out/manifest.yaml
+              echo "---" >> $out/manifest.yaml
+              cat ${yaml.generate "ingress.yaml" ingress} >> $out/manifest.yaml
             '';
 
         in {
