@@ -1,0 +1,59 @@
+# Fleet Configuration for DR Dashboard (On-Prem)
+#
+# Deploys DR Dashboard from Nix-generated manifests.
+#
+# Generate manifests before committing:
+#   nix build
+#   cp result/manifests.yaml .
+#
+# Or use render.sh for custom configuration:
+#   ./render.sh --registry your-registry.example.com --tag v1.0.0
+---
+defaultNamespace: default
+
+targetCustomizations:
+  - name: dev
+    clusterSelector:
+      matchLabels:
+        environment: development
+    yaml:
+      overlays:
+        - inline:
+            apiVersion: networking.k8s.io/v1
+            kind: Ingress
+            metadata:
+              name: dr-dashboard-on-prem
+            spec:
+              rules:
+                - host: wookie.eko.dev.cookie.com
+
+  - name: staging
+    clusterSelector:
+      matchLabels:
+        environment: staging
+    yaml:
+      overlays:
+        - inline:
+            apiVersion: networking.k8s.io/v1
+            kind: Ingress
+            metadata:
+              name: dr-dashboard-on-prem
+            spec:
+              rules:
+                - host: wookie.eko.staging.cookie.com
+
+  - name: prod
+    clusterSelector:
+      matchLabels:
+        environment: production
+    yaml:
+      overlays:
+        - inline:
+            apiVersion: networking.k8s.io/v1
+            kind: Ingress
+            metadata:
+              name: dr-dashboard-on-prem
+            spec:
+              rules:
+                - host: wookie.eko.cookie.com
+

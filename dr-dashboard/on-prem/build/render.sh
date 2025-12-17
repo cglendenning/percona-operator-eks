@@ -107,6 +107,9 @@ if ! command -v nix &> /dev/null; then
     exit 1
 fi
 
+# Nix experimental features flags
+NIX_FLAGS="--extra-experimental-features nix-command --extra-experimental-features flakes"
+
 echo "Rendering DR Dashboard manifests..."
 echo "  Registry: ${REGISTRY:-<local>}"
 echo "  Tag: $IMAGE_TAG"
@@ -128,7 +131,8 @@ else
 fi
 
 # Build nix expression for custom config
-NIX_EXPR="(builtins.getFlake \"path:$SCRIPT_DIR\").lib.$(nix eval --impure --raw --expr 'builtins.currentSystem').generateManifests { registry = \"$REGISTRY\"; imageTag = \"$IMAGE_TAG\"; namespace = \"$NAMESPACE\"; serviceType = \"$SERVICE_TYPE\";"
+CURRENT_SYSTEM=$(nix $NIX_FLAGS eval --impure --raw --expr 'builtins.currentSystem')
+NIX_EXPR="(builtins.getFlake \"path:$SCRIPT_DIR\").lib.${CURRENT_SYSTEM}.generateManifests { registry = \"$REGISTRY\"; imageTag = \"$IMAGE_TAG\"; namespace = \"$NAMESPACE\"; serviceType = \"$SERVICE_TYPE\";"
 if [ -n "$NODE_PORT" ]; then
     NIX_EXPR="$NIX_EXPR nodePort = $NODE_PORT;"
 fi
@@ -140,7 +144,7 @@ NIX_EXPR="$NIX_EXPR ingressTlsEnabled = $INGRESS_TLS; ingressTlsSecretName = \"$
 NIX_EXPR="$NIX_EXPR }"
 
 # Generate manifests
-nix eval --impure --raw --expr "$NIX_EXPR" > "$OUTPUT_FILE"
+nix $NIX_FLAGS eval --impure --raw --expr "$NIX_EXPR" > "$OUTPUT_FILE"
 
 echo ""
 echo "Manifests written to: $OUTPUT_FILE"
