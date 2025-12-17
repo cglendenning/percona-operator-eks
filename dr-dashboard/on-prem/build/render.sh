@@ -29,7 +29,9 @@ esac
 echo "Building DR Dashboard manifests..."
 nix $NIX_FLAGS build --out-link result
 
+rm -f "$OUTPUT_FILE"
 cp result/manifest.yaml "$OUTPUT_FILE"
-rm result
+chmod 644 "$OUTPUT_FILE"
+rm -f result
 
 echo "Generated: $OUTPUT_FILE"
