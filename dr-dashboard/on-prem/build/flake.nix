@@ -16,7 +16,6 @@
         in
         {
           default = drDashboard.mkManifests {
-            registry = "";
             imageTag = "latest";
             namespace = "default";
             ingressHost = "wookie.eko.dev.cookie.com";
