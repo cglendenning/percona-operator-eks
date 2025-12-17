@@ -3,7 +3,8 @@
 
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-24.05";
-    dr-dashboard.url = "git+ssh://git@github.com/OWNER/percona_operator?dir=dr-dashboard/on-prem/nix/modules/dr-dashboard";
+    # For production: git+ssh://git@github.com/cglendenning/percona-operator-eks?dir=dr-dashboard/on-prem/nix/modules/dr-dashboard
+    dr-dashboard.url = "path:../nix/modules/dr-dashboard";
   };
 
   outputs = { self, nixpkgs, dr-dashboard }:
