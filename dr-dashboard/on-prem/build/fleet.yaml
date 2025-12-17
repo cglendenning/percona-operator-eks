@@ -5,28 +5,20 @@
 ---
 defaultNamespace: dr-dashboard
 
-helm:
-  releaseName: dr-dashboard
-
 dependsOn:
   - name: dr-dashboard-namespace
 
 ---
-# Namespace bundle
 apiVersion: fleet.cattle.io/v1alpha1
 kind: Bundle
 metadata:
   name: dr-dashboard-namespace
 spec:
   resources:
-    - content: |
-        # Rendered by Nix - see namespace/manifest.yaml
-      name: namespace.yaml
-  targets:
-    - clusterSelector: {}
+    - name: namespace.yaml
+      path: namespace/manifest.yaml
 
 ---
-# Web UI bundle  
 apiVersion: fleet.cattle.io/v1alpha1
 kind: Bundle
 metadata:
@@ -35,18 +27,5 @@ spec:
   dependsOn:
     - name: dr-dashboard-namespace
   resources:
-    - content: |
-        # Rendered by Nix - see webui/manifest.yaml
-      name: webui.yaml
-  targets:
-    - clusterSelector: {}
-      yaml:
-        overlays:
-          - inline:
-              apiVersion: networking.k8s.io/v1
-              kind: Ingress
-              metadata:
-                name: dr-dashboard-on-prem
-              spec:
-                rules:
-                  - host: wookie.eko.dev.cookie.com
+    - name: webui.yaml
+      path: webui/manifest.yaml
