@@ -3,7 +3,7 @@
 # Render Kubernetes manifests using Nix
 #
 # Usage:
-#   ./render.sh                    # Render with default config
+#   ./render.sh                    # Render all manifests
 #   ./render.sh --help             # Show options
 
 set -e
@@ -11,7 +11,6 @@ set -e
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR"
 
-OUTPUT_FILE="manifest.yaml"
 NIX_FLAGS="--extra-experimental-features nix-command --extra-experimental-features flakes"
 
 case "${1:-}" in
@@ -19,19 +18,36 @@ case "${1:-}" in
         echo "Usage: $0"
         echo ""
         echo "Renders Kubernetes manifests for DR Dashboard."
-        echo "Edit flake.nix to change configuration (registry, tag, ingress host)."
+        echo "Edit flake.nix to change configuration (namespace, tag, ingress host)."
         echo ""
-        echo "Output: manifests.yaml"
+        echo "Output:"
+        echo "  namespace/manifest.yaml  - Namespace resource"
+        echo "  webui/manifest.yaml      - Deployment, Service, Ingress"
         exit 0
         ;;
 esac
 
 echo "Building DR Dashboard manifests..."
-nix $NIX_FLAGS build --impure --out-link result
 
-rm -f "$OUTPUT_FILE"
-cp result/manifest.yaml "$OUTPUT_FILE"
-chmod 644 "$OUTPUT_FILE"
-rm -f result
+# Build namespace
+echo "  Building namespace..."
+nix $NIX_FLAGS build --impure .#namespace --out-link result-namespace
+mkdir -p namespace
+rm -f namespace/manifest.yaml
+cp result-namespace/manifest.yaml namespace/manifest.yaml
+chmod 644 namespace/manifest.yaml
+rm -f result-namespace
 
-echo "Generated: $OUTPUT_FILE"
+# Build webui
+echo "  Building webui..."
+nix $NIX_FLAGS build --impure .#webui --out-link result-webui
+mkdir -p webui
+rm -f webui/manifest.yaml
+cp result-webui/manifest.yaml webui/manifest.yaml
+chmod 644 webui/manifest.yaml
+rm -f result-webui
+
+echo ""
+echo "Generated:"
+echo "  namespace/manifest.yaml"
+echo "  webui/manifest.yaml"

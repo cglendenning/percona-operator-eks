@@ -11,6 +11,8 @@
     let
       systems = [ "x86_64-linux" "aarch64-linux" "x86_64-darwin" "aarch64-darwin" ];
       forAllSystems = f: nixpkgs.lib.genAttrs systems (system: f system);
+
+      namespace = "dr-dashboard";
     in
     {
       packages = forAllSystems (system:
@@ -19,10 +21,19 @@
           drDashboardLib = dr-dashboard.lib { inherit pkgs; };
         in
         {
-          default = drDashboardLib.mkManifests {
+          namespace = drDashboardLib.mkNamespace {
+            inherit namespace;
+          };
+
+          webui = drDashboardLib.mkWebUI {
             imageTag = "latest";
-            namespace = "default";
+            inherit namespace;
             ingressHost = "wookie.eko.dev.cookie.com";
+          };
+
+          default = pkgs.symlinkJoin {
+            name = "dr-dashboard-all";
+            paths = [ self.packages.${system}.namespace self.packages.${system}.webui ];
           };
         }
       );

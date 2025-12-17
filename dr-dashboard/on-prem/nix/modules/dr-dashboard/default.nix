@@ -1,22 +1,37 @@
 # DR Dashboard Kubernetes module
 #
 # Generates Kubernetes manifests for deploying dr-dashboard.
-# Import and call with: mkManifests pkgs { imageTag = "..."; ... }
+# Exports: mkNamespace, mkWebUI
 { pkgs }:
 
 let
   cfg = import ./config.nix;
+  yaml = pkgs.formats.yaml { };
 in
 {
-  mkManifests = {
+  mkNamespace = { namespace }:
+    let
+      manifest = {
+        apiVersion = "v1";
+        kind = "Namespace";
+        metadata = {
+          name = namespace;
+          labels = cfg.labels;
+        };
+      };
+    in
+    pkgs.runCommand "dr-dashboard-namespace" { } ''
+      mkdir -p $out
+      cat ${yaml.generate "namespace.yaml" manifest} > $out/manifest.yaml
+    '';
+
+  mkWebUI = {
     imageTag ? "latest",
     namespace ? "default",
     ingressHost ? "",
     labels ? cfg.labels,
   }:
     let
-      yaml = pkgs.formats.yaml { };
-
       image = if cfg.registry != ""
         then "${cfg.registry}/${cfg.imageName}:${imageTag}"
         else "${cfg.imageName}:${imageTag}";
@@ -91,7 +106,7 @@ in
       };
 
     in
-    pkgs.runCommand "dr-dashboard-manifests" { } ''
+    pkgs.runCommand "dr-dashboard-webui" { } ''
       mkdir -p $out
       echo "---" > $out/manifest.yaml
       cat ${yaml.generate "deployment.yaml" deployment} >> $out/manifest.yaml
