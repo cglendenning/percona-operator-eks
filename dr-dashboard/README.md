@@ -254,7 +254,14 @@ dr-dashboard/
 │   ├── go.mod
 │   ├── build.sh
 │   ├── start.sh
-│   └── static/
+│   ├── static/
+│   ├── build/                 # Nix flake for manifest generation
+│   │   ├── flake.nix
+│   │   ├── render.sh
+│   │   └── Makefile
+│   └── nix/                   # Nix modules
+│       └── modules/
+│           └── dr-dashboard/
 ├── eks/                       # EKS environment
 │   ├── Dockerfile
 │   ├── main.go
@@ -325,6 +332,32 @@ kubectl apply -f k8s/deployment-on-prem.yaml
 # Deploy EKS dashboard
 kubectl apply -f k8s/deployment-eks.yaml
 ```
+
+### Nix-Based Deployment (On-Prem)
+
+For declarative, reproducible manifest generation using Nix:
+
+```bash
+cd on-prem/build
+
+# Generate manifests with default settings
+nix build
+
+# Or use the render script with options
+./render.sh --registry ghcr.io/myorg --tag v1.0.0 --namespace dr-dashboard
+
+# Deploy
+kubectl apply -f manifests.yaml
+```
+
+The Nix module supports:
+- Custom registry and image tag
+- Namespace configuration
+- Service type (ClusterIP, NodePort, LoadBalancer)
+- Resource limits
+- Image pull secrets
+
+See `on-prem/build/` for the flake and `on-prem/nix/modules/dr-dashboard/` for the module source.
 
 Custom deployment:
 ```yaml

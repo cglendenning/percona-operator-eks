@@ -11,11 +11,27 @@ venv_*/
 __pycache__/
 *.py[cod]
 *$py.class
-*.so
 .Python
 env/
+ENV/
+*.egg
 *.egg-info/
-build/
+dist/
+.tox/
+.venv/
+
+# Go
+vendor/
+go.work
+go.sum
+*.test
+
+# Binaries
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
 
 # TypeScript compiled output
 percona/dist/
@@ -28,6 +44,7 @@ testing/*/__pycache__/
 .pytest_cache/
 .coverage
 htmlcov/
+*.out
 /tmp/percona_tests_*.log
 /tmp/fleet-rendered-*.yaml
 
@@ -35,6 +52,9 @@ htmlcov/
 .vscode/
 .idea/
 .cursorrules
+*.swp
+*.swo
+*~
 
 # Secrets and credentials
 secrets/
@@ -49,8 +69,6 @@ secrets/
 credentials.json
 *credentials*.yaml
 *credentials*.yml
-*.swp
-*.swo
 
 # OS
 .DS_Store
@@ -59,3 +77,26 @@ Thumbs.db
 # Kubernetes
 kubeconfig
 *.kubeconfig
+
+# Logs and backups
+*.log
+*.bak
+*.backup
+
+# Nix
+result
+result-*
+.direnv/
+
+# DR Dashboard binaries
+dr-dashboard/dr-dashboard
+dr-dashboard/dr-dashboard-*
+dr-dashboard/*/dr-dashboard
+dr-dashboard/*/dr-dashboard-*
+
+# DR Dashboard build output
+dr-dashboard/on-prem/build/manifests.yaml
+
+# App Database operator
+percona/app-database/*secret*.yaml
+!percona/app-database/deploy/operator-secret.yaml
