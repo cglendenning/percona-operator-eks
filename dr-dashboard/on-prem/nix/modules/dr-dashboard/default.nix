@@ -94,15 +94,29 @@ in
       ingress = {
         apiVersion = "networking.k8s.io/v1";
         kind = "Ingress";
-        metadata = { name = cfg.name; inherit namespace labels; };
-        spec.rules = [{
-          host = ingressHost;
-          http.paths = [{
-            path = "/";
-            pathType = "Prefix";
-            backend.service = { name = cfg.name; port.name = "http"; };
+        metadata = {
+          name = cfg.name;
+          inherit namespace labels;
+          annotations = {
+            "cert-manager.io/cluster-issuer" = cfg.clusterIssuer;
+            "nginx.ingress.kubernetes.io/ssl-redirect" = "true";
+            "nginx.ingress.kubernetes.io/force-ssl-redirect" = "true";
+          };
+        };
+        spec = {
+          tls = [{
+            hosts = [ ingressHost ];
+            secretName = cfg.tlsSecretName;
           }];
-        }];
+          rules = [{
+            host = ingressHost;
+            http.paths = [{
+              path = "/";
+              pathType = "Prefix";
+              backend.service = { name = cfg.name; port.name = "http"; };
+            }];
+          }];
+        };
       };
 
     in

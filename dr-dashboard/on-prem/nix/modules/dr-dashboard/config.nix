@@ -20,6 +20,10 @@
   runAsUser = 1000;
   fsGroup = 1000;
 
+  # TLS
+  tlsSecretName = "dr-dashboard-tls";
+  clusterIssuer = "letsencrypt-prod";  # platform.kubernetes.cluster.features.cert-manager.clusterIssuers.<identifier>.name
+
   # Default labels
   labels = {
     app = "dr-dashboard";
