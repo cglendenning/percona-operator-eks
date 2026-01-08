@@ -6,20 +6,37 @@ Modular Nix flake setup for managing a local k3d Kubernetes cluster with Istio s
 
 ```
 nix/
-├── flake.nix              # Main flake - k3d cluster + Istio
-├── fleet.nix              # Fleet configuration generator
-├── modules/
-│   ├── k3d/               # k3d cluster management
+├── flake.nix                    # Main flake - k3d + Istio
+├── fleet.nix                    # Fleet configuration generator
+├── quickstart.sh                # Automated setup script
+├── README.md                    # Complete documentation
+├── PXC_MULTICLUSTER.md          # Percona XtraDB cross-cluster replication
+├── modules/                     # Modular components
+│   ├── k3d/                    # k3d cluster management
 │   │   ├── flake.nix
 │   │   └── default.nix
-│   ├── helm/              # Helm chart rendering
+│   ├── helm/                   # Generic Helm chart renderer
 │   │   ├── flake.nix
 │   │   └── default.nix
-│   └── istio/             # Istio configuration
+│   ├── istio/                  # Istio-specific config
+│   │   ├── flake.nix
+│   │   └── default.nix
+│   └── service-entry/          # Cross-cluster ServiceEntry
 │       ├── flake.nix
 │       └── default.nix
-└── README.md
+└── examples/                   # Examples for adding charts
+    ├── cert-manager.nix
+    ├── prometheus.nix
+    ├── pxc-serviceentry.nix
+    └── README.md
 ```
+
+## Use Cases
+
+- **Local Development**: k3d cluster with Istio for testing
+- **PXC Cross-Cluster Replication**: Service mesh for Percona XtraDB async replication without external IPs (see `PXC_MULTICLUSTER.md`)
+- **Microservices**: Service mesh with mTLS, traffic management, observability
+- **GitOps**: Declarative infrastructure, all in Nix
 
 ## Quick Start
 
@@ -50,8 +67,11 @@ nix build
 
 This creates a `result` symlink with:
 - `k3d-config.yaml` - k3d cluster configuration
-- `manifest.yaml` - Complete Istio manifests (base + istiod + gateway)
+- `manifest.yaml` - Complete Istio manifests (base + istiod)
+- `deploy.sh` - Deployment script
 - `bin/k3d-{create,delete,status}` - Cluster management scripts
+
+**Note**: The ingress gateway is not included by default. For external traffic, use k3d's LoadBalancer or add the gateway. For PXC cross-cluster replication, you only need the service mesh (istiod) - see `PXC_MULTICLUSTER.md`.
 
 Build individual components:
 
@@ -245,6 +265,38 @@ outputs = { self, nixpkgs, k3d, helm, istio, my-app }:
 ```
 
 See `examples/` directory for working examples.
+
+## Percona XtraDB Cluster (PXC) Integration
+
+For cross-cluster PXC async replication without external IPs:
+
+```nix
+# Add service-entry module
+inputs = {
+  # ... existing inputs
+  service-entry.url = "path:./modules/service-entry";
+};
+
+# Define remote PXC cluster
+packages = {
+  pxc-remote = serviceEntryLib.mkPXCServiceEntry {
+    name = "pxc-source";
+    namespace = "pxc";
+    remoteClusterName = "cluster-b";
+    remoteEndpoints = [
+      { address = "172.19.0.2"; }
+    ];
+  };
+};
+```
+
+See **`PXC_MULTICLUSTER.md`** for complete setup guide including:
+- ServiceEntry approach (manual, simple)
+- Multicluster mesh (automatic discovery)
+- Hybrid approach
+- Complete examples
+
+This eliminates the need for `pxc.expose = true` and allows referencing remote clusters by DNS name instead of IP addresses.
 
 ## Module System
 

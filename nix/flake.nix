@@ -6,9 +6,10 @@
     k3d.url = "path:./modules/k3d";
     helm.url = "path:./modules/helm";
     istio.url = "path:./modules/istio";
+    service-entry.url = "path:./modules/service-entry";
   };
 
-  outputs = { self, nixpkgs, k3d, helm, istio }:
+  outputs = { self, nixpkgs, k3d, helm, istio, service-entry }:
     let
       systems = [ "x86_64-linux" "aarch64-linux" "x86_64-darwin" "aarch64-darwin" ];
       forAllSystems = f: nixpkgs.lib.genAttrs systems (system: f system);
@@ -24,6 +25,7 @@
           k3dLib = k3d.lib { inherit pkgs; };
           helmLib = helm.lib { inherit pkgs; };
           istioLib = istio.lib { inherit pkgs; };
+          serviceEntryLib = service-entry.lib { inherit pkgs; };
         in
         {
           # k3d cluster configuration
@@ -63,11 +65,16 @@
             values = istioLib.defaultValues.istiod;
           };
 
-          # Istio ingress gateway
-          istio-gateway = istioLib.mkIstioGateway {
-            namespace = istioNamespace;
-            values = istioLib.defaultValues.gateway;
-          };
+          # Example: PXC ServiceEntry for cross-cluster replication
+          # Uncomment and customize for your setup
+          # pxc-remote = serviceEntryLib.mkPXCServiceEntry {
+          #   name = "pxc-source";
+          #   namespace = "default";
+          #   remoteClusterName = "cluster-b";
+          #   remoteEndpoints = [
+          #     { address = "172.18.0.10"; port = 3306; }
+          #   ];
+          # };
 
           # Combined Istio manifests
           istio-all = pkgs.runCommand "istio-all" { } ''
@@ -86,32 +93,31 @@
             echo "---" >> $out/manifest.yaml
             cat ${self.packages.${system}.istio-istiod}/manifest.yaml >> $out/manifest.yaml
             
-            echo "---" >> $out/manifest.yaml
-            echo "# Istio Gateway" >> $out/manifest.yaml
-            echo "---" >> $out/manifest.yaml
-            cat ${self.packages.${system}.istio-gateway}/manifest.yaml >> $out/manifest.yaml
-            
             # Create deployment script
-            cat > $out/deploy.sh << 'SCRIPT'
+            cat > $out/deploy.sh << 'EOF'
             #!/usr/bin/env bash
             set -euo pipefail
             
-            SCRIPT_DIR="$(cd "$(dirname "$${BASH_SOURCE[0]}")" && pwd)"
+            SCRIPT_DIR="$(cd "$(dirname "''${BASH_SOURCE[0]}")" && pwd)"
             
             echo "Deploying Istio to k3d cluster..."
+            echo ""
             
-            # Apply with server-side validation (more lenient)
-            kubectl apply -f "$${SCRIPT_DIR}/manifest.yaml" --server-side --force-conflicts
+            # Apply without validation for CRDs (k3s doesn't support x-kubernetes-validations)
+            echo "Installing Istio components..."
+            kubectl apply -f "''${SCRIPT_DIR}/manifest.yaml" --validate=false
             
+            echo ""
             echo "Waiting for Istio control plane to be ready..."
-            kubectl wait --for=condition=available --timeout=300s deployment/istiod -n istio-system || true
+            kubectl wait --for=condition=available --timeout=300s deployment/istiod -n istio-system 2>/dev/null || true
             
+            echo ""
             echo "Istio deployment complete!"
             echo ""
             echo "Check status:"
             echo "  kubectl get pods -n istio-system"
             echo "  istioctl version"
-            SCRIPT
+            EOF
             
             chmod +x $out/deploy.sh
           '';

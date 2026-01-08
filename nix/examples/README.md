@@ -1,6 +1,12 @@
-# Examples - Adding New Helm Charts
+# Examples - Adding New Helm Charts and Services
 
-This directory contains examples showing how to add new Helm charts to your Nix flake.
+This directory contains examples showing how to add new Helm charts and Istio resources to your Nix flake.
+
+## Available Examples
+
+- `cert-manager.nix` - Certificate management
+- `prometheus.nix` - Monitoring stack
+- `pxc-serviceentry.nix` - Percona XtraDB cross-cluster replication
 
 ## Using Examples
 
