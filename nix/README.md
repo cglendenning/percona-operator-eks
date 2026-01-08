@@ -289,14 +289,12 @@ k3d-config = k3dLib.mkClusterConfig {
   servers = 3;        # High availability
   agents = 5;         # More worker nodes
   ports = [
-    { host = "8080"; container = "80"; nodeFilters = [ "loadbalancer" ]; }
+    { port = "8080:80"; nodeFilters = [ "loadbalancer" ]; }
   ];
-  options = {
-    k3s-server-arg = [
-      "--disable=traefik"
-      "--disable=metrics-server"
-    ];
-  };
+  k3sServerArgs = [
+    "--disable=traefik"
+    "--disable=metrics-server"
+  ];
 };
 ```
 

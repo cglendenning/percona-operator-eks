@@ -14,25 +14,26 @@ in
     servers ? 1,
     agents ? 2,
     ports ? [
-      { host = "80"; container = "80"; nodeFilters = [ "loadbalancer" ]; }
-      { host = "443"; container = "443"; nodeFilters = [ "loadbalancer" ]; }
+      { port = "80:80"; nodeFilters = [ "loadbalancer" ]; }
+      { port = "443:443"; nodeFilters = [ "loadbalancer" ]; }
     ],
-    options ? {
-      k3s-server-arg = [
-        "--disable=traefik"
-      ];
-    },
+    k3sServerArgs ? [
+      "--disable=traefik"
+    ],
   }:
     let
       config = {
         apiVersion = "k3d.io/v1alpha5";
         kind = "Simple";
         metadata = { inherit name; };
-        servers = servers;
-        agents = agents;
-        ports = ports;
+        inherit servers agents ports;
         options = {
-          k3s = options;
+          k3s = {
+            extraArgs = map (arg: {
+              arg = arg;
+              nodeFilters = [ "server:*" ];
+            }) k3sServerArgs;
+          };
         };
       };
     in

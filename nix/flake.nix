@@ -32,14 +32,12 @@
             servers = 1;
             agents = 2;
             ports = [
-              { host = "80"; container = "80"; nodeFilters = [ "loadbalancer" ]; }
-              { host = "443"; container = "443"; nodeFilters = [ "loadbalancer" ]; }
+              { port = "80:80"; nodeFilters = [ "loadbalancer" ]; }
+              { port = "443:443"; nodeFilters = [ "loadbalancer" ]; }
             ];
-            options = {
-              k3s-server-arg = [
-                "--disable=traefik"  # Disable Traefik since we're using Istio
-              ];
-            };
+            k3sServerArgs = [
+              "--disable=traefik"  # Disable Traefik since we're using Istio
+            ];
           };
 
           # k3d cluster management scripts
