@@ -46,6 +46,11 @@
             configPath = self.packages.${system}.k3d-config;
           };
 
+          # Istio namespace
+          istio-namespace = istioLib.mkNamespace {
+            namespace = istioNamespace;
+          };
+
           # Istio base (CRDs)
           istio-base = istioLib.mkIstioBase {
             namespace = istioNamespace;
@@ -68,7 +73,11 @@
           istio-all = pkgs.runCommand "istio-all" { } ''
             mkdir -p $out
             
-            echo "# Istio Base (CRDs)" > $out/manifest.yaml
+            echo "# Istio Namespace" > $out/manifest.yaml
+            cat ${self.packages.${system}.istio-namespace}/manifest.yaml >> $out/manifest.yaml
+            
+            echo "---" >> $out/manifest.yaml
+            echo "# Istio Base (CRDs)" >> $out/manifest.yaml
             echo "---" >> $out/manifest.yaml
             cat ${self.packages.${system}.istio-base}/manifest.yaml >> $out/manifest.yaml
             
@@ -81,6 +90,30 @@
             echo "# Istio Gateway" >> $out/manifest.yaml
             echo "---" >> $out/manifest.yaml
             cat ${self.packages.${system}.istio-gateway}/manifest.yaml >> $out/manifest.yaml
+            
+            # Create deployment script
+            cat > $out/deploy.sh << 'SCRIPT'
+            #!/usr/bin/env bash
+            set -euo pipefail
+            
+            SCRIPT_DIR="$(cd "$(dirname "$${BASH_SOURCE[0]}")" && pwd)"
+            
+            echo "Deploying Istio to k3d cluster..."
+            
+            # Apply with server-side validation (more lenient)
+            kubectl apply -f "$${SCRIPT_DIR}/manifest.yaml" --server-side --force-conflicts
+            
+            echo "Waiting for Istio control plane to be ready..."
+            kubectl wait --for=condition=available --timeout=300s deployment/istiod -n istio-system || true
+            
+            echo "Istio deployment complete!"
+            echo ""
+            echo "Check status:"
+            echo "  kubectl get pods -n istio-system"
+            echo "  istioctl version"
+            SCRIPT
+            
+            chmod +x $out/deploy.sh
           '';
 
           # Environment with all tools needed

@@ -1,7 +1,7 @@
 # Istio configuration module
 #
 # Provides opinionated Istio configurations
-# Exports: mkIstioBase, mkIstiod, mkIstioGateway, defaultValues
+# Exports: mkNamespace, mkIstioBase, mkIstiod, mkIstioGateway, defaultValues
 { pkgs }:
 
 let
@@ -41,6 +41,28 @@ in
     };
   };
 
+  # Create namespace first
+  mkNamespace = {
+    namespace ? "istio-system",
+  }:
+    let
+      yaml = pkgs.formats.yaml { };
+      manifest = {
+        apiVersion = "v1";
+        kind = "Namespace";
+        metadata = {
+          name = namespace;
+          labels = {
+            "istio-injection" = "disabled";
+          };
+        };
+      };
+    in
+    pkgs.runCommand "istio-namespace" { } ''
+      mkdir -p $out
+      cat ${yaml.generate "namespace.yaml" manifest} > $out/manifest.yaml
+    '';
+
   # Render Istio base chart (CRDs)
   mkIstioBase = {
     namespace ? "istio-system",
@@ -52,7 +74,7 @@ in
       repo = "https://istio-release.storage.googleapis.com/charts";
       version = "1.24.2";
       inherit namespace values;
-      createNamespace = true;
+      createNamespace = false;
     };
 
   # Render Istiod (control plane)

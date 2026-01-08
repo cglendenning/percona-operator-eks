@@ -99,8 +99,11 @@ Manual cluster management:
 # Create cluster
 ./result/bin/k3d-create
 
-# Deploy Istio
-kubectl apply -f result/manifest.yaml
+# Deploy Istio (uses server-side apply for k3s compatibility)
+./result/deploy.sh
+
+# Or manually
+kubectl apply -f result/manifest.yaml --server-side --force-conflicts
 
 # Verify deployment
 kubectl get pods -n istio-system

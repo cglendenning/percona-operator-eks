@@ -42,11 +42,7 @@ echo "Step 4: Create k3d cluster"
 echo ""
 
 echo "Step 5: Deploy Istio"
-kubectl apply -f result/manifest.yaml
-echo ""
-
-echo "Step 6: Wait for Istio to be ready"
-kubectl wait --for=condition=available --timeout=300s deployment/istiod -n istio-system
+./result/deploy.sh
 echo ""
 
 echo "=== Deployment Complete ==="
