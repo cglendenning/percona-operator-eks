@@ -34,8 +34,14 @@
     in
     pkgs.runCommand "helm-${name}" {
       buildInputs = [ pkgs.kubernetes-helm ];
+      # Set HOME and cache directories for Helm
+      HOME = "$TMPDIR";
+      XDG_CACHE_HOME = "$TMPDIR/.cache";
+      XDG_CONFIG_HOME = "$TMPDIR/.config";
+      XDG_DATA_HOME = "$TMPDIR/.local/share";
     } ''
       mkdir -p $out
+      mkdir -p $HOME/.cache $HOME/.config $HOME/.local/share
       
       # Add repo if specified
       ${repoAddCmd}
