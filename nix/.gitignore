@@ -1,0 +1,9 @@
+# Nix build results
+result
+result-*
+
+# Nix flake lock (commit this when stable)
+# flake.lock
+
+# Module flake locks (these are local)
+modules/*/flake.lock

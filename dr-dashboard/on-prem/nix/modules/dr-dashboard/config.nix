@@ -22,7 +22,7 @@
 
   # TLS
   tlsSecretName = "dr-dashboard-tls";
-  clusterIssuer = "letsencrypt-prod";  # platform.kubernetes.cluster.features.cert-manager.clusterIssuers.<identifier>.name
+  clusterIssuer = "hydrant-issuer";
 
   # Default labels
   labels = {
