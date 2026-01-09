@@ -69,6 +69,7 @@ secrets/
 credentials.json
 *credentials*.yaml
 *credentials*.yml
+nix/demo/certs/
 
 # OS
 .DS_Store
