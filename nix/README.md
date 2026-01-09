@@ -7,12 +7,17 @@ Modular Nix flake for k3d clusters with Istio service mesh.
 ```
 nix/
 ├── flake.nix           # Main orchestrator
-└── modules/            # Modular components
-    ├── k3d/           # k3d cluster config
-    ├── helm/          # Helm chart renderer
-    ├── istio/         # Istio components
-    └── service-entry/ # Cross-cluster service discovery
+├── modules/            # Modular components
+│   ├── k3d/           # k3d cluster config
+│   ├── helm/          # Helm chart renderer
+│   ├── istio/         # Istio components
+│   └── service-entry/ # Cross-cluster service discovery
+└── demo/              # Cross-cluster demo (see demo/README.md)
 ```
+
+## Quick Demo
+
+See `demo/README.md` for a complete cross-cluster service discovery demo.
 
 ## Usage
 

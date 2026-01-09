@@ -1,0 +1,51 @@
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: demo
+  labels:
+    istio-injection: enabled
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: hello
+  namespace: demo
+  labels:
+    app: hello
+spec:
+  ports:
+  - port: 8080
+    name: http
+  selector:
+    app: hello
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: hello
+  namespace: demo
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: hello
+  template:
+    metadata:
+      labels:
+        app: hello
+    spec:
+      containers:
+      - name: hello
+        image: hashicorp/http-echo:latest
+        args:
+        - "-text=Hello from Cluster A!"
+        - "-listen=:8080"
+        ports:
+        - containerPort: 8080
+        resources:
+          requests:
+            cpu: 50m
+            memory: 32Mi

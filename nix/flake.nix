@@ -72,16 +72,26 @@
           #   values = istioLib.defaultValues.gateway;
           # };
           
-          # Example: PXC ServiceEntry for cross-cluster replication
-          # Uncomment and customize for your setup
-          # pxc-remote = serviceEntryLib.mkPXCServiceEntry {
-          #   name = "pxc-source";
-          #   namespace = "default";
-          #   remoteClusterName = "cluster-b";
-          #   remoteEndpoints = [
-          #     { address = "172.18.0.10"; port = 3306; }
-          #   ];
-          # };
+          # Demo: ServiceEntry for hello service in cluster-a
+          hello-remote = serviceEntryLib.mkServiceEntry {
+            name = "hello-cluster-a";
+            namespace = "demo";
+            hosts = [ "hello.cluster-a.global" ];
+            addresses = [ "240.0.0.1" ];
+            ports = [{
+              number = 8080;
+              name = "http";
+              protocol = "TCP";
+            }];
+            location = "MESH_EXTERNAL";
+            resolution = "STATIC";
+            endpoints = [
+              # These will be cluster-a node IPs - update after cluster creation
+              { address = "172.19.0.2"; ports = { http = 8080; }; }
+              { address = "172.19.0.3"; ports = { http = 8080; }; }
+              { address = "172.19.0.4"; ports = { http = 8080; }; }
+            ];
+          };
 
           # Combined Istio manifests
           istio-all = pkgs.runCommand "istio-all" { } ''
