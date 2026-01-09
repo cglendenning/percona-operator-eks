@@ -54,8 +54,20 @@
         "helm": "helm",
         "istio": "istio",
         "k3d": "k3d",
-        "nixpkgs": "nixpkgs"
+        "nixpkgs": "nixpkgs",
+        "service-entry": "service-entry"
       }
+    },
+    "service-entry": {
+      "locked": {
+        "path": "./modules/service-entry",
+        "type": "path"
+      },
+      "original": {
+        "path": "./modules/service-entry",
+        "type": "path"
+      },
+      "parent": []
     }
   },
   "root": "root",

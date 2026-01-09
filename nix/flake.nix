@@ -65,6 +65,12 @@
             values = istioLib.defaultValues.istiod;
           };
 
+          # Istio ingress gateway (optional - only needed for external traffic)
+          istio-gateway = istioLib.mkIstioGateway {
+            namespace = istioNamespace;
+            values = istioLib.defaultValues.gateway;
+          };
+          
           # Example: PXC ServiceEntry for cross-cluster replication
           # Uncomment and customize for your setup
           # pxc-remote = serviceEntryLib.mkPXCServiceEntry {
@@ -92,6 +98,11 @@
             echo "# Istiod (Control Plane)" >> $out/manifest.yaml
             echo "---" >> $out/manifest.yaml
             cat ${self.packages.${system}.istio-istiod}/manifest.yaml >> $out/manifest.yaml
+            
+            echo "---" >> $out/manifest.yaml
+            echo "# Istio Ingress Gateway (Optional)" >> $out/manifest.yaml
+            echo "---" >> $out/manifest.yaml
+            cat ${self.packages.${system}.istio-gateway}/manifest.yaml >> $out/manifest.yaml
             
             # Create deployment script
             cat > $out/deploy.sh << 'EOF'
