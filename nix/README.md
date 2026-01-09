@@ -44,7 +44,6 @@ kubectl get pods -n istio-system
 nix build .#k3d-config        # Just k3d config
 nix build .#istio-base        # Just Istio CRDs
 nix build .#istio-istiod      # Just control plane
-nix build .#istio-gateway     # Just gateway
 ```
 
 ## Adding Helm Charts
