@@ -31,11 +31,30 @@ sleep 5
 kubectl wait --for=condition=ready pod -l app=hello -n demo --timeout=60s
 
 echo ""
-echo "Getting Cluster A node IPs (needed for ServiceEntry)..."
-kubectl get nodes -o wide --context k3d-cluster-a
+echo "Hello pods in Cluster A:"
+kubectl get pods -n demo -o wide --context k3d-cluster-a
 
 echo ""
-echo "Update the 'endpoints' addresses in flake.nix with the IPs above, then:"
+echo "Hello services (like PXC pod services):"
+kubectl get svc -n demo --context k3d-cluster-a
+
+# Create demo namespace in Cluster B
+echo ""
+echo "Creating demo namespace in Cluster B..."
+kubectl config use-context k3d-cluster-b
+kubectl create namespace demo 2>/dev/null || echo "Namespace demo already exists"
+kubectl label namespace demo istio-injection=enabled --overwrite
+
+echo ""
+echo "ServiceEntry uses DNS names (no IP updates needed):"
+echo "  hello-0.hello.demo.svc.cluster.local"
+echo "  hello-1.hello.demo.svc.cluster.local"
+echo "  hello-2.hello.demo.svc.cluster.local"
+
+echo ""
+echo "Next steps:"
 echo "  cd .."
 echo "  nix build .#hello-remote"
 echo "  kubectl apply -f result/manifest.yaml --context k3d-cluster-b"
+echo "  cd demo"
+echo "  ./test.sh"

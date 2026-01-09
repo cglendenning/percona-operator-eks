@@ -7,6 +7,7 @@ metadata:
     istio-injection: enabled
 
 ---
+# Headless service (like PXC StatefulSet service)
 apiVersion: v1
 kind: Service
 metadata:
@@ -15,6 +16,7 @@ metadata:
   labels:
     app: hello
 spec:
+  clusterIP: None  # Headless service
   ports:
   - port: 8080
     name: http
@@ -22,13 +24,15 @@ spec:
     app: hello
 
 ---
+# StatefulSet (like PXC) instead of Deployment
 apiVersion: apps/v1
-kind: Deployment
+kind: StatefulSet
 metadata:
   name: hello
   namespace: demo
 spec:
-  replicas: 2
+  serviceName: hello
+  replicas: 3
   selector:
     matchLabels:
       app: hello
@@ -41,10 +45,16 @@ spec:
       - name: hello
         image: hashicorp/http-echo:latest
         args:
-        - "-text=Hello from Cluster A!"
+        - "-text=Hello from $(POD_NAME) in Cluster A!"
         - "-listen=:8080"
+        env:
+        - name: POD_NAME
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.name
         ports:
         - containerPort: 8080
+          name: http
         resources:
           requests:
             cpu: 50m

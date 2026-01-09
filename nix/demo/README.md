@@ -42,29 +42,7 @@ This:
 - Deploys hello service to cluster-a
 - Shows cluster-a node IPs
 
-### 4. Update ServiceEntry with Node IPs
-
-The deploy script shows cluster-a node IPs. Update `../flake.nix`:
-
-```nix
-hello-remote = serviceEntryLib.mkServiceEntry {
-  # ...
-  endpoints = [
-    { address = "<IP-from-deploy-output>"; ports = { http = 8080; }; }
-    { address = "<IP-from-deploy-output>"; ports = { http = 8080; }; }
-    { address = "<IP-from-deploy-output>"; ports = { http = 8080; }; }
-  ];
-};
-```
-
-Or get them manually:
-
-```bash
-kubectl get nodes -o wide --context k3d-cluster-a
-# Use INTERNAL-IP column
-```
-
-### 5. Build and Deploy ServiceEntry
+### 4. Build and Deploy ServiceEntry
 
 ```bash
 cd ..
@@ -72,7 +50,7 @@ nix build .#hello-remote
 kubectl apply -f result/manifest.yaml --context k3d-cluster-b
 ```
 
-### 6. Test Cross-Cluster Access
+### 5. Test Cross-Cluster Access
 
 ```bash
 cd demo
@@ -82,84 +60,109 @@ cd demo
 ## Expected Output
 
 ```
-1. Testing from Cluster A (local):
-Hello from Cluster A!
+1. Testing from Cluster A (local - each pod):
+Hello from hello-0 in Cluster A!
+Hello from hello-1 in Cluster A!
+Hello from hello-2 in Cluster A!
 
-2. Testing from Cluster B (remote via Istio ServiceEntry):
-Hello from Cluster A!
+2. Testing from Cluster B (remote via Istio ServiceEntry - each pod):
+Hello from hello-0 in Cluster A!
+Hello from hello-1 in Cluster A!
+Hello from hello-2 in Cluster A!
 ```
 
-Both should return the same message, proving cluster-b can reach cluster-a's service by DNS name.
+Each pod name resolves to the correct pod, proving you can target specific pods by name across clusters.
 
 ## What's Happening
 
 ### In Cluster A
 
 ```
-┌─────────────────────────────┐
-│ Cluster A (k3d-cluster-a)   │
-│                             │
-│  ┌──────────────────────┐   │
-│  │ hello deployment     │   │
-│  │ + istio-proxy sidecar│   │
-│  │                      │   │
-│  │ hello.demo.svc:8080  │   │
-│  └──────────────────────┘   │
-│                             │
-│  ┌──────────────────────┐   │
-│  │ istiod (control plane│   │
-│  └──────────────────────┘   │
-└─────────────────────────────┘
-       Node IPs: 172.19.0.X
+┌─────────────────────────────────────┐
+│ Cluster A (k3d-cluster-a)           │
+│                                     │
+│  StatefulSet: hello                 │
+│  ┌───────────────────────────────┐  │
+│  │ hello-0.hello.demo.svc:8080   │  │
+│  │ + istio-proxy sidecar         │  │
+│  └───────────────────────────────┘  │
+│  ┌───────────────────────────────┐  │
+│  │ hello-1.hello.demo.svc:8080   │  │
+│  │ + istio-proxy sidecar         │  │
+│  └───────────────────────────────┘  │
+│  ┌───────────────────────────────┐  │
+│  │ hello-2.hello.demo.svc:8080   │  │
+│  │ + istio-proxy sidecar         │  │
+│  └───────────────────────────────┘  │
+│                                     │
+│  ┌──────────────────────┐           │
+│  │ istiod (control plane│           │
+│  └──────────────────────┘           │
+└─────────────────────────────────────┘
 ```
 
 ### In Cluster B
 
 ```
-┌─────────────────────────────────────────────┐
-│ Cluster B (k3d-cluster-b)                   │
-│                                             │
-│  ┌──────────────────────────────────────┐   │
-│  │ ServiceEntry                         │   │
-│  │ hello.cluster-a.global -> 240.0.0.1  │   │
-│  │   endpoints: 172.19.0.2:8080         │   │
-│  │              172.19.0.3:8080         │   │
-│  │              172.19.0.4:8080         │   │
-│  └──────────────────────────────────────┘   │
-│                                             │
-│  ┌──────────────────────────────────────┐   │
-│  │ curl pod                             │   │
-│  │ + istio-proxy sidecar                │   │
-│  │                                      │   │
-│  │ curl hello.cluster-a.global:8080    │   │
-│  └──────────────────────────────────────┘   │
-│           ↓                                 │
-│     (Istio resolves to 172.19.0.X:8080)    │
-└─────────────────────────────────────────────┘
+┌──────────────────────────────────────────────────────┐
+│ Cluster B (k3d-cluster-b)                            │
+│                                                      │
+│  ┌────────────────────────────────────────────────┐  │
+│  │ ServiceEntry (DNS resolution)                  │  │
+│  │ hello-0.cluster-a.global ->                    │  │
+│  │   hello-0.hello.demo.svc.cluster.local         │  │
+│  │ hello-1.cluster-a.global ->                    │  │
+│  │   hello-1.hello.demo.svc.cluster.local         │  │
+│  │ hello-2.cluster-a.global ->                    │  │
+│  │   hello-2.hello.demo.svc.cluster.local         │  │
+│  └────────────────────────────────────────────────┘  │
+│                                                      │
+│  ┌────────────────────────────────────────────────┐  │
+│  │ curl pod                                       │  │
+│  │ + istio-proxy sidecar                          │  │
+│  │                                                │  │
+│  │ curl hello-0.cluster-a.global:8080            │  │
+│  └────────────────────────────────────────────────┘  │
+│           ↓                                          │
+│     (Istio resolves DNS name, routes to cluster-a)  │
+└──────────────────────────────────────────────────────┘
 ```
 
-The ServiceEntry tells Istio: "When you see `hello.cluster-a.global`, route to these IPs."
+The ServiceEntry tells Istio: "When you see `hello-X.cluster-a.global`, resolve it via DNS to `hello-X.hello.demo.svc.cluster.local`."
 
 ## For PXC Replication
 
-Same pattern, just different values:
+Same pattern, using DNS names:
 
 ```nix
-pxc-remote = serviceEntryLib.mkPXCServiceEntry {
-  name = "pxc-source";
+pxc-remote = serviceEntryLib.mkServiceEntry {
+  name = "pxc-production";
   namespace = "pxc";
-  remoteClusterName = "production";
-  remoteEndpoints = [
-    { address = "172.19.0.2"; port = 3306; }
+  hosts = [
+    "pxc-cluster-pxc-0.production.global"
+    "pxc-cluster-pxc-1.production.global"
+    "pxc-cluster-pxc-2.production.global"
+  ];
+  ports = [{
+    number = 3306;
+    name = "mysql";
+    protocol = "TCP";
+  }];
+  location = "MESH_EXTERNAL";
+  resolution = "DNS";
+  endpoints = [
+    { address = "pxc-cluster-pxc-0.pxc-cluster-pxc.pxc.svc.cluster.local"; }
+    { address = "pxc-cluster-pxc-1.pxc-cluster-pxc.pxc.svc.cluster.local"; }
+    { address = "pxc-cluster-pxc-2.pxc-cluster-pxc.pxc.svc.cluster.local"; }
   ];
 };
 ```
 
-Then in PXC:
+Then in PXC, reference by name:
 
 ```sql
 CHANGE REPLICATION SOURCE TO
-  SOURCE_HOST='pxc-source.production.global',
+  SOURCE_HOST='pxc-cluster-pxc-0.production.global',
   SOURCE_PORT=3306,
   SOURCE_USER='repl_user',
   SOURCE_PASSWORD='password';
@@ -199,6 +202,12 @@ kubectl get pod -n demo --context k3d-cluster-b -o jsonpath='{.items[0].spec.con
 ```
 
 ## Cleanup
+
+```bash
+./cleanup.sh
+```
+
+Or manually:
 
 ```bash
 k3d cluster delete cluster-a

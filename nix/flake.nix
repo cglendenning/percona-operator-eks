@@ -73,23 +73,27 @@
           # };
           
           # Demo: ServiceEntry for hello service in cluster-a
+          # Uses DNS names (like PXC pod names) instead of IPs
           hello-remote = serviceEntryLib.mkServiceEntry {
             name = "hello-cluster-a";
             namespace = "demo";
-            hosts = [ "hello.cluster-a.global" ];
-            addresses = [ "240.0.0.1" ];
+            hosts = [ 
+              "hello-0.cluster-a.global"
+              "hello-1.cluster-a.global"
+              "hello-2.cluster-a.global"
+            ];
             ports = [{
               number = 8080;
               name = "http";
               protocol = "TCP";
             }];
             location = "MESH_EXTERNAL";
-            resolution = "STATIC";
+            resolution = "DNS";
             endpoints = [
-              # These will be cluster-a node IPs - update after cluster creation
-              { address = "172.19.0.2"; ports = { http = 8080; }; }
-              { address = "172.19.0.3"; ports = { http = 8080; }; }
-              { address = "172.19.0.4"; ports = { http = 8080; }; }
+              # DNS names for each pod (like pxc-cluster-pxc-0.pxc-cluster-pxc.pxc.svc.cluster.local)
+              { address = "hello-0.hello.demo.svc.cluster.local"; }
+              { address = "hello-1.hello.demo.svc.cluster.local"; }
+              { address = "hello-2.hello.demo.svc.cluster.local"; }
             ];
           };
 
