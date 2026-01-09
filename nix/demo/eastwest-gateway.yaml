@@ -1,0 +1,145 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: istio-eastwestgateway
+  namespace: istio-system
+spec:
+  type: LoadBalancer
+  selector:
+    istio: eastwestgateway
+  ports:
+  - name: status-port
+    port: 15021
+    targetPort: 15021
+  - name: tls
+    port: 15443
+    targetPort: 15443
+  - name: tls-istiod
+    port: 15012
+    targetPort: 15012
+  - name: tls-webhook
+    port: 15017
+    targetPort: 15017
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: istio-eastwestgateway
+  namespace: istio-system
+spec:
+  selector:
+    matchLabels:
+      istio: eastwestgateway
+  template:
+    metadata:
+      labels:
+        istio: eastwestgateway
+        service.istio.io/canonical-name: istio-eastwestgateway
+        service.istio.io/canonical-revision: latest
+      annotations:
+        prometheus.io/port: "15020"
+        prometheus.io/scrape: "true"
+        prometheus.io/path: "/stats/prometheus"
+        sidecar.istio.io/inject: "false"
+    spec:
+      serviceAccountName: istio-eastwestgateway
+      containers:
+      - name: istio-proxy
+        image: docker.io/istio/proxyv2:1.24.2
+        ports:
+        - containerPort: 15021
+        - containerPort: 15443
+        - containerPort: 15012
+        - containerPort: 15017
+        - containerPort: 15090
+          protocol: TCP
+          name: http-envoy-prom
+        env:
+        - name: ISTIO_META_ROUTER_MODE
+          value: "sni-dnat"
+        - name: ISTIO_META_REQUESTED_NETWORK_VIEW
+          value: "network1"
+        volumeMounts:
+        - name: istio-envoy
+          mountPath: /etc/istio/proxy
+        - name: config-volume
+          mountPath: /etc/istio/config
+        - name: istiod-ca-cert
+          mountPath: /var/run/secrets/istio
+        - name: istio-token
+          mountPath: /var/run/secrets/tokens
+        - name: podinfo
+          mountPath: /etc/istio/pod
+      volumes:
+      - emptyDir: {}
+        name: istio-envoy
+      - name: config-volume
+        configMap:
+          name: istio
+          optional: true
+      - name: podinfo
+        downwardAPI:
+          items:
+          - path: "labels"
+            fieldRef:
+              fieldPath: metadata.labels
+          - path: "annotations"
+            fieldRef:
+              fieldPath: metadata.annotations
+      - name: istiod-ca-cert
+        configMap:
+          name: istio-ca-root-cert
+      - name: istio-token
+        projected:
+          sources:
+          - serviceAccountToken:
+              path: istio-token
+              expirationSeconds: 43200
+              audience: istio-ca
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: istio-eastwestgateway
+  namespace: istio-system
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: istio-eastwestgateway
+  namespace: istio-system
+rules:
+- apiGroups: [""]
+  resources: ["secrets"]
+  verbs: ["get", "watch", "list"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: istio-eastwestgateway
+  namespace: istio-system
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: istio-eastwestgateway
+subjects:
+- kind: ServiceAccount
+  name: istio-eastwestgateway
+---
+apiVersion: networking.istio.io/v1beta1
+kind: Gateway
+metadata:
+  name: cross-network-gateway
+  namespace: istio-system
+spec:
+  selector:
+    istio: eastwestgateway
+  servers:
+  - port:
+      number: 15443
+      name: tls
+      protocol: TLS
+    tls:
+      mode: AUTO_PASSTHROUGH
+    hosts:
+    - "*.local"

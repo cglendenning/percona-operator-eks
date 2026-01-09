@@ -94,7 +94,7 @@ spec:
     name: http
     protocol: HTTP
     targetPort: 30080
-  location: MESH_EXTERNAL
+  location: MESH_INTERNAL
   resolution: STATIC
   endpoints:
   - address: "172.21.0.2"
@@ -116,7 +116,7 @@ spec:
     name: http
     protocol: HTTP
     targetPort: 30081
-  location: MESH_EXTERNAL
+  location: MESH_INTERNAL
   resolution: STATIC
   endpoints:
   - address: "172.21.0.3"
@@ -138,7 +138,7 @@ spec:
     name: http
     protocol: HTTP
     targetPort: 30082
-  location: MESH_EXTERNAL
+  location: MESH_INTERNAL
   resolution: STATIC
   endpoints:
   - address: "172.21.0.4"
