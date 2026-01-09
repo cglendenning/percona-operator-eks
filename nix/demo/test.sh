@@ -5,48 +5,60 @@ echo "=== Testing cross-cluster service access ==="
 
 echo ""
 echo "1. Testing from Cluster A (local - individual pods):"
+
+# Deploy a test pod without sidecar in cluster-a
+kubectl run test-pod --image=curlimages/curl:latest --context k3d-cluster-a -n default -- sleep 3600 2>/dev/null || true
+kubectl wait --for=condition=ready pod/test-pod -n default --context k3d-cluster-a --timeout=30s
+
 echo ""
 echo "Pod hello-0:"
-kubectl run --context k3d-cluster-a -n demo -it --rm test-local-0 \
-  --image=curlimages/curl:latest \
-  --restart=Never \
-  -- curl -s http://hello-0.hello.demo.svc.cluster.local:8080
+kubectl exec test-pod -n default --context k3d-cluster-a -- curl -s http://hello-0.hello.demo.svc.cluster.local:8080
 
 echo ""
 echo "Pod hello-1:"
-kubectl run --context k3d-cluster-a -n demo -it --rm test-local-1 \
-  --image=curlimages/curl:latest \
-  --restart=Never \
-  -- curl -s http://hello-1.hello.demo.svc.cluster.local:8080
+kubectl exec test-pod -n default --context k3d-cluster-a -- curl -s http://hello-1.hello.demo.svc.cluster.local:8080
 
 echo ""
 echo "Pod hello-2:"
-kubectl run --context k3d-cluster-a -n demo -it --rm test-local-2 \
-  --image=curlimages/curl:latest \
-  --restart=Never \
-  -- curl -s http://hello-2.hello.demo.svc.cluster.local:8080
+kubectl exec test-pod -n default --context k3d-cluster-a -- curl -s http://hello-2.hello.demo.svc.cluster.local:8080
+
+kubectl delete pod test-pod -n default --context k3d-cluster-a --wait=false
 
 echo ""
 echo ""
 echo "2. Testing from Cluster B (remote via Istio ServiceEntry):"
-# Create demo namespace in cluster B if it doesn't exist
+
+# Ensure demo namespace exists with sidecar injection
 kubectl create namespace demo --context k3d-cluster-b 2>/dev/null || true
 kubectl label namespace demo istio-injection=enabled --context k3d-cluster-b --overwrite
 
-echo ""
-echo "Single hostname with load balancing across all pods:"
-for i in 1 2 3 4 5; do
-  echo "Request $i:"
-  kubectl run --context k3d-cluster-b -n demo -it --rm test-remote-$i \
-    --image=curlimages/curl:latest \
-    --restart=Never \
-    -- curl -s http://hello.cluster-a.global:8080
-  echo ""
-done
+# Deploy a test pod in cluster-b (will get sidecar injected)
+echo "Deploying test pod with Istio sidecar..."
+kubectl delete pod test-pod -n demo --context k3d-cluster-b 2>/dev/null || true
+kubectl run test-pod --image=curlimages/curl:latest --context k3d-cluster-b -n demo -- sleep 3600
+kubectl wait --for=condition=ready pod/test-pod -n demo --context k3d-cluster-b --timeout=60s
+echo "Waiting for Istio sidecar to be fully ready..."
+sleep 5
 
 echo ""
-echo "Success! Istio load balances across all pods in cluster-a."
+echo "Testing remote access to individual pods:"
 echo ""
-echo "For PXC, you'd point to a specific pod:"
-echo "  SOURCE_HOST='hello-0.hello.demo.svc.cluster.local'"
-echo "  (accessed from cluster-a, or via a separate ServiceEntry per pod)"
+echo "Pod hello-0:"
+kubectl exec test-pod -n demo --context k3d-cluster-b -- curl -s http://hello-0.hello.demo.svc.cluster.local:8080
+
+echo ""
+echo "Pod hello-1:"
+kubectl exec test-pod -n demo --context k3d-cluster-b -- curl -s http://hello-1.hello.demo.svc.cluster.local:8080
+
+echo ""
+echo "Pod hello-2:"
+kubectl exec test-pod -n demo --context k3d-cluster-b -- curl -s http://hello-2.hello.demo.svc.cluster.local:8080
+
+kubectl delete pod test-pod -n demo --context k3d-cluster-b --wait=false
+
+echo ""
+echo "Success! Cross-cluster service discovery works via Istio ServiceEntry."
+echo "Cluster B can access individual pods in Cluster A using their DNS names."
+echo ""
+echo "For PXC async replication, use pod-specific DNS names:"
+echo "  SOURCE_HOST='pxc-cluster-pxc-0.pxc-cluster-pxc.pxc.svc.cluster.local'"

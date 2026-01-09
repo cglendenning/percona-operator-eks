@@ -55,16 +55,19 @@ kubectl config use-context k3d-cluster-b
 kubectl create namespace demo 2>/dev/null || echo "Namespace demo already exists"
 kubectl label namespace demo istio-injection=enabled --overwrite
 
+# Deploy ServiceEntry to Cluster B
 echo ""
-echo "ServiceEntry uses DNS names (no IP updates needed):"
-echo "  hello-0.hello.demo.svc.cluster.local"
-echo "  hello-1.hello.demo.svc.cluster.local"
-echo "  hello-2.hello.demo.svc.cluster.local"
+echo "Deploying ServiceEntry to Cluster B..."
+cd ..
+nix build .#hello-remote
+kubectl apply -f result/manifest.yaml --context k3d-cluster-b
+cd demo
 
 echo ""
-echo "Next steps:"
-echo "  cd .."
-echo "  nix build .#hello-remote"
-echo "  kubectl apply -f result/manifest.yaml --context k3d-cluster-b"
-echo "  cd demo"
-echo "  ./test.sh"
+echo "ServiceEntry deployed! Cluster B can now access pods in Cluster A:"
+echo "  hello-0.hello.demo.svc.cluster.local:8080"
+echo "  hello-1.hello.demo.svc.cluster.local:8080"
+echo "  hello-2.hello.demo.svc.cluster.local:8080"
+
+echo ""
+echo "Deployment complete! Run './test.sh' to verify."
