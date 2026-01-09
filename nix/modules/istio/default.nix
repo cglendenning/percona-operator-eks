@@ -22,9 +22,12 @@ in
     };
     
     gateway = {
-      # Minimal overrides for k3d compatibility
+      # Minimal overrides for k3d/Docker compatibility
       autoscaling = {
         enabled = false;  # k3s doesn't support HPA v2
+      };
+      podSecurityContext = {
+        sysctls = [];  # Disable sysctls for Docker/k3d
       };
     };
   };
