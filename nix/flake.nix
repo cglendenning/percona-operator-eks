@@ -73,15 +73,11 @@
           # };
           
           # Demo: ServiceEntry for hello service in cluster-a
-          # Uses DNS names (like PXC pod names) instead of IPs
+          # Single host with multiple endpoints (TCP limitation)
           hello-remote = serviceEntryLib.mkServiceEntry {
             name = "hello-cluster-a";
             namespace = "demo";
-            hosts = [ 
-              "hello-0.cluster-a.global"
-              "hello-1.cluster-a.global"
-              "hello-2.cluster-a.global"
-            ];
+            hosts = [ "hello.cluster-a.global" ];
             ports = [{
               number = 8080;
               name = "http";
@@ -90,7 +86,7 @@
             location = "MESH_EXTERNAL";
             resolution = "DNS";
             endpoints = [
-              # DNS names for each pod (like pxc-cluster-pxc-0.pxc-cluster-pxc.pxc.svc.cluster.local)
+              # All pod DNS names - Istio will load balance
               { address = "hello-0.hello.demo.svc.cluster.local"; }
               { address = "hello-1.hello.demo.svc.cluster.local"; }
               { address = "hello-2.hello.demo.svc.cluster.local"; }

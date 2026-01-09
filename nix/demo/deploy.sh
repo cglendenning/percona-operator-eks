@@ -23,6 +23,10 @@ echo "Istio deployed to Cluster B"
 echo ""
 echo "Deploying hello service to Cluster A..."
 kubectl config use-context k3d-cluster-a
+
+# Delete existing service if it exists (can't change clusterIP)
+kubectl delete svc hello -n demo 2>/dev/null || true
+
 kubectl apply -f hello-service.yaml
 
 # Wait for sidecar injection and pods ready
