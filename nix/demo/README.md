@@ -29,37 +29,64 @@ cd demo
 
 ## How It Works
 
-1. **Network Layer**: Docker network connects cluster nodes (simulates data center interconnect)
-2. **ServiceEntry**: Defines remote endpoints in cluster-b pointing to cluster-a pod IPs
-3. **Static Resolution**: Uses actual pod IPs (requires network connectivity)
-4. **Istio Routing**: Sidecar proxies route traffic to remote pods
+1. **Network Layer**: Shared Docker network connects cluster nodes (simulates VPN/VPC peering)
+2. **NodePort Services**: Expose pods in cluster-a via stable node IPs
+3. **ServiceEntry**: Maps DNS names in cluster-b to node IPs + NodePorts in cluster-a
+4. **Istio Routing**: Sidecar proxies route traffic across clusters transparently
+
+The flow: `curl hello-0...:8080` → Istio ServiceEntry → `172.21.0.2:30080` → Pod in cluster-a
 
 ## For PXC Async Replication
 
-Replace hello pods with PXC StatefulSet:
+Same pattern with NodePort services for each PXC pod:
+
+```yaml
+# NodePort services for PXC pods (in source cluster)
+apiVersion: v1
+kind: Service
+metadata:
+  name: pxc-0-external
+  namespace: pxc
+spec:
+  type: NodePort
+  selector:
+    statefulset.kubernetes.io/pod-name: pxc-cluster-pxc-0
+  ports:
+  - port: 3306
+    nodePort: 30306
+```
 
 ```nix
-pxc-remote = serviceEntryLib.mkServiceEntry {
-  name = "pxc-prod";
-  namespace = "pxc";
-  hosts = [
-    "pxc-cluster-pxc-0.pxc-cluster-pxc.pxc.svc.cluster.local"
-    "pxc-cluster-pxc-1.pxc-cluster-pxc.pxc.svc.cluster.local"
-    "pxc-cluster-pxc-2.pxc-cluster-pxc.pxc.svc.cluster.local"
-  ];
-  ports = [{ number = 3306; name = "mysql"; protocol = "TCP"; }];
-  location = "MESH_EXTERNAL";
-  resolution = "STATIC";
-  endpoints = [
-    { address = "10.42.2.5"; }  # pxc-0 IP
-    { address = "10.42.0.6"; }  # pxc-1 IP
-    { address = "10.42.1.7"; }  # pxc-2 IP
-  ];
-};
+# ServiceEntry in replica cluster
+pxc-remote = pkgs.runCommand "pxc-serviceentry" { } ''
+  cat > $out/manifest.yaml << 'EOF'
+apiVersion: networking.istio.io/v1beta1
+kind: ServiceEntry
+metadata:
+  name: pxc-0-external
+  namespace: pxc
+spec:
+  hosts:
+  - "pxc-cluster-pxc-0.pxc-cluster-pxc.pxc.svc.cluster.local"
+  addresses:
+  - "10.100.1.5"  # Source cluster node IP
+  ports:
+  - number: 3306
+    name: mysql
+    protocol: TCP
+    targetPort: 30306
+  location: MESH_EXTERNAL
+  resolution: STATIC
+  endpoints:
+  - address: "10.100.1.5"
+    ports:
+      mysql: 30306
+EOF
+'';
 ```
 
 Benefits:
 - No `pxc.expose = true` needed
-- No external LoadBalancer IPs
-- Direct pod-to-pod communication
-- Service names instead of IPs in config
+- No external LoadBalancer
+- Use DNS names instead of IPs
+- Network policy friendly

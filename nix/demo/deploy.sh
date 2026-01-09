@@ -30,10 +30,12 @@ echo ""
 echo "Deploying hello service to Cluster A..."
 kubectl config use-context k3d-cluster-a
 
-# Delete existing service if it exists (can't change clusterIP)
+# Delete existing services if they exist
 kubectl delete svc hello -n demo 2>/dev/null || true
+kubectl delete svc hello-0-external hello-1-external hello-2-external -n demo 2>/dev/null || true
 
 kubectl apply -f hello-service.yaml
+kubectl apply -f hello-nodeport.yaml
 
 # Wait for sidecar injection and pods ready
 echo "Waiting for hello pods..."
@@ -45,7 +47,7 @@ echo "Hello pods in Cluster A:"
 kubectl get pods -n demo -o wide --context k3d-cluster-a
 
 echo ""
-echo "Hello services (like PXC pod services):"
+echo "Hello services (NodePort for cross-cluster access):"
 kubectl get svc -n demo --context k3d-cluster-a
 
 # Create demo namespace in Cluster B
@@ -69,10 +71,10 @@ kubectl apply -f result/manifest.yaml --context k3d-cluster-b
 cd demo
 
 echo ""
-echo "ServiceEntry deployed! Cluster B can access pods in Cluster A via IPs:"
-echo "  10.42.2.3:8080 (hello-0)"
-echo "  10.42.0.3:8080 (hello-1)"
-echo "  10.42.1.4:8080 (hello-2)"
+echo "ServiceEntry deployed! Cluster B can access pods in Cluster A:"
+echo "  hello-0.hello.demo.svc.cluster.local:8080 -> 172.21.0.2:30080"
+echo "  hello-1.hello.demo.svc.cluster.local:8080 -> 172.21.0.3:30081"
+echo "  hello-2.hello.demo.svc.cluster.local:8080 -> 172.21.0.4:30082"
 
 echo ""
 echo "Deployment complete! Run './test.sh' to verify."

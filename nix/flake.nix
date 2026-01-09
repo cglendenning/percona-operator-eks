@@ -73,30 +73,79 @@
           # };
           
           # Demo: ServiceEntry for hello service in cluster-a
-          # STATIC resolution with pod IPs (requires network connectivity)
-          # Get pod IPs: kubectl get pods -n demo --context k3d-cluster-a -o wide
-          hello-remote = serviceEntryLib.mkServiceEntry {
-            name = "hello-cluster-a";
-            namespace = "demo";
-            hosts = [
-              "hello-0.hello.demo.svc.cluster.local"
-              "hello-1.hello.demo.svc.cluster.local"
-              "hello-2.hello.demo.svc.cluster.local"
-            ];
-            ports = [{
-              number = 8080;
-              name = "http";
-              protocol = "HTTP";
-            }];
-            location = "MESH_EXTERNAL";
-            resolution = "STATIC";
-            endpoints = [
-              # Update these IPs with: kubectl get pods -n demo --context k3d-cluster-a -o wide
-              { address = "10.42.2.3"; }  # hello-0
-              { address = "10.42.0.3"; }  # hello-1
-              { address = "10.42.1.4"; }  # hello-2
-            ];
-          };
+          # Uses NodePort services and node IPs on shared network
+          # Client requests port 8080, ServiceEntry routes to node-IP:NodePort
+          hello-remote = pkgs.runCommand "hello-remote-serviceentry" { } ''
+            mkdir -p $out
+            cat > $out/manifest.yaml << 'EOF'
+---
+apiVersion: networking.istio.io/v1beta1
+kind: ServiceEntry
+metadata:
+  name: hello-0-external
+  namespace: demo
+spec:
+  hosts:
+  - "hello-0.hello.demo.svc.cluster.local"
+  addresses:
+  - "172.21.0.2"  # k3d-cluster-a-server-0 IP on shared network
+  ports:
+  - number: 8080
+    name: http
+    protocol: HTTP
+    targetPort: 30080
+  location: MESH_EXTERNAL
+  resolution: STATIC
+  endpoints:
+  - address: "172.21.0.2"
+    ports:
+      http: 30080
+---
+apiVersion: networking.istio.io/v1beta1
+kind: ServiceEntry
+metadata:
+  name: hello-1-external
+  namespace: demo
+spec:
+  hosts:
+  - "hello-1.hello.demo.svc.cluster.local"
+  addresses:
+  - "172.21.0.3"  # k3d-cluster-a-agent-0 IP on shared network
+  ports:
+  - number: 8080
+    name: http
+    protocol: HTTP
+    targetPort: 30081
+  location: MESH_EXTERNAL
+  resolution: STATIC
+  endpoints:
+  - address: "172.21.0.3"
+    ports:
+      http: 30081
+---
+apiVersion: networking.istio.io/v1beta1
+kind: ServiceEntry
+metadata:
+  name: hello-2-external
+  namespace: demo
+spec:
+  hosts:
+  - "hello-2.hello.demo.svc.cluster.local"
+  addresses:
+  - "172.21.0.4"  # k3d-cluster-a-agent-1 IP on shared network
+  ports:
+  - number: 8080
+    name: http
+    protocol: HTTP
+    targetPort: 30082
+  location: MESH_EXTERNAL
+  resolution: STATIC
+  endpoints:
+  - address: "172.21.0.4"
+    ports:
+      http: 30082
+EOF
+          '';
 
           # Combined Istio manifests
           istio-all = pkgs.runCommand "istio-all" { } ''
