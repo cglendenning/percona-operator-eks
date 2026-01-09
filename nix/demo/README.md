@@ -23,26 +23,18 @@ This creates:
 - `cluster-a` (ports 8080/8443)
 - `cluster-b` (ports 9080/9443)
 
-### 2. Build Istio Manifests
+### 2. Deploy Istio and Hello Service
 
 ```bash
-cd ..
-nix build
-```
-
-### 3. Deploy Istio and Hello Service
-
-```bash
-cd demo
 ./deploy.sh
 ```
 
 This:
+- Builds Istio manifests
 - Deploys Istio to both clusters
 - Deploys hello service to cluster-a
-- Shows cluster-a node IPs
 
-### 4. Build and Deploy ServiceEntry
+### 3. Build and Deploy ServiceEntry
 
 ```bash
 cd ..
@@ -50,7 +42,7 @@ nix build .#hello-remote
 kubectl apply -f result/manifest.yaml --context k3d-cluster-b
 ```
 
-### 5. Test Cross-Cluster Access
+### 4. Test Cross-Cluster Access
 
 ```bash
 cd demo

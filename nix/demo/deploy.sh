@@ -3,6 +3,12 @@ set -euo pipefail
 
 echo "=== Deploying Istio and demo services ==="
 
+# Build Istio manifests (not hello-remote)
+echo "Building Istio manifests..."
+cd ..
+nix build .#istio-all
+cd demo
+
 # Deploy Istio to Cluster A
 echo ""
 echo "Deploying Istio to Cluster A..."
