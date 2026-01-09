@@ -29,10 +29,59 @@ echo "Istio deployed to Cluster B"
 echo ""
 echo "Step 3: Deploying hello service to Cluster A..."
 kubectl config use-context k3d-cluster-a
-cd ..
-nix build .#hello-service
-kubectl apply -f result/manifest.yaml --context k3d-cluster-a
-cd demo
+
+kubectl apply -f - <<'EOF'
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: demo
+  labels:
+    istio-injection: enabled
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: hello
+  namespace: demo
+spec:
+  clusterIP: None
+  selector:
+    app: hello
+  ports:
+  - port: 8080
+    name: http
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: hello
+  namespace: demo
+spec:
+  serviceName: hello
+  replicas: 3
+  selector:
+    matchLabels:
+      app: hello
+  template:
+    metadata:
+      labels:
+        app: hello
+    spec:
+      containers:
+      - name: hello
+        image: hashicorp/http-echo:latest
+        args:
+        - "-text=Hello from $(POD_NAME) in Cluster A!"
+        - "-listen=:8080"
+        env:
+        - name: POD_NAME
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.name
+        ports:
+        - containerPort: 8080
+          name: http
+EOF
 
 # Wait for sidecar injection and pods ready
 echo "Waiting for hello pods..."
@@ -47,6 +96,12 @@ kubectl get pods -n demo -o wide --context k3d-cluster-a
 echo ""
 echo "Step 4: Deploying east-west gateway to Cluster A..."
 kubectl apply --context k3d-cluster-a -f - <<'EOF'
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: istio-eastwestgateway
+  namespace: istio-system
+---
 apiVersion: v1
 kind: Service
 metadata:
@@ -81,6 +136,7 @@ spec:
       annotations:
         sidecar.istio.io/inject: "false"
     spec:
+      serviceAccountName: istio-eastwestgateway
       containers:
       - name: istio-proxy
         image: docker.io/istio/proxyv2:1.20.0
@@ -150,7 +206,6 @@ spec:
               audience: istio-ca
               expirationSeconds: 43200
               path: istio-token
-      serviceAccountName: istio-ingressgateway-service-account
 ---
 apiVersion: networking.istio.io/v1beta1
 kind: Gateway
