@@ -27,6 +27,26 @@ Datacenter 1 (Cluster A)           Datacenter 2 (Cluster B)
 
 ## Quick Start
 
+### Automatic Service Discovery (Recommended - Official Istio Method)
+
+```bash
+cd demo
+chmod +x *.sh
+
+./setup-clusters.sh                   # Create k3d clusters
+./deploy-production-multicluster.sh   # Deploy with automatic discovery
+./test-production-multicluster.sh     # Verify connectivity
+./cleanup.sh                          # Remove all
+```
+
+**Benefits:**
+- No manual ServiceEntry configuration
+- Automatic endpoint discovery via Istio control plane
+- Services accessible using standard Kubernetes DNS names
+- Follows official Istio multi-cluster best practices
+
+### Manual Configuration (Alternative)
+
 ```bash
 cd demo
 chmod +x *.sh

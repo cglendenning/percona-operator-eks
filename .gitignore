@@ -70,6 +70,7 @@ credentials.json
 *credentials*.yaml
 *credentials*.yml
 nix/demo/certs/
+nix/demo/istio-*/
 
 # OS
 .DS_Store
