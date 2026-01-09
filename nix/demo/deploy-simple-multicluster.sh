@@ -116,6 +116,10 @@ echo "East-west gateway accessible at: $EW_SHARED_IP:15443"
 echo ""
 echo "Step 9: Creating explicit DNS-based ServiceEntry in cluster-b..."
 
+# Create demo namespace in cluster-b
+kubectl create namespace demo --context k3d-cluster-b 2>/dev/null || echo "Namespace demo already exists"
+kubectl label namespace demo istio-injection=enabled --context k3d-cluster-b --overwrite
+
 # Create ServiceEntry that maps aliases to actual service DNS names
 kubectl apply --context k3d-cluster-b -f - <<EOF
 apiVersion: networking.istio.io/v1beta1
