@@ -92,6 +92,24 @@ echo ""
 echo "Hello pods in Cluster A:"
 kubectl get pods -n demo -o wide --context k3d-cluster-a
 
+# Connect clusters via shared Docker network (simulates VPN/VPC peering)
+# This allows pods in cluster-b to reach nodes in cluster-a
+echo ""
+echo "Step 3.5: Connecting clusters via shared Docker network..."
+docker network create k3d-shared 2>/dev/null || echo "Network k3d-shared already exists"
+
+# Connect all cluster-a nodes to shared network
+for node in $(docker ps --format '{{.Names}}' | grep k3d-cluster-a); do
+  docker network connect k3d-shared $node 2>/dev/null || echo "$node already connected"
+done
+
+# Connect all cluster-b nodes to shared network
+for node in $(docker ps --format '{{.Names}}' | grep k3d-cluster-b); do
+  docker network connect k3d-shared $node 2>/dev/null || echo "$node already connected"
+done
+
+echo "Clusters connected via k3d-shared network (simulates VPN/VPC peering)"
+
 # Deploy east-west gateway to Cluster A
 echo ""
 echo "Step 4: Deploying east-west gateway to Cluster A..."
@@ -108,7 +126,7 @@ metadata:
   name: istio-eastwestgateway
   namespace: istio-system
 spec:
-  type: LoadBalancer
+  type: NodePort
   selector:
     istio: eastwestgateway
   ports:
@@ -116,6 +134,7 @@ spec:
     name: tls
     protocol: TCP
     targetPort: 15443
+    nodePort: 30443
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -247,9 +266,15 @@ EOF
 echo "Waiting for east-west gateway..."
 kubectl wait --for=condition=available --timeout=120s deployment/istio-eastwestgateway -n istio-system --context k3d-cluster-a
 
-# Get gateway IP
-GATEWAY_IP=$(kubectl get svc istio-eastwestgateway -n istio-system --context k3d-cluster-a -o jsonpath='{.status.loadBalancer.ingress[0].ip}')
-echo "East-west gateway IP: $GATEWAY_IP"
+# Get the node's IP on the shared network (for NodePort access)
+# The gateway service is NodePort, so we point to node-ip:30443
+# kube-proxy then forwards to the gateway pod
+GATEWAY_POD=$(kubectl get pods -n istio-system -l istio=eastwestgateway --context k3d-cluster-a -o jsonpath='{.items[0].metadata.name}')
+GATEWAY_NODE=$(kubectl get pod $GATEWAY_POD -n istio-system --context k3d-cluster-a -o jsonpath='{.spec.nodeName}')
+GATEWAY_IP=$(docker inspect $GATEWAY_NODE | jq -r '.[0].NetworkSettings.Networks["k3d-shared"].IPAddress')
+
+echo "Gateway pod: $GATEWAY_POD on node: $GATEWAY_NODE"
+echo "Node IP on shared network: $GATEWAY_IP (used for NodePort access)"
 
 # Create demo-dr namespace in Cluster B
 echo ""
@@ -280,7 +305,7 @@ spec:
   endpoints:
   - address: "$GATEWAY_IP"
     ports:
-      http: 15443
+      http: 30443
 EOF
 
 echo ""
@@ -288,9 +313,12 @@ echo "=== Deployment Complete ==="
 echo ""
 echo "Cluster A (demo namespace):"
 echo "  - 3 hello pods with Istio sidecars"
-echo "  - East-west gateway at $GATEWAY_IP:15443"
+echo "  - East-west gateway at $GATEWAY_IP:30443 (NodePort on k3d-shared network)"
 echo ""
 echo "Cluster B (demo-dr namespace):"
 echo "  - ServiceEntry routing hello.demo.svc.cluster.local -> gateway"
+echo ""
+echo "Architecture:"
+echo "  Client (cluster-b) -> Sidecar -> Node IP:30443 -> kube-proxy -> Gateway Pod:15443 -> Backend Service"
 echo ""
 echo "Run './test.sh' to verify cross-cluster connectivity."
