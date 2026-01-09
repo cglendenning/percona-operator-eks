@@ -41,18 +41,18 @@ echo "Waiting for Istio sidecar to be fully ready..."
 sleep 5
 
 echo ""
-echo "Testing remote access to individual pods:"
+echo "Testing remote access via Istio ServiceEntry (using pod IPs):"
 echo ""
-echo "Pod hello-0:"
-kubectl exec test-pod -n demo --context k3d-cluster-b -- curl -s http://hello-0.hello.demo.svc.cluster.local:8080
+echo "Pod hello-0 (10.42.2.3):"
+kubectl exec test-pod -n demo --context k3d-cluster-b -- curl -s http://10.42.2.3:8080
 
 echo ""
-echo "Pod hello-1:"
-kubectl exec test-pod -n demo --context k3d-cluster-b -- curl -s http://hello-1.hello.demo.svc.cluster.local:8080
+echo "Pod hello-1 (10.42.0.3):"
+kubectl exec test-pod -n demo --context k3d-cluster-b -- curl -s http://10.42.0.3:8080
 
 echo ""
-echo "Pod hello-2:"
-kubectl exec test-pod -n demo --context k3d-cluster-b -- curl -s http://hello-2.hello.demo.svc.cluster.local:8080
+echo "Pod hello-2 (10.42.1.4):"
+kubectl exec test-pod -n demo --context k3d-cluster-b -- curl -s http://10.42.1.4:8080
 
 kubectl delete pod test-pod -n demo --context k3d-cluster-b --wait=false
 

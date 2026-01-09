@@ -73,7 +73,8 @@
           # };
           
           # Demo: ServiceEntry for hello service in cluster-a
-          # Use actual DNS names from cluster-a (works across clusters)
+          # STATIC resolution with pod IPs (requires network connectivity)
+          # Get pod IPs: kubectl get pods -n demo --context k3d-cluster-a -o wide
           hello-remote = serviceEntryLib.mkServiceEntry {
             name = "hello-cluster-a";
             namespace = "demo";
@@ -88,11 +89,12 @@
               protocol = "HTTP";
             }];
             location = "MESH_EXTERNAL";
-            resolution = "DNS";
+            resolution = "STATIC";
             endpoints = [
-              { address = "hello-0.hello.demo.svc.cluster.local"; }
-              { address = "hello-1.hello.demo.svc.cluster.local"; }
-              { address = "hello-2.hello.demo.svc.cluster.local"; }
+              # Update these IPs with: kubectl get pods -n demo --context k3d-cluster-a -o wide
+              { address = "10.42.2.3"; }  # hello-0
+              { address = "10.42.0.3"; }  # hello-1
+              { address = "10.42.1.4"; }  # hello-2
             ];
           };
 

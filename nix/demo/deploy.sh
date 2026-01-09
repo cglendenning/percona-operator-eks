@@ -55,7 +55,12 @@ kubectl config use-context k3d-cluster-b
 kubectl create namespace demo 2>/dev/null || echo "Namespace demo already exists"
 kubectl label namespace demo istio-injection=enabled --overwrite
 
-# Deploy ServiceEntry to Cluster B
+# Connect clusters via shared network (simulates VPC peering/VPN)
+echo ""
+echo "Connecting clusters via shared Docker network..."
+./connect-clusters.sh
+
+# Deploy ServiceEntry to Cluster B with pod IPs
 echo ""
 echo "Deploying ServiceEntry to Cluster B..."
 cd ..
@@ -64,10 +69,10 @@ kubectl apply -f result/manifest.yaml --context k3d-cluster-b
 cd demo
 
 echo ""
-echo "ServiceEntry deployed! Cluster B can now access pods in Cluster A:"
-echo "  hello-0.hello.demo.svc.cluster.local:8080"
-echo "  hello-1.hello.demo.svc.cluster.local:8080"
-echo "  hello-2.hello.demo.svc.cluster.local:8080"
+echo "ServiceEntry deployed! Cluster B can access pods in Cluster A via IPs:"
+echo "  10.42.2.3:8080 (hello-0)"
+echo "  10.42.0.3:8080 (hello-1)"
+echo "  10.42.1.4:8080 (hello-2)"
 
 echo ""
 echo "Deployment complete! Run './test.sh' to verify."
