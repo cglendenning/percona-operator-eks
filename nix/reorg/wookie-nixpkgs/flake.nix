@@ -106,10 +106,9 @@
           };
           
           kubelib = pkgs.kubelib;
-          fleetlib = pkgs.fleetlib;
           
-          # Generate Fleet bundles for all batches
-          fleetBundles = fleetlib.generateAllFleetBundles clusterConfig;
+          # Render all manifests
+          manifests = kubelib.renderAllBundles clusterConfig;
           
           # Get cluster context
           clusterContext = clusterConfig.targets.local-k3d.context or "k3d-wookie-local";
@@ -120,41 +119,16 @@
           create-cluster = clusterConfig.build.scripts.create-cluster or (pkgs.writeText "placeholder" "Not configured");
           delete-cluster = clusterConfig.build.scripts.delete-cluster or (pkgs.writeText "placeholder" "Not configured");
 
-          # Fleet bundles (main deployment artifacts)
-          fleet-bundles = fleetBundles;
-          
-          # Individual batch bundles (for debugging)
-          fleet-bundle-crds = fleetlib.generateFleetBundle {
-            batchName = "crds";
-            bundles = clusterConfig.platform.kubernetes.cluster.batches.crds.bundles;
-            priority = clusterConfig.platform.kubernetes.cluster.batches.crds.priority;
-          };
-          
-          fleet-bundle-namespaces = fleetlib.generateFleetBundle {
-            batchName = "namespaces";
-            bundles = clusterConfig.platform.kubernetes.cluster.batches.namespaces.bundles;
-            priority = clusterConfig.platform.kubernetes.cluster.batches.namespaces.priority;
-          };
-          
-          fleet-bundle-operators = fleetlib.generateFleetBundle {
-            batchName = "operators";
-            bundles = clusterConfig.platform.kubernetes.cluster.batches.operators.bundles;
-            priority = clusterConfig.platform.kubernetes.cluster.batches.operators.priority;
-          };
-          
-          fleet-bundle-services = fleetlib.generateFleetBundle {
-            batchName = "services";
-            bundles = clusterConfig.platform.kubernetes.cluster.batches.services.bundles;
-            priority = clusterConfig.platform.kubernetes.cluster.batches.services.priority;
-          };
+          # Rendered Kubernetes manifests
+          manifests = manifests;
           
           # Deployment script
-          deploy-fleet = fleetlib.generateFleetDeployScript {
-            inherit clusterContext clusterConfig;
-            bundlesPackage = fleetBundles;
+          deploy = kubelib.generateDeployScript {
+            inherit clusterContext;
+            manifestsPackage = manifests;
           };
           
-          default = fleetBundles;
+          default = manifests;
         }
       );
 
@@ -170,9 +144,9 @@
           program = "${self.packages.${system}.delete-cluster}";
         };
         
-        deploy-fleet = {
+        deploy = {
           type = "app";
-          program = "${self.packages.${system}.deploy-fleet}";
+          program = "${self.packages.${system}.deploy}";
         };
 
         default = self.apps.${system}.create-cluster;
@@ -198,6 +172,8 @@
               echo "Available commands:"
               echo "  nix run .#create-cluster  - Create local k3d cluster"
               echo "  nix run .#delete-cluster  - Delete local k3d cluster"
+              echo "  nix build .#manifests     - Build Kubernetes manifests"
+              echo "  nix run .#deploy          - Deploy to cluster"
               echo ""
               echo "Tools available:"
               echo "  - k3d"

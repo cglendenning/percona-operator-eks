@@ -97,38 +97,43 @@ rec {
       };
     });
 
-  # Generate a deployment script for Fleet
-  generateFleetDeployScript = { clusterContext, bundlesPackage, clusterConfig }:
+  # Generate Fleet manifests (raw Kubernetes manifests organized by batch)
+  generateFleetManifests = clusterConfig:
     let
-      # Extract batches for direct application
-      namespacesBatch = clusterConfig.platform.kubernetes.cluster.batches.namespaces or null;
-      crdsBatch = clusterConfig.platform.kubernetes.cluster.batches.crds or null;
+      batches = clusterConfig.platform.kubernetes.cluster.batches;
       
-      hasNamespaces = namespacesBatch != null;
-      hasCrds = crdsBatch != null;
+    in
+    pkgs.runCommand "fleet-manifests" {} ''
+      mkdir -p $out
       
-      namespacesManifests = if hasNamespaces then
+      # Copy manifests organized by batch directory
+      # Each directory becomes a separate Fleet bundle
+      ${lib.concatStringsSep "\n" (lib.mapAttrsToList (batchName: batch:
         let
-          enabledBundles = lib.filter (b: b.enabled or true) (lib.attrValues namespacesBatch.bundles);
+          enabledBundles = lib.filter (b: b.enabled or true) (lib.attrValues batch.bundles);
         in
-        map (bundle: "${kubelib.renderBundle bundle}/manifest.yaml") enabledBundles
-      else [];
-      
-      crdsManifests = if hasCrds then
-        let
-          enabledBundles = lib.filter (b: b.enabled or true) (lib.attrValues crdsBatch.bundles);
-        in
-        map (bundle: "${kubelib.renderBundle bundle}/manifest.yaml") enabledBundles
-      else [];
+        ''
+          mkdir -p $out/${batchName}
+          ${lib.concatMapStringsSep "\n" (bundle: ''
+            cp ${kubelib.renderBundle bundle}/manifest.yaml $out/${batchName}/${bundle.name}.yaml
+          '') enabledBundles}
+        ''
+      ) batches)}
+    '';
+
+  # Generate a deployment script for Fleet using GitRepo
+  generateFleetDeployScript = { clusterContext, clusterConfig }:
+    let
+      fleetManifests = generateFleetManifests clusterConfig;
       
     in
     pkgs.writeShellScript "deploy-fleet" ''
       set -euo pipefail
       
       CONTEXT="${clusterContext}"
-      BUNDLES_DIR="${bundlesPackage}"
+      MANIFESTS_DIR="${fleetManifests}"
       
-      echo "=== Deploying Wookie via Fleet ==="
+      echo "=== Deploying Wookie via Fleet (GitRepo) ==="
       echo ""
       echo "Target cluster: $CONTEXT"
       echo ""
@@ -143,47 +148,61 @@ rec {
         exit 1
       fi
       
-      ${lib.optionalString hasNamespaces ''
-        # Apply namespaces first
-        echo "Applying namespaces directly..."
-        ${lib.concatMapStringsSep "\n" (manifest: ''
-          kubectl apply -f ${manifest} --context "$CONTEXT"
-        '') namespacesManifests}
-        echo ""
-      ''}
-      
-      ${lib.optionalString hasCrds ''
-        # Apply CRDs directly (too large for Fleet Bundle annotations)
-        # Skip validation for x-kubernetes-validations compatibility with older k8s versions
-        echo "Applying CRDs directly..."
-        ${lib.concatMapStringsSep "\n" (manifest: ''
-          kubectl apply --validate=false -f ${manifest} --context "$CONTEXT"
-        '') crdsManifests}
-        echo ""
-        echo "Waiting for CRDs to be established..."
+      # Clean up old GitRepo if it exists
+      if kubectl get gitrepo wookie-local -n fleet-local --context "$CONTEXT" &>/dev/null; then
+        echo "Removing existing GitRepo..."
+        kubectl delete gitrepo wookie-local -n fleet-local --context "$CONTEXT"
         sleep 5
         echo ""
-      ''}
+      fi
       
-      echo "Applying Fleet bundles..."
+      # Create temporary Git repo
+      TEMP_REPO=$(mktemp -d)
+      echo "Creating temporary Git repository at: $TEMP_REPO"
       echo ""
       
-      # Apply remaining Fleet bundles (operators, services)
-      for bundle in "$BUNDLES_DIR"/*.yaml; do
-        bundle_name=$(basename "$bundle" .yaml)
-        if [ "$bundle_name" != "crds" ] && [ "$bundle_name" != "namespaces" ]; then
-          echo "Applying $bundle_name bundle..."
-          kubectl apply -f "$bundle" --context "$CONTEXT"
-        fi
-      done
+      # Copy manifests to temp repo
+      cp -r "$MANIFESTS_DIR"/* "$TEMP_REPO/"
+      
+      # Initialize Git repo
+      cd "$TEMP_REPO"
+      git init -q
+      git config user.email "fleet@wookie.local"
+      git config user.name "Fleet Deployer"
+      git add .
+      git commit -q -m "Wookie deployment manifests"
+      
+      echo "Git repository created and committed"
       echo ""
       
-      echo "=== Deployment complete ==="
+      # Create Fleet GitRepo resource
+      echo "Creating Fleet GitRepo resource..."
+      kubectl apply --context "$CONTEXT" -f - <<EOF
+      apiVersion: fleet.cattle.io/v1alpha1
+      kind: GitRepo
+      metadata:
+        name: wookie-local
+        namespace: fleet-local
+      spec:
+        repo: file://$TEMP_REPO
+        branch: master
+        paths:
+        - .
+        targets:
+        - clusterSelector: {}
+      EOF
+      
       echo ""
-      echo "Monitor Fleet deployment status:"
+      echo "=== Deployment initiated ==="
+      echo ""
+      echo "Fleet will now pull and deploy manifests from: file://$TEMP_REPO"
+      echo ""
+      echo "Monitor deployment status:"
+      echo "  kubectl get gitrepos -n fleet-local --context $CONTEXT"
       echo "  kubectl get bundles -n fleet-local --context $CONTEXT"
-      echo ""
-      echo "Check bundle details:"
       echo "  kubectl get bundledeployments -A --context $CONTEXT"
+      echo ""
+      echo "Note: The temporary Git repo will remain at: $TEMP_REPO"
+      echo "      Delete it manually when done: rm -rf $TEMP_REPO"
     '';
 }

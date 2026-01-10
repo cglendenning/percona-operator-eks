@@ -1,6 +1,6 @@
 # Wookie NixPkgs
 
-Declarative Kubernetes deployment system using Nix and Fleet.
+Declarative Kubernetes deployment system using Nix.
 
 ## Quick Deploy
 
@@ -8,7 +8,7 @@ Declarative Kubernetes deployment system using Nix and Fleet.
 
 ```bash
 # Build will fail and show you the correct hash
-nix build .#fleet-bundles
+nix build .#manifests
 ```
 
 Copy the `got: sha256-XXXXX...` hash from the error into `pkgs/charts/charts.nix`. Repeat for each chart.
@@ -19,35 +19,17 @@ Copy the `got: sha256-XXXXX...` hash from the error into `pkgs/charts/charts.nix
 nix run .#create-cluster
 ```
 
-### 3. Install Fleet
+### 3. Deploy
 
 ```bash
-# Add Fleet Helm repository
-helm repo add fleet https://rancher.github.io/fleet-helm-charts/
-helm repo update
-
-# Install Fleet CRDs and controller
-helm install --create-namespace --wait \
-  fleet-crd fleet/fleet-crd -n cattle-fleet-system
-
-helm install --create-namespace --wait \
-  fleet fleet/fleet -n cattle-fleet-system
-
-# Verify
-kubectl get pods -n cattle-fleet-system
+nix run .#deploy
 ```
 
-### 4. Deploy
+### 4. Verify
 
 ```bash
-nix run .#deploy-fleet
-```
-
-### 5. Verify
-
-```bash
-kubectl get bundles -n fleet-local
-kubectl get pods -n istio-system -w
+kubectl get pods -n istio-system
+kubectl get pods -n wookie
 ```
 
 ## Clean Up
@@ -89,7 +71,7 @@ projects.wookie = {
 ```bash
 nix run .#create-cluster       # Create k3d cluster
 nix run .#delete-cluster       # Delete cluster
-nix build .#fleet-bundles      # Build all Fleet bundles
-nix run .#deploy-fleet         # Deploy to cluster
+nix build .#manifests          # Build Kubernetes manifests
+nix run .#deploy               # Deploy to cluster
 nix develop                    # Dev shell with tools
 ```
