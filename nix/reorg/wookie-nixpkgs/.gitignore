@@ -1,0 +1,18 @@
+# Nix build outputs
+result
+result-*
+
+# Direnv
+.direnv/
+.envrc
+
+# Editor files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Generated files
+modules/generated/*
+!modules/generated/.gitkeep
