@@ -77,22 +77,42 @@
       # Export packages for each system
       packages = forAllSystems (system:
         let
+          # Get the evaluated config
           config = wookieLocalConfig system;
-          pkgs = nixpkgs.legacyPackages.${system};
-          
-          # Get the kubelib and fleetlib from the evaluated config's pkgs
-          evalPkgs = config.config._module.args.pkgs;
-          kubelib = evalPkgs.kubelib;
-          fleetlib = evalPkgs.fleetlib;
-          
-          # Get cluster configuration
           clusterConfig = config.config;
+          
+          # Get pkgs with overlays (already has kubelib and fleetlib)
+          pkgs = import nixpkgs {
+            inherit system;
+            overlays = [
+              (final: prev: 
+                let
+                  kubelibModule = import ./lib/kubelib.nix {
+                    pkgs = final;
+                    lib = nixpkgs.lib;
+                  };
+                  fleetModule = import ./lib/fleet.nix {
+                    pkgs = final;
+                    lib = nixpkgs.lib;
+                    kubelib = kubelibModule;
+                  };
+                in
+                {
+                  kubelib = kubelibModule;
+                  fleetlib = fleetModule;
+                }
+              )
+            ];
+          };
+          
+          kubelib = pkgs.kubelib;
+          fleetlib = pkgs.fleetlib;
           
           # Generate Fleet bundles for all batches
           fleetBundles = fleetlib.generateAllFleetBundles clusterConfig;
           
           # Get cluster context
-          clusterContext = config.config.targets.local-k3d.context or "k3d-wookie-local";
+          clusterContext = clusterConfig.targets.local-k3d.context or "k3d-wookie-local";
           
         in
         {

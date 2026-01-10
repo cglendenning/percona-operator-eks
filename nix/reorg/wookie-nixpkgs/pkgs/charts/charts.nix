@@ -20,7 +20,7 @@ in
       repo = istio-repo;
       chart = "base";
       version = "1.24.2";
-      chartHash = lib.fakeHash;  # ← Replace with hash from nix build error
+      chartHash = "sha256-k5gf+Ra8Z6VVlGGXmV+3uDNIIotVmQ6V6HMwKfP9SA0="; 
     };
   };
 
@@ -29,7 +29,7 @@ in
       repo = istio-repo;
       chart = "istiod";
       version = "1.24.2";
-      chartHash = lib.fakeHash;  # ← Replace with hash from nix build error
+      chartHash = "sha256-euJBgNmg32AKohKc1NpKZw2R1hGsEgQJHqGDvd0JQVU="; 
     };
   };
 
