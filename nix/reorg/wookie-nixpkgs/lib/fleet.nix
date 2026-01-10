@@ -1,19 +1,24 @@
 { pkgs, lib, kubelib }:
 
 rec {
-  # Generate a Fleet Bundle from a single Kubernetes bundle
-  # Returns a Bundle resource for one bundle (not a batch)
-  generateFleetBundleForResource = { bundleName, bundle, batchName, priority ? 1 }:
+  # Generate a Fleet Bundle from a batch of bundles
+  generateFleetBundle = { batchName, bundles, priority ? 1 }:
     let
-      # Render the bundle to manifest
-      manifestContent = builtins.readFile "${kubelib.renderBundle bundle}/manifest.yaml";
+      # Filter enabled bundles and sort by dependencies
+      enabledBundles = lib.filter (b: b.enabled or true) (lib.attrValues bundles);
+      
+      # Render each bundle to manifest
+      resources = map (bundle: {
+        name = bundle.name;
+        content = builtins.readFile "${kubelib.renderBundle bundle}/manifest.yaml";
+      }) enabledBundles;
       
       # Build Fleet Bundle spec
       bundleSpec = {
         apiVersion = "fleet.cattle.io/v1alpha1";
         kind = "Bundle";
         metadata = {
-          name = bundleName;
+          name = batchName;
           namespace = "fleet-local";
           labels = {
             "wookie.io/batch" = batchName;
@@ -25,16 +30,11 @@ rec {
             clusterSelector = {};
           }];
           
-          # Single resource
-          resources = [{
-            name = bundleName;
-            content = manifestContent;
-          }];
+          # Actual Kubernetes resources
+          resources = resources;
           
-          # Resource management
-          correctDrift = {
-            enabled = true;
-          };
+          # Don't add tracking annotations for large resources
+          keepResources = true;
           
           # Dependencies (for batch ordering)
           dependsOn = 
@@ -55,48 +55,29 @@ rec {
         };
       };
     in
-    pkgs.writeText "${bundleName}-bundle.yaml" (
+    pkgs.writeText "${batchName}-bundle.yaml" (
       builtins.toJSON bundleSpec
     );
-
-  # Generate Fleet Bundles for a batch of bundles (one Bundle per resource)
-  generateFleetBundlesForBatch = { batchName, bundles, priority ? 1 }:
-    let
-      # Filter enabled bundles
-      enabledBundles = lib.filter (b: b.enabled or true) (lib.attrValues bundles);
-      
-      # Generate one Fleet Bundle per resource
-      mkBundleForResource = bundle:
-        generateFleetBundleForResource {
-          bundleName = "${batchName}-${bundle.name}";
-          inherit bundle batchName priority;
-        };
-      
-    in
-    map mkBundleForResource enabledBundles;
 
   # Generate all Fleet bundles from cluster configuration
   generateAllFleetBundles = clusterConfig:
     let
       batches = clusterConfig.platform.kubernetes.cluster.batches;
       
-      # Generate bundles for each batch (returns list of bundle files)
-      mkBundlesForBatch = batchName: batch:
-        generateFleetBundlesForBatch {
+      mkBundleForBatch = batchName: batch:
+        generateFleetBundle {
           inherit batchName;
           bundles = batch.bundles;
           priority = batch.priority;
         };
       
-      # Get all bundle files (flattened list)
-      allBundleFiles = lib.flatten (lib.mapAttrsToList mkBundlesForBatch batches);
-      
+      bundleFiles = lib.mapAttrs mkBundleForBatch batches;
     in
     pkgs.runCommand "fleet-bundles" {} ''
       mkdir -p $out
-      ${lib.concatMapStringsSep "\n" (file: ''
-        cp ${file} $out/$(basename ${file})
-      '') allBundleFiles}
+      ${lib.concatStringsSep "\n" (lib.mapAttrsToList (name: file: ''
+        cp ${file} $out/${name}.yaml
+      '') bundleFiles)}
     '';
 
   # Generate GitRepo resource for Fleet
