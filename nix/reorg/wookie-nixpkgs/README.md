@@ -22,9 +22,19 @@ nix run .#create-cluster
 ### 3. Install Fleet
 
 ```bash
-kubectl apply -f https://github.com/rancher/fleet/releases/latest/download/fleet-crd.yaml
-kubectl apply -f https://github.com/rancher/fleet/releases/latest/download/fleet.yaml
-kubectl wait --for=condition=available --timeout=300s deployment/fleet-controller -n cattle-fleet-system
+# Add Fleet Helm repository
+helm repo add fleet https://rancher.github.io/fleet-helm-charts/
+helm repo update
+
+# Install Fleet CRDs and controller
+helm install --create-namespace --wait \
+  fleet-crd fleet/fleet-crd -n cattle-fleet-system
+
+helm install --create-namespace --wait \
+  fleet fleet/fleet -n cattle-fleet-system
+
+# Verify
+kubectl get pods -n cattle-fleet-system
 ```
 
 ### 4. Deploy
