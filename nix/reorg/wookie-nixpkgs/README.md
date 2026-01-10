@@ -1,6 +1,11 @@
 # Wookie NixPkgs
 
-A NixOS-style module system for declarative Kubernetes deployments.
+A NixOS-style module system for declarative Kubernetes deployments via Fleet.
+
+**📚 Quick Links:**
+- [Quick Start Guide](QUICKSTART.md) - Step-by-step deployment instructions
+- [Fleet Deployment Guide](FLEET_DEPLOYMENT.md) - Detailed Fleet configuration
+- [Implementation Status](IMPLEMENTATION_STATUS.md) - What's implemented vs planned
 
 ## Architecture
 
@@ -28,11 +33,22 @@ wookie-nixpkgs/
 
 ## Quick Start
 
-### 1. Create a Local k3d Cluster with Wookie (Istio + PXC)
+### 1. Get Chart Hashes (One-Time Setup)
 
 ```bash
 cd /Users/craig/percona_operator/nix/reorg/wookie-nixpkgs
 
+# Try to build - Nix will tell you the correct hashes
+nix build .#fleet-bundles
+
+# Each error shows: "got: sha256-XXXXX..."
+# Copy that hash to pkgs/charts/charts.nix
+# Repeat until all 3 charts have correct hashes
+```
+
+### 2. Create a Local k3d Cluster
+
+```bash
 # Create the k3d cluster
 nix run .#create-cluster
 
@@ -40,12 +56,60 @@ nix run .#create-cluster
 kubectl cluster-info --context k3d-wookie-local
 ```
 
-### 2. Deploy Wookie Project
+### 3. Install Fleet
 
 ```bash
-# TODO: Generate and apply manifests
-# This will be implemented once the bundle rendering is complete
+# Install Fleet CRDs and controller
+kubectl apply -f https://github.com/rancher/fleet/releases/latest/download/fleet-crd.yaml
+kubectl apply -f https://github.com/rancher/fleet/releases/latest/download/fleet.yaml
+
+# Wait for Fleet to be ready
+kubectl wait --for=condition=available --timeout=300s deployment/fleet-controller -n cattle-fleet-system
 ```
+
+### 4. Build and Deploy Wookie Project
+
+```bash
+# Build Fleet bundles
+nix build .#fleet-bundles
+
+# Deploy via Fleet
+nix run .#deploy-fleet
+
+# Monitor deployment
+kubectl get bundles -n fleet-local
+kubectl get bundledeployments -A
+kubectl get pods -n istio-system
+```
+
+**For detailed deployment instructions, see [FLEET_DEPLOYMENT.md](FLEET_DEPLOYMENT.md)**
+
+### 5. Clean Up
+
+```bash
+nix run .#delete-cluster
+```
+
+## Deployment Method
+
+This system uses **Rancher Fleet** for GitOps-style deployments:
+
+**Status: ✅ IMPLEMENTED** (pending chart hashes)
+
+The complete Fleet-based deployment pipeline is implemented:
+
+- ✓ Module structure (Platform/Project/Target layers)
+- ✓ Batch and bundle definitions
+- ✓ Wookie project with Istio component
+- ✓ Local k3d target configuration
+- ✓ `kubelib` for Helm chart fetching and rendering
+- ✓ `fleetlib` for Fleet bundle generation
+- ✓ Automated deployment script
+
+**What's needed to use it:**
+1. Fill in chart hashes in `pkgs/charts/charts.nix` (run `./scripts/fetch-chart-hashes.sh`)
+2. Install Fleet on your cluster
+3. Run `nix run .#deploy-fleet`
 
 ### 3. Clean Up
 
@@ -65,6 +129,45 @@ nix develop
 # - kubectl
 # - helm
 # - istioctl
+```
+
+## Deployment Architecture
+
+### Fleet vs Direct kubectl
+
+This system is designed to support **multiple deployment methods**:
+
+1. **Direct kubectl** (simplest, for dev)
+   - Build manifests with Nix
+   - Apply directly to cluster with kubectl
+
+2. **Fleet** (GitOps, for production)
+   - Generate Fleet Bundle resources
+   - Fleet controller watches git repo
+   - Automatic deployment and drift detection
+
+3. **Helmfile** (alternative to Fleet)
+   - Generate Helmfile configuration
+   - Use `helmfile sync` to deploy
+
+**Current Implementation:** None of these are implemented yet. The module system generates the configuration tree, but the output renderers need to be built.
+
+### Planned Output Structure
+
+```
+result/
+├── kubectl/           # Direct kubectl deployment
+│   ├── crds/
+│   ├── namespaces/
+│   ├── operators/
+│   └── services/
+├── fleet/             # Fleet bundles
+│   └── bundles/
+│       ├── istio-base.yaml
+│       ├── istiod.yaml
+│       └── ...
+└── helmfile/          # Helmfile configuration
+    └── helmfile.yaml
 ```
 
 ## How It Works
@@ -152,17 +255,55 @@ Each bundle contains:
 3. Set `platform.kubernetes.cluster.uniqueIdentifier`
 4. Generate any target-specific scripts via `build.scripts`
 
-## Status
+## Current Implementation Status
 
-### Completed
+### ✅ Completed
 - Module structure and organization
 - Wookie project module with Istio component
 - Local k3d target module
-- Chart catalog (istio-base, istiod, istio-gateway)
+- Chart catalog structure (istio-base, istiod, istio-gateway)
+- k3d cluster creation/deletion scripts
+- **`kubelib`** for Helm chart fetching and rendering
+- **`fleetlib`** for Fleet bundle generation
+- **Fleet bundle packages** in flake.nix
+- **Deployment automation** via `deploy-fleet` script
 
-### TODO
-- Implement manifest rendering from bundles
-- Add Fleet/Helmfile output generation
-- Create multi-cluster target examples
-- Add PXC (Percona XtraDB Cluster) project module
-- Implement certificate management helpers
+### ⚠️ Required User Action
+**Chart hash values** - Nix will tell you the correct hashes:
+
+```bash
+# Try to build (it will fail with the correct hash in the error message)
+nix build .#fleet-bundles
+
+# Copy the "got: sha256-XXXXX..." hash from each error
+# Update pkgs/charts/charts.nix with the hash
+# Repeat for all 3 charts (base, istiod, gateway)
+```
+
+### ❌ Not Yet Implemented (Future)
+- Multi-cluster target examples
+- PXC (Percona XtraDB Cluster) project module
+- Monitoring module (Prometheus/Grafana)
+- Backup module
+- Certificate management helpers
+
+## Available Nix Commands
+
+```bash
+# Cluster management
+nix run .#create-cluster    # Create k3d cluster
+nix run .#delete-cluster    # Delete k3d cluster
+
+# Build Fleet bundles
+nix build .#fleet-bundles           # All bundles
+nix build .#fleet-bundle-crds       # Just CRDs
+nix build .#fleet-bundle-namespaces # Just namespaces
+nix build .#fleet-bundle-operators  # Just operators (Istiod)
+nix build .#fleet-bundle-services   # Just services
+
+# Deploy
+nix run .#deploy-fleet      # Deploy all Fleet bundles to cluster
+
+# Development
+nix develop                 # Enter dev shell with all tools
+```

@@ -8,7 +8,10 @@ with lib;
 
 let
   cfg = config.projects.wookie.istio;
-  charts = import ../../../pkgs/charts/charts.nix { kubelib = pkgs.kubelib; };
+  charts = import ../../../pkgs/charts/charts.nix { 
+    kubelib = pkgs.kubelib;
+    inherit lib;
+  };
 
 in
 {

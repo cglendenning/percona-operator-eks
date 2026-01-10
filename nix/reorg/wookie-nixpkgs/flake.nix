@@ -16,23 +16,24 @@
           pkgs = import nixpkgs {
             inherit system;
             overlays = [
-              # Add kubelib overlay (placeholder - would need actual implementation)
-              (final: prev: {
-                kubelib = {
-                  downloadHelmChart = { repo, chart, version, chartHash }: 
-                    prev.stdenv.mkDerivation {
-                      name = "${chart}-${version}";
-                      src = prev.fetchurl {
-                        url = "${repo}/${chart}-${version}.tgz";
-                        hash = chartHash;
-                      };
-                      installPhase = ''
-                        mkdir -p $out
-                        cp -r * $out/
-                      '';
-                    };
-                };
-              })
+              # Add kubelib overlay
+              (final: prev: 
+                let
+                  kubelibModule = import ./lib/kubelib.nix {
+                    pkgs = final;
+                    lib = nixpkgs.lib;
+                  };
+                  fleetModule = import ./lib/fleet.nix {
+                    pkgs = final;
+                    lib = nixpkgs.lib;
+                    kubelib = kubelibModule;
+                  };
+                in
+                {
+                  kubelib = kubelibModule;
+                  fleetlib = fleetModule;
+                }
+              )
             ];
           };
         in
@@ -77,18 +78,67 @@
       packages = forAllSystems (system:
         let
           config = wookieLocalConfig system;
+          pkgs = nixpkgs.legacyPackages.${system};
+          
+          # Get the kubelib and fleetlib from the evaluated config's pkgs
+          evalPkgs = config.config._module.args.pkgs;
+          kubelib = evalPkgs.kubelib;
+          fleetlib = evalPkgs.fleetlib;
+          
+          # Get cluster configuration
+          clusterConfig = config.config;
+          
+          # Generate Fleet bundles for all batches
+          fleetBundles = fleetlib.generateAllFleetBundles clusterConfig;
+          
+          # Get cluster context
+          clusterContext = config.config.targets.local-k3d.context or "k3d-wookie-local";
+          
         in
         {
           # Cluster management scripts
-          create-cluster = config.config.build.scripts.create-cluster or (nixpkgs.legacyPackages.${system}.writeText "placeholder" "Not configured");
-          delete-cluster = config.config.build.scripts.delete-cluster or (nixpkgs.legacyPackages.${system}.writeText "placeholder" "Not configured");
+          create-cluster = clusterConfig.build.scripts.create-cluster or (pkgs.writeText "placeholder" "Not configured");
+          delete-cluster = clusterConfig.build.scripts.delete-cluster or (pkgs.writeText "placeholder" "Not configured");
 
-          # TODO: Add manifest generation packages
-          # manifests-crds = ...
-          # manifests-operators = ...
-          # manifests-services = ...
-
-          default = config.config.build.scripts.create-cluster or (nixpkgs.legacyPackages.${system}.writeText "placeholder" "Not configured");
+          # Fleet bundles (main deployment artifacts)
+          fleet-bundles = fleetBundles;
+          
+          # Individual batch bundles (for debugging)
+          fleet-bundle-crds = fleetlib.generateFleetBundle {
+            batchName = "crds";
+            bundles = clusterConfig.platform.kubernetes.cluster.batches.crds.bundles;
+            priority = clusterConfig.platform.kubernetes.cluster.batches.crds.priority;
+            autoPrune = clusterConfig.platform.kubernetes.cluster.batches.crds.autoPrune;
+          };
+          
+          fleet-bundle-namespaces = fleetlib.generateFleetBundle {
+            batchName = "namespaces";
+            bundles = clusterConfig.platform.kubernetes.cluster.batches.namespaces.bundles;
+            priority = clusterConfig.platform.kubernetes.cluster.batches.namespaces.priority;
+            autoPrune = clusterConfig.platform.kubernetes.cluster.batches.namespaces.autoPrune;
+          };
+          
+          fleet-bundle-operators = fleetlib.generateFleetBundle {
+            batchName = "operators";
+            bundles = clusterConfig.platform.kubernetes.cluster.batches.operators.bundles;
+            priority = clusterConfig.platform.kubernetes.cluster.batches.operators.priority;
+            autoPrune = clusterConfig.platform.kubernetes.cluster.batches.operators.autoPrune;
+          };
+          
+          fleet-bundle-services = fleetlib.generateFleetBundle {
+            batchName = "services";
+            bundles = clusterConfig.platform.kubernetes.cluster.batches.services.bundles;
+            priority = clusterConfig.platform.kubernetes.cluster.batches.services.priority;
+            autoPrune = clusterConfig.platform.kubernetes.cluster.batches.services.autoPrune;
+          };
+          
+          # Deployment script
+          deploy-fleet = fleetlib.generateFleetDeployScript {
+            inherit clusterContext;
+            bundlesPackage = fleetBundles;
+          };
+          
+          default = fleetBundles;
         }
       );
 
@@ -102,6 +152,11 @@
         delete-cluster = {
           type = "app";
           program = "${self.packages.${system}.delete-cluster}";
+        };
+        
+        deploy-fleet = {
+          type = "app";
+          program = "${self.packages.${system}.deploy-fleet}";
         };
 
         default = self.apps.${system}.create-cluster;
