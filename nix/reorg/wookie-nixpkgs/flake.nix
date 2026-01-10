@@ -128,33 +128,29 @@
             batchName = "crds";
             bundles = clusterConfig.platform.kubernetes.cluster.batches.crds.bundles;
             priority = clusterConfig.platform.kubernetes.cluster.batches.crds.priority;
-            autoPrune = clusterConfig.platform.kubernetes.cluster.batches.crds.autoPrune;
           };
           
           fleet-bundle-namespaces = fleetlib.generateFleetBundle {
             batchName = "namespaces";
             bundles = clusterConfig.platform.kubernetes.cluster.batches.namespaces.bundles;
             priority = clusterConfig.platform.kubernetes.cluster.batches.namespaces.priority;
-            autoPrune = clusterConfig.platform.kubernetes.cluster.batches.namespaces.autoPrune;
           };
           
           fleet-bundle-operators = fleetlib.generateFleetBundle {
             batchName = "operators";
             bundles = clusterConfig.platform.kubernetes.cluster.batches.operators.bundles;
             priority = clusterConfig.platform.kubernetes.cluster.batches.operators.priority;
-            autoPrune = clusterConfig.platform.kubernetes.cluster.batches.operators.autoPrune;
           };
           
           fleet-bundle-services = fleetlib.generateFleetBundle {
             batchName = "services";
             bundles = clusterConfig.platform.kubernetes.cluster.batches.services.bundles;
             priority = clusterConfig.platform.kubernetes.cluster.batches.services.priority;
-            autoPrune = clusterConfig.platform.kubernetes.cluster.batches.services.autoPrune;
           };
           
           # Deployment script
           deploy-fleet = fleetlib.generateFleetDeployScript {
-            inherit clusterContext;
+            inherit clusterContext clusterConfig;
             bundlesPackage = fleetBundles;
           };
           

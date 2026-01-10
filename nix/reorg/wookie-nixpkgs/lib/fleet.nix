@@ -98,7 +98,20 @@ rec {
     });
 
   # Generate a deployment script for Fleet
-  generateFleetDeployScript = { clusterContext, bundlesPackage }:
+  generateFleetDeployScript = { clusterContext, bundlesPackage, clusterConfig }:
+    let
+      # Extract CRDs bundle for direct application
+      crdsBatch = clusterConfig.platform.kubernetes.cluster.batches.crds or null;
+      hasCrds = crdsBatch != null;
+      
+      crdsManifests = if hasCrds then
+        let
+          enabledBundles = lib.filter (b: b.enabled or true) (lib.attrValues crdsBatch.bundles);
+        in
+        map (bundle: "${kubelib.renderBundle bundle}/manifest.yaml") enabledBundles
+      else [];
+      
+    in
     pkgs.writeShellScript "deploy-fleet" ''
       set -euo pipefail
       
@@ -120,17 +133,34 @@ rec {
         exit 1
       fi
       
-      echo "Fleet detected. Applying bundles..."
+      ${lib.optionalString hasCrds ''
+        # Apply CRDs directly (too large for Fleet Bundle annotations)
+        echo "Applying CRDs directly..."
+        ${lib.concatMapStringsSep "\n" (manifest: ''
+          kubectl apply -f ${manifest} --context "$CONTEXT"
+        '') crdsManifests}
+        echo ""
+        echo "Waiting for CRDs to be established..."
+        sleep 5
+        echo ""
+      ''}
+      
+      echo "Applying Fleet bundles..."
       echo ""
       
-      # Apply all bundles at once (kubectl can apply a directory)
-      echo "Applying all Fleet bundles..."
-      kubectl apply -f "$BUNDLES_DIR" --context "$CONTEXT"
+      # Apply all Fleet bundles except CRDs
+      for bundle in "$BUNDLES_DIR"/*.yaml; do
+        bundle_name=$(basename "$bundle" .yaml)
+        if [ "$bundle_name" != "crds" ]; then
+          echo "Applying $bundle_name bundle..."
+          kubectl apply -f "$bundle" --context "$CONTEXT"
+        fi
+      done
       echo ""
       
-      echo "=== Fleet bundles applied ==="
+      echo "=== Deployment complete ==="
       echo ""
-      echo "Monitor deployment status:"
+      echo "Monitor Fleet deployment status:"
       echo "  kubectl get bundles -n fleet-local --context $CONTEXT"
       echo ""
       echo "Check bundle details:"
