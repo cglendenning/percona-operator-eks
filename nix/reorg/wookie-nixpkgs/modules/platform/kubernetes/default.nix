@@ -44,7 +44,7 @@ let
 
         bundles = mkOption {
           default = { };
-          type = types.attrsOf {
+          type = types.attrsOf (
             types.submoduleWith {
               modules = [ ./bundles ];
               specialArgs = { inherit kubelib; };
@@ -97,7 +97,7 @@ in
                 clusterIssuer = mkOption {
                   type = types.nullOr types.str;
                   default = null;
-                  description = "Default cluster issuer."
+                  description = "Default cluster issuer.";
                 };
               };
             };
