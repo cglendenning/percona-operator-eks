@@ -9,10 +9,6 @@ with lib;
 {
   imports = [
     ./istio.nix
-    # Future components:
-    # ./pxc.nix
-    # ./monitoring.nix
-    # ./backup.nix
   ];
 
   options.projects.wookie = {

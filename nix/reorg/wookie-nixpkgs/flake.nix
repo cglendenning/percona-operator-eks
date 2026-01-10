@@ -23,15 +23,9 @@
                     pkgs = final;
                     lib = nixpkgs.lib;
                   };
-                  fleetModule = import ./lib/fleet.nix {
-                    pkgs = final;
-                    lib = nixpkgs.lib;
-                    kubelib = kubelibModule;
-                  };
                 in
                 {
                   kubelib = kubelibModule;
-                  fleetlib = fleetModule;
                 }
               )
             ];
@@ -81,7 +75,7 @@
           config = wookieLocalConfig system;
           clusterConfig = config.config;
           
-          # Get pkgs with overlays (already has kubelib and fleetlib)
+          # Get pkgs with overlays (already has kubelib)
           pkgs = import nixpkgs {
             inherit system;
             overlays = [
@@ -91,15 +85,9 @@
                     pkgs = final;
                     lib = nixpkgs.lib;
                   };
-                  fleetModule = import ./lib/fleet.nix {
-                    pkgs = final;
-                    lib = nixpkgs.lib;
-                    kubelib = kubelibModule;
-                  };
                 in
                 {
                   kubelib = kubelibModule;
-                  fleetlib = fleetModule;
                 }
               )
             ];
