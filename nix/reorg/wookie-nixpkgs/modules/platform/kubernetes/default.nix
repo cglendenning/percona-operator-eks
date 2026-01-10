@@ -187,13 +187,13 @@ in
 
   config = {
     platform.kubernetes.cluster.batches = {
-      crds = {
+      namespaces = {
         priority = 100;
         autoPrune = false;
         bundles = { };
       };
 
-      namespaces = {
+      crds = {
         priority = 200;
         autoPrune = false;
         bundles = { };

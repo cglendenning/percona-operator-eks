@@ -87,21 +87,74 @@ rec {
       '') allBundles}
     '';
 
+  # Render manifests by batch for ordered deployment
+  renderBatchManifests = clusterConfig:
+    let
+      batches = clusterConfig.platform.kubernetes.cluster.batches;
+      
+      # Sort batches by priority
+      sortedBatches = lib.sort (a: b: a.value.priority < b.value.priority) 
+        (lib.mapAttrsToList (name: value: { inherit name value; }) batches);
+      
+      # Generate a manifest file for each batch (only if it has bundles)
+      mkBatchManifest = batch:
+        let
+          enabledBundles = lib.filter (b: b.enabled or true) 
+            (lib.attrValues batch.value.bundles);
+          isEmpty = enabledBundles == [];
+        in
+        if isEmpty then null
+        else pkgs.runCommand "batch-${batch.name}" {} ''
+          mkdir -p $out
+          ${lib.concatMapStringsSep "\n" (bundle: ''
+            echo "---" >> $out/manifest.yaml
+            cat ${renderBundle bundle}/manifest.yaml >> $out/manifest.yaml
+          '') enabledBundles}
+        '';
+      
+      # Filter out null (empty) batches
+      allBatches = map mkBatchManifest sortedBatches;
+    in
+    lib.filter (b: b != null) allBatches;
+
   # Generate a simple deployment script
-  generateDeployScript = { clusterContext, manifestsPackage }:
+  generateDeployScript = { clusterContext, manifestsPackage, clusterConfig }:
+    let
+      batches = clusterConfig.platform.kubernetes.cluster.batches;
+      
+      # Get non-empty batches sorted by priority
+      sortedBatches = lib.sort (a: b: batches.${a.name}.priority < batches.${b.name}.priority) 
+        (lib.filter (b: 
+          let enabledBundles = lib.filter (bun: bun.enabled or true) (lib.attrValues b.value.bundles);
+          in enabledBundles != []
+        ) (lib.mapAttrsToList (name: value: { inherit name value; }) batches));
+      
+      batchManifests = renderBatchManifests clusterConfig;
+    in
     pkgs.writeShellScript "deploy-manifests" ''
       set -euo pipefail
       
       CONTEXT="${clusterContext}"
-      MANIFESTS="${manifestsPackage}/manifest.yaml"
       
       echo "=== Deploying Wookie to $CONTEXT ==="
       echo ""
       
-      # Apply manifests, skip validation for x-kubernetes-validations compatibility
-      kubectl apply --validate=false -f "$MANIFESTS" --context "$CONTEXT"
+      # Apply manifests batch by batch
+      ${lib.concatImapStringsSep "\n" (idx: batch: ''
+        echo "Applying batch: ${batch.name}..."
+        kubectl apply --validate=false -f ${builtins.elemAt batchManifests (idx - 1)}/manifest.yaml --context "$CONTEXT"
+        
+        # Wait a bit after namespaces and CRDs
+        ${if batch.name == "namespaces" then ''
+          echo "Waiting for namespaces to be ready..."
+          sleep 3
+        '' else if batch.name == "crds" then ''
+          echo "Waiting for CRDs to be established..."
+          sleep 5
+        '' else ""}
+        echo ""
+      '') sortedBatches}
       
-      echo ""
       echo "=== Deployment complete ==="
       echo ""
       echo "Check deployment status:"

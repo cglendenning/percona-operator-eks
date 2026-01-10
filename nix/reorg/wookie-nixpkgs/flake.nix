@@ -112,7 +112,7 @@
           
           # Deployment script
           deploy = kubelib.generateDeployScript {
-            inherit clusterContext;
+            inherit clusterContext clusterConfig;
             manifestsPackage = manifests;
           };
           
