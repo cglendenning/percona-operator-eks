@@ -100,9 +100,19 @@ rec {
   # Generate a deployment script for Fleet
   generateFleetDeployScript = { clusterContext, bundlesPackage, clusterConfig }:
     let
-      # Extract CRDs bundle for direct application
+      # Extract batches for direct application
+      namespacesBatch = clusterConfig.platform.kubernetes.cluster.batches.namespaces or null;
       crdsBatch = clusterConfig.platform.kubernetes.cluster.batches.crds or null;
+      
+      hasNamespaces = namespacesBatch != null;
       hasCrds = crdsBatch != null;
+      
+      namespacesManifests = if hasNamespaces then
+        let
+          enabledBundles = lib.filter (b: b.enabled or true) (lib.attrValues namespacesBatch.bundles);
+        in
+        map (bundle: "${kubelib.renderBundle bundle}/manifest.yaml") enabledBundles
+      else [];
       
       crdsManifests = if hasCrds then
         let
@@ -133,11 +143,21 @@ rec {
         exit 1
       fi
       
-      ${lib.optionalString hasCrds ''
-        # Apply CRDs directly (too large for Fleet Bundle annotations)
-        echo "Applying CRDs directly..."
+      ${lib.optionalString hasNamespaces ''
+        # Apply namespaces first
+        echo "Applying namespaces directly..."
         ${lib.concatMapStringsSep "\n" (manifest: ''
           kubectl apply -f ${manifest} --context "$CONTEXT"
+        '') namespacesManifests}
+        echo ""
+      ''}
+      
+      ${lib.optionalString hasCrds ''
+        # Apply CRDs directly (too large for Fleet Bundle annotations)
+        # Skip validation for x-kubernetes-validations compatibility with older k8s versions
+        echo "Applying CRDs directly..."
+        ${lib.concatMapStringsSep "\n" (manifest: ''
+          kubectl apply --validate=false -f ${manifest} --context "$CONTEXT"
         '') crdsManifests}
         echo ""
         echo "Waiting for CRDs to be established..."
@@ -148,10 +168,10 @@ rec {
       echo "Applying Fleet bundles..."
       echo ""
       
-      # Apply all Fleet bundles except CRDs
+      # Apply remaining Fleet bundles (operators, services)
       for bundle in "$BUNDLES_DIR"/*.yaml; do
         bundle_name=$(basename "$bundle" .yaml)
-        if [ "$bundle_name" != "crds" ]; then
+        if [ "$bundle_name" != "crds" ] && [ "$bundle_name" != "namespaces" ]; then
           echo "Applying $bundle_name bundle..."
           kubectl apply -f "$bundle" --context "$CONTEXT"
         fi
