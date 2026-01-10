@@ -38,7 +38,7 @@ in
       repo = istio-repo;
       chart = "gateway";
       version = "1.24.2";
-      chartHash = lib.fakeHash;  # ← Replace with hash from nix build error
+      chartHash = lib.fakeHash; 
     };
   };
 }
