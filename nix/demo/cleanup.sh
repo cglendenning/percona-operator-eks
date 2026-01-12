@@ -48,16 +48,14 @@ if [[ $REPLY =~ ^[Yy]$ ]]; then
   k3d cluster delete cluster-a 2>/dev/null || echo "${CTX_CLUSTER1} not found"
   k3d cluster delete cluster-b 2>/dev/null || echo "${CTX_CLUSTER2} not found"
   
-  echo "Removing shared Docker network..."
-  docker network rm k3d-shared 2>/dev/null || echo "k3d-shared network not found"
+  echo "Removing k3d-multicluster Docker network..."
+  docker network rm k3d-multicluster 2>/dev/null || echo "k3d-multicluster network not found"
 fi
 
 # Clean up nix build results
-if [ -e "../result-cluster-a" ] || [ -e "../result-cluster-b" ]; then
-  echo ""
-  echo "Cleaning up Nix build artifacts..."
-  rm -f ../result-cluster-a ../result-cluster-b
-fi
+echo ""
+echo "Cleaning up Nix build artifacts..."
+rm -f ../result-cluster-a ../result-cluster-b 2>/dev/null || true
 
 echo ""
 echo "=== Cleanup Complete ==="

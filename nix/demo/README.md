@@ -38,8 +38,9 @@ chmod +x *.sh
 ```
 
 **k3d-Specific Configuration:**
-- `setup-clusters.sh` creates a shared Docker network (172.23.0.0/16)
-- API server certificates include TLS SANs for shared network IPs
+- `setup-clusters.sh` creates a dedicated Docker network `k3d-multicluster` (172.24.0.0/16)
+- Clusters are created with `--network k3d-multicluster` for predictable IP assignment
+- API server certificates include TLS SANs for network IPs (.2-.15 range)
 - This enables secure cross-cluster API access without `insecure-skip-tls-verify`
 
 **What Makes This Official Istio Approach:**

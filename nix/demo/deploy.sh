@@ -457,15 +457,15 @@ EOF
 ##############################################################################
 
 echo ""
-echo "Step 8: Verifying shared network connectivity..."
-# setup-clusters.sh already connected clusters, but verify/reconnect if needed
-docker network create k3d-shared 2>/dev/null || true
+echo "Step 8: Verifying k3d-multicluster network connectivity..."
+# Clusters were created with --network k3d-multicluster, verify they're connected
+if ! docker network inspect k3d-multicluster &>/dev/null; then
+  echo "ERROR: k3d-multicluster network not found. Run ./setup-clusters.sh first."
+  exit 1
+fi
 
-for node in $(docker ps --format '{{.Names}}' | grep -E 'k3d-cluster-[ab]'); do
-  docker network connect k3d-shared $node 2>/dev/null || true
-done
-
-echo "Shared network verified"
+echo "Network k3d-multicluster verified"
+docker network inspect k3d-multicluster -f '{{range .Containers}}{{.Name}}: {{.IPv4Address}}{{println}}{{end}}' | grep k3d-cluster
 
 ##############################################################################
 # Enable Endpoint Discovery (THE KEY STEP)
@@ -474,13 +474,13 @@ echo "Shared network verified"
 echo ""
 echo "Step 9: Enabling endpoint discovery (remote secrets)..."
 
-# For k3d, we need to use the API server's IP on the shared network
-# Get the k3d server container IPs on the k3d-shared network
-CLUSTER_A_API_IP=$(docker inspect k3d-cluster-a-server-0 -f '{{range .NetworkSettings.Networks}}{{if eq .NetworkID "'$(docker network inspect k3d-shared -f '{{.Id}}')'"}}{{.IPAddress}}{{end}}{{end}}')
-CLUSTER_B_API_IP=$(docker inspect k3d-cluster-b-server-0 -f '{{range .NetworkSettings.Networks}}{{if eq .NetworkID "'$(docker network inspect k3d-shared -f '{{.Id}}')'"}}{{.IPAddress}}{{end}}{{end}}')
+# For k3d, we need to use the API server's IP on the k3d-multicluster network
+# Get the k3d server container IPs on the k3d-multicluster network
+CLUSTER_A_API_IP=$(docker inspect k3d-cluster-a-server-0 -f '{{range .NetworkSettings.Networks}}{{if eq .NetworkID "'$(docker network inspect k3d-multicluster -f '{{.Id}}')'"}}{{.IPAddress}}{{end}}{{end}}')
+CLUSTER_B_API_IP=$(docker inspect k3d-cluster-b-server-0 -f '{{range .NetworkSettings.Networks}}{{if eq .NetworkID "'$(docker network inspect k3d-multicluster -f '{{.Id}}')'"}}{{.IPAddress}}{{end}}{{end}}')
 
-echo "  Cluster A API server IP on shared network: ${CLUSTER_A_API_IP}"
-echo "  Cluster B API server IP on shared network: ${CLUSTER_B_API_IP}"
+echo "  Cluster A API server IP on k3d-multicluster network: ${CLUSTER_A_API_IP}"
+echo "  Cluster B API server IP on k3d-multicluster network: ${CLUSTER_B_API_IP}"
 
 # Install remote secret in cluster2 for accessing cluster1
 echo "  Creating remote secret for ${CTX_CLUSTER1} in ${CTX_CLUSTER2}..."
@@ -574,7 +574,7 @@ apiVersion: v1
 kind: Namespace
 metadata:
   name: demo-dr
-  labels:
+      labels:
     istio-injection: enabled
 EOF
 
