@@ -42,6 +42,14 @@ in
       pilot = {
         autoscaleEnabled = false;  # k3s doesn't support HPA v2
       };
+      meshConfig = {
+        defaultConfig = {
+          proxyMetadata = {
+            ISTIO_META_DNS_CAPTURE = "true";
+            ISTIO_META_DNS_AUTO_ALLOCATE = "true";
+          };
+        };
+      };
       global = {
         meshID = meshId;
         multiCluster = {
