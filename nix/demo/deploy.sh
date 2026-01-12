@@ -479,18 +479,28 @@ echo "Clusters connected via k3d-shared network"
 echo ""
 echo "Step 9: Enabling endpoint discovery (remote secrets)..."
 
+# For k3d, we need to use the API server's IP on the shared network
+# Get the k3d server container IPs on the k3d-shared network
+CLUSTER_A_API_IP=$(docker inspect k3d-cluster-a-server-0 -f '{{range .NetworkSettings.Networks}}{{if eq .NetworkID "'$(docker network inspect k3d-shared -f '{{.Id}}')'"}}{{.IPAddress}}{{end}}{{end}}')
+CLUSTER_B_API_IP=$(docker inspect k3d-cluster-b-server-0 -f '{{range .NetworkSettings.Networks}}{{if eq .NetworkID "'$(docker network inspect k3d-shared -f '{{.Id}}')'"}}{{.IPAddress}}{{end}}{{end}}')
+
+echo "  Cluster A API server IP on shared network: ${CLUSTER_A_API_IP}"
+echo "  Cluster B API server IP on shared network: ${CLUSTER_B_API_IP}"
+
 # Install remote secret in cluster2 for accessing cluster1
 echo "  Creating remote secret for ${CTX_CLUSTER1} in ${CTX_CLUSTER2}..."
 istioctl create-remote-secret \
   --context="${CTX_CLUSTER1}" \
-  --name=cluster-a | \
+  --name=cluster-a \
+  --server="https://${CLUSTER_A_API_IP}:6443" | \
   kubectl apply -f - --context="${CTX_CLUSTER2}"
 
 # Install remote secret in cluster1 for accessing cluster2
 echo "  Creating remote secret for ${CTX_CLUSTER2} in ${CTX_CLUSTER1}..."
 istioctl create-remote-secret \
   --context="${CTX_CLUSTER2}" \
-  --name=cluster-b | \
+  --name=cluster-b \
+  --server="https://${CLUSTER_B_API_IP}:6443" | \
   kubectl apply -f - --context="${CTX_CLUSTER1}"
 
 ##############################################################################
@@ -569,7 +579,7 @@ apiVersion: v1
 kind: Namespace
 metadata:
   name: demo-dr
-      labels:
+  labels:
     istio-injection: enabled
 EOF
 
