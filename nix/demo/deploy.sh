@@ -453,24 +453,19 @@ spec:
 EOF
 
 ##############################################################################
-# Connect Clusters via Shared Network
+# Verify Shared Network Connection
 ##############################################################################
 
 echo ""
-echo "Step 8: Connecting clusters via shared Docker network..."
-docker network create k3d-shared 2>/dev/null || echo "Network k3d-shared already exists"
+echo "Step 8: Verifying shared network connectivity..."
+# setup-clusters.sh already connected clusters, but verify/reconnect if needed
+docker network create k3d-shared 2>/dev/null || true
 
-# Connect all cluster-a nodes to shared network
-for node in $(docker ps --format '{{.Names}}' | grep k3d-cluster-a); do
-  docker network connect k3d-shared $node 2>/dev/null || echo "$node already connected"
+for node in $(docker ps --format '{{.Names}}' | grep -E 'k3d-cluster-[ab]'); do
+  docker network connect k3d-shared $node 2>/dev/null || true
 done
 
-# Connect all cluster-b nodes to shared network
-for node in $(docker ps --format '{{.Names}}' | grep k3d-cluster-b); do
-  docker network connect k3d-shared $node 2>/dev/null || echo "$node already connected"
-done
-
-echo "Clusters connected via k3d-shared network"
+echo "Shared network verified"
 
 ##############################################################################
 # Enable Endpoint Discovery (THE KEY STEP)
@@ -579,7 +574,7 @@ apiVersion: v1
 kind: Namespace
 metadata:
   name: demo-dr
-  labels:
+      labels:
     istio-injection: enabled
 EOF
 

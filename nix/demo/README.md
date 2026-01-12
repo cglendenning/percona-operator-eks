@@ -31,11 +31,16 @@ Datacenter 1 (Cluster A)           Datacenter 2 (Cluster B)
 cd demo
 chmod +x *.sh
 
-./setup-clusters.sh      # Create k3d clusters
+./setup-clusters.sh      # Create k3d clusters with proper TLS SANs
 ./deploy.sh              # Deploy Istio with endpoint discovery
 ./test.sh                # Verify connectivity
 ./cleanup.sh             # Remove all
 ```
+
+**k3d-Specific Configuration:**
+- `setup-clusters.sh` creates a shared Docker network (172.23.0.0/16)
+- API server certificates include TLS SANs for shared network IPs
+- This enables secure cross-cluster API access without `insecure-skip-tls-verify`
 
 **What Makes This Official Istio Approach:**
 - **Endpoint Discovery**: Clusters share Kubernetes API access via remote secrets
