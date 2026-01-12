@@ -574,7 +574,7 @@ apiVersion: v1
 kind: Namespace
 metadata:
   name: demo-dr
-      labels:
+  labels:
     istio-injection: enabled
 EOF
 
