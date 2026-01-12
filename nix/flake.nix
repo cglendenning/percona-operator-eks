@@ -48,7 +48,7 @@
             configPath = self.packages.${system}.k3d-config;
           };
 
-          # Istio namespace
+          # Istio namespace (single-cluster mode)
           istio-namespace = istioLib.mkNamespace {
             namespace = istioNamespace;
           };
@@ -59,10 +59,39 @@
             values = istioLib.defaultValues.base;
           };
 
-          # Istiod (control plane)
+          # Istiod (control plane) - single-cluster mode
           istio-istiod = istioLib.mkIstiod {
             namespace = istioNamespace;
             values = istioLib.defaultValues.istiod;
+          };
+
+          # Multi-cluster variants
+          istio-namespace-cluster-a = istioLib.mkNamespace {
+            namespace = istioNamespace;
+            network = "network1";
+          };
+
+          istio-istiod-cluster-a = istioLib.mkIstiod {
+            namespace = istioNamespace;
+            values = istioLib.mkMultiClusterValues {
+              clusterId = "cluster-a";
+              network = "network1";
+              meshId = "mesh1";
+            };
+          };
+
+          istio-namespace-cluster-b = istioLib.mkNamespace {
+            namespace = istioNamespace;
+            network = "network2";
+          };
+
+          istio-istiod-cluster-b = istioLib.mkIstiod {
+            namespace = istioNamespace;
+            values = istioLib.mkMultiClusterValues {
+              clusterId = "cluster-b";
+              network = "network2";
+              meshId = "mesh1";
+            };
           };
 
           # Istio ingress gateway (commented out - k3d doesn't support sysctls)
@@ -147,7 +176,7 @@ spec:
 EOF
           '';
 
-          # Combined Istio manifests
+          # Combined Istio manifests (single-cluster)
           istio-all = pkgs.runCommand "istio-all" { } ''
             mkdir -p $out
             
@@ -191,6 +220,42 @@ EOF
             EOF
             
             chmod +x $out/deploy.sh
+          '';
+
+          # Combined Istio manifests for cluster-a (multi-cluster mode)
+          istio-cluster-a = pkgs.runCommand "istio-cluster-a" { } ''
+            mkdir -p $out
+            
+            echo "# Istio Namespace for cluster-a" > $out/manifest.yaml
+            cat ${self.packages.${system}.istio-namespace-cluster-a}/manifest.yaml >> $out/manifest.yaml
+            
+            echo "---" >> $out/manifest.yaml
+            echo "# Istio Base (CRDs)" >> $out/manifest.yaml
+            echo "---" >> $out/manifest.yaml
+            cat ${self.packages.${system}.istio-base}/manifest.yaml >> $out/manifest.yaml
+            
+            echo "---" >> $out/manifest.yaml
+            echo "# Istiod (Control Plane) for cluster-a" >> $out/manifest.yaml
+            echo "---" >> $out/manifest.yaml
+            cat ${self.packages.${system}.istio-istiod-cluster-a}/manifest.yaml >> $out/manifest.yaml
+          '';
+
+          # Combined Istio manifests for cluster-b (multi-cluster mode)
+          istio-cluster-b = pkgs.runCommand "istio-cluster-b" { } ''
+            mkdir -p $out
+            
+            echo "# Istio Namespace for cluster-b" > $out/manifest.yaml
+            cat ${self.packages.${system}.istio-namespace-cluster-b}/manifest.yaml >> $out/manifest.yaml
+            
+            echo "---" >> $out/manifest.yaml
+            echo "# Istio Base (CRDs)" >> $out/manifest.yaml
+            echo "---" >> $out/manifest.yaml
+            cat ${self.packages.${system}.istio-base}/manifest.yaml >> $out/manifest.yaml
+            
+            echo "---" >> $out/manifest.yaml
+            echo "# Istiod (Control Plane) for cluster-b" >> $out/manifest.yaml
+            echo "---" >> $out/manifest.yaml
+            cat ${self.packages.${system}.istio-istiod-cluster-b}/manifest.yaml >> $out/manifest.yaml
           '';
 
           # Environment with all tools needed

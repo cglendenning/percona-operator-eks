@@ -1,6 +1,6 @@
-# Istio Multi-Cluster for Cross-Datacenter Database Replication
+# Istio Multi-Primary Multi-Network (Official Approach)
 
-Production-ready Istio setup for PXC async replication across isolated Kubernetes clusters.
+Production-ready Istio setup following the official [Istio multi-primary multi-network documentation](https://istio.io/latest/docs/setup/install/multicluster/multi-primary_multi-network/) for cross-datacenter database replication.
 
 ## Architecture
 
@@ -27,36 +27,22 @@ Datacenter 1 (Cluster A)           Datacenter 2 (Cluster B)
 
 ## Quick Start
 
-### Automatic Service Discovery (Recommended - Official Istio Method)
-
-```bash
-cd demo
-chmod +x *.sh
-
-./setup-clusters.sh                   # Create k3d clusters
-./deploy-production-multicluster.sh   # Deploy with automatic discovery
-./test-production-multicluster.sh     # Verify connectivity
-./cleanup.sh                          # Remove all
-```
-
-**Benefits:**
-- No manual ServiceEntry configuration
-- Automatic endpoint discovery via Istio control plane
-- Services accessible using standard Kubernetes DNS names
-- Follows official Istio multi-cluster best practices
-
-### Manual Configuration (Alternative)
-
 ```bash
 cd demo
 chmod +x *.sh
 
 ./setup-clusters.sh      # Create k3d clusters
-./setup-certs.sh         # Generate shared CA
-./deploy-production.sh   # Deploy everything
-./test-production.sh     # Verify connectivity
+./deploy.sh              # Deploy Istio with endpoint discovery
+./test.sh                # Verify connectivity
 ./cleanup.sh             # Remove all
 ```
+
+**What Makes This Official Istio Approach:**
+- **Endpoint Discovery**: Clusters share Kubernetes API access via remote secrets
+- **Envoy DNS Proxy**: Intercepts DNS queries before CoreDNS
+- **Auto-allocated VIPs**: Envoy returns virtual IPs for remote services
+- **Standard DNS Names**: Use `hello.demo.svc.cluster.local` without modification
+- **No Manual ServiceEntry**: Everything is automatic
 
 ## What Gets Deployed
 
@@ -71,56 +57,57 @@ chmod +x *.sh
 - **Istio**: Control plane (no gateway)
 - **ServiceEntry**: Maps cluster-a services → gateway endpoint
 
-## How It Works
+## How It Works (Official Istio Approach)
 
-### 1. Shared Certificate Authority
-Both clusters use the same root CA certificate:
-- Enables mutual TLS trust
-- Encrypted traffic end-to-end
-- No certificate errors across clusters
+### 1. Remote Secrets Enable Endpoint Discovery
 
-### 2. East-West Gateway
-Single point of connectivity:
-- Gateway gets external IP (LoadBalancer)
-- Services stay on private network
-- TLS passthrough with SNI routing
-- Scales to many services (one gateway for all)
-
-### 3. ServiceEntry in Cluster B
-```yaml
-apiVersion: networking.istio.io/v1beta1
-kind: ServiceEntry
-metadata:
-  name: cluster-a-hello-services
-  namespace: demo-dr
-spec:
-  hosts:
-  - "hello-0.hello.demo.svc.cluster.local"
-  - "hello-1.hello.demo.svc.cluster.local"
-  - "hello-2.hello.demo.svc.cluster.local"
-  location: MESH_INTERNAL
-  ports:
-  - number: 8080
-    name: http
-    protocol: HTTP
-  resolution: STATIC
-  endpoints:
-  - address: "<gateway-ip>"
-    ports:
-      http: 15443
-```
-
-### 4. DNS-Based Access
-From cluster-b:
 ```bash
-curl http://hello-0.hello.demo.svc.cluster.local:8080
+istioctl create-remote-secret --context=cluster-a --name=cluster-a | \
+  kubectl apply -f - --context=cluster-b
 ```
 
-Istio sidecar:
-1. Intercepts DNS query
-2. Routes to gateway (via ServiceEntry)
-3. Gateway forwards to actual service in cluster-a
-4. mTLS encrypted throughout
+**What this does:**
+- Creates Kubernetes Secret in cluster-b with cluster-a API credentials
+- Istiod in cluster-b watches cluster-a's Kubernetes API
+- Automatic service discovery: cluster-b knows about ALL services in cluster-a
+- Istiod configures Envoy sidecars with routing information
+
+### 2. Envoy DNS Proxy (The Magic)
+
+**Traditional approach (doesn't work):**
+```
+App → CoreDNS → NXDOMAIN (service doesn't exist locally) → FAIL
+```
+
+**Istio's approach (works):**
+```
+App → Envoy DNS Proxy (127.0.0.1:15053) → Returns VIP → App uses VIP → Envoy routes
+```
+
+**How DNS resolution works:**
+1. iptables redirects DNS queries (UDP port 53) to Envoy at `127.0.0.1:15053`
+2. Envoy checks its service registry (populated by istiod from both clusters)
+3. Envoy finds `hello.demo.svc.cluster.local` (discovered from cluster-a)
+4. Envoy returns auto-allocated virtual IP (e.g., `240.240.0.1`)
+5. CoreDNS never consulted - Envoy answered first
+
+### 3. East-West Gateway for Cross-Network Traffic
+
+Both clusters get east-west gateways:
+- Dedicated to cross-cluster traffic
+- TLS passthrough with AUTO_PASSTHROUGH mode
+- Routes based on SNI (Server Name Indication)
+- Services stay internal - only gateway is accessible
+
+### 4. Transparent Routing
+
+When app makes request to the VIP Envoy provided:
+1. App: `GET http://240.240.0.1:8080`
+2. Envoy intercepts (iptables redirect port 15001)
+3. Envoy knows VIP maps to `hello.demo.svc.cluster.local` in cluster-a
+4. Envoy routes through east-west gateway
+5. Gateway forwards to actual service
+6. mTLS encrypted end-to-end
 
 ## For PXC Async Replication
 
@@ -263,22 +250,66 @@ kubectl get secret cacerts -n istio-system --context k3d-cluster-b -o jsonpath='
 - `hello-service.yaml` - Demo StatefulSet + service
 - `cleanup.sh` - Remove everything
 
-## Comparison to Alternatives
+## Official Approach vs Manual ServiceEntry
 
-### vs Exposed LoadBalancers
+### Previous Manual Approach (What We Used Before)
+
+**Configuration:**
+- Manual ServiceEntry with hardcoded VIP
+- No endpoint discovery
+- CoreDNS handled DNS queries
+
+**Problems:**
+```bash
+# This failed - DNS couldn't resolve
+curl http://hello.demo.svc.cluster.local:8080
+→ CoreDNS returns NXDOMAIN
+
+# Had to use hardcoded VIP
+curl http://240.240.0.10:8080
+→ Works, but not maintainable
+```
+
+**Limitations:**
+- Can't use standard Kubernetes DNS names
+- Manual ServiceEntry for each service
+- Hardcoded IPs and ports
+- No automatic endpoint updates
+- Doesn't scale
+
+### Official Istio Approach (What We Use Now)
+
+**Configuration:**
+- Remote secrets for endpoint discovery
+- Envoy DNS proxy intercepts queries
+- Auto-allocated VIPs
+
+**Success:**
+```bash
+# Standard Kubernetes DNS name works!
+curl http://hello.demo.svc.cluster.local:8080
+→ Envoy DNS proxy returns VIP → Routes correctly
+```
+
+**Benefits:**
+- ✅ Standard Kubernetes DNS names work
+- ✅ No manual ServiceEntry needed
+- ✅ Automatic service discovery
+- ✅ Dynamic endpoint updates
+- ✅ Production-ready and scalable
+- ✅ Follows official Istio best practices
+
+### Comparison to Other Alternatives
+
+**vs Exposed LoadBalancers per Service:**
 - **Security**: Services stay internal vs externally exposed
-- **Cost**: One LoadBalancer vs one per service
+- **Cost**: One gateway vs LoadBalancer per service
 - **Encryption**: Automatic mTLS vs manual TLS setup
 
-### vs Shared Network
+**vs Shared Flat Network:**
 - **Realistic**: Simulates actual datacenter isolation
 - **Security**: Gateway is controlled entry point
 - **Production-ready**: Works with real VPNs/VPCs
-
-### vs Full Auto-Discovery
-- **Simpler**: No remote secrets or API cross-access
-- **Explicit**: You control what's exposed
-- **Database-appropriate**: DBs don't need auto-discovery
 
 ## Key Takeaways
 

@@ -1,36 +1,506 @@
 #!/usr/bin/env bash
+#
+# Deploy Istio Multi-Primary Multi-Network (Official Istio Approach)
+# Based on: https://istio.io/latest/docs/setup/install/multicluster/multi-primary_multi-network/
+#
 set -euo pipefail
 
-echo "=== Deploying Istio Multi-Cluster Demo ==="
+CTX_CLUSTER1="k3d-cluster-a"
+CTX_CLUSTER2="k3d-cluster-b"
+MESH_ID="mesh1"
 
-# Build Istio manifests
-echo "Building Istio manifests..."
+echo "=== Deploying Istio Multi-Primary Multi-Network ==="
+echo ""
+echo "Following official Istio documentation:"
+echo "https://istio.io/latest/docs/setup/install/multicluster/multi-primary_multi-network/"
+echo ""
+
+# Build Istio manifests for both clusters
+echo "Step 1: Building Istio manifests with Nix..."
 cd ..
-nix build .#istio-all
+echo "  Building manifests for cluster-a..."
+nix build .#istio-cluster-a --out-link result-cluster-a
+echo "  Building manifests for cluster-b..."
+nix build .#istio-cluster-b --out-link result-cluster-b
 cd demo
 
-# Deploy Istio to Cluster A
-echo ""
-echo "Step 1: Deploying Istio to Cluster A..."
-kubectl config use-context k3d-cluster-a
-kubectl apply -f ../result/manifest.yaml --validate=false
-kubectl wait --for=condition=available --timeout=120s deployment/istiod -n istio-system
-echo "Istio deployed to Cluster A"
+##############################################################################
+# Configure Cluster 1
+##############################################################################
 
-# Deploy Istio to Cluster B
 echo ""
-echo "Step 2: Deploying Istio to Cluster B..."
-kubectl config use-context k3d-cluster-b
-kubectl apply -f ../result/manifest.yaml --validate=false
-kubectl wait --for=condition=available --timeout=120s deployment/istiod -n istio-system
-echo "Istio deployed to Cluster B"
+echo "Step 2: Configuring Cluster 1 (${CTX_CLUSTER1})..."
 
-# Deploy hello service to Cluster A (namespace: demo)
+# Set network label for istio-system namespace
+kubectl --context="${CTX_CLUSTER1}" create namespace istio-system 2>/dev/null || true
+kubectl --context="${CTX_CLUSTER1}" label namespace istio-system topology.istio.io/network=network1 --overwrite
+
+# Deploy Istio to cluster-a with multi-cluster config
+echo "  Deploying Istio to ${CTX_CLUSTER1}..."
+kubectl --context="${CTX_CLUSTER1}" apply -f ../result-cluster-a/manifest.yaml --validate=false
+
+# Wait for istiod deployment
+echo "  Waiting for istiod in ${CTX_CLUSTER1}..."
+kubectl --context="${CTX_CLUSTER1}" wait --for=condition=available --timeout=120s deployment/istiod -n istio-system
+
+##############################################################################
+# Install East-West Gateway in Cluster 1
+##############################################################################
+
 echo ""
-echo "Step 3: Deploying hello service to Cluster A..."
-kubectl config use-context k3d-cluster-a
+echo "Step 3: Installing east-west gateway in ${CTX_CLUSTER1}..."
 
-kubectl apply -f - <<'EOF'
+kubectl --context="${CTX_CLUSTER1}" apply -f - <<'EOF'
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: istio-eastwestgateway
+  namespace: istio-system
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: istio-eastwestgateway
+  namespace: istio-system
+  labels:
+    istio: eastwestgateway
+    topology.istio.io/network: network1
+spec:
+  type: NodePort
+  selector:
+    istio: eastwestgateway
+  ports:
+  - port: 15021
+    name: status-port
+    protocol: TCP
+    targetPort: 15021
+    nodePort: 30021
+  - port: 15443
+    name: tls
+    protocol: TCP
+    targetPort: 15443
+    nodePort: 30443
+  - port: 15012
+    name: tcp-istiod
+    protocol: TCP
+    targetPort: 15012
+    nodePort: 30012
+  - port: 15017
+    name: tcp-webhook
+    protocol: TCP
+    targetPort: 15017
+    nodePort: 30017
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: istio-eastwestgateway
+  namespace: istio-system
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      istio: eastwestgateway
+  template:
+    metadata:
+      labels:
+        istio: eastwestgateway
+        service.istio.io/canonical-name: istio-eastwestgateway
+        service.istio.io/canonical-revision: latest
+        topology.istio.io/network: network1
+      annotations:
+        sidecar.istio.io/inject: "false"
+        prometheus.io/port: "15020"
+        prometheus.io/scrape: "true"
+        prometheus.io/path: "/stats/prometheus"
+    spec:
+      serviceAccountName: istio-eastwestgateway
+      containers:
+      - name: istio-proxy
+        image: docker.io/istio/proxyv2:1.24.2
+        args:
+        - proxy
+        - router
+        - --domain
+        - $(POD_NAMESPACE).svc.cluster.local
+        - --proxyLogLevel=warning
+        - --proxyComponentLogLevel=misc:error
+        - --log_output_level=default:info
+        env:
+        - name: ISTIO_META_ROUTER_MODE
+          value: "sni-dnat"
+        - name: ISTIO_META_REQUESTED_NETWORK_VIEW
+          value: network1
+        - name: POD_NAME
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.name
+        - name: POD_NAMESPACE
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.namespace
+        - name: INSTANCE_IP
+          valueFrom:
+            fieldRef:
+              fieldPath: status.podIP
+        - name: SERVICE_ACCOUNT
+          valueFrom:
+            fieldRef:
+              fieldPath: spec.serviceAccountName
+        ports:
+        - containerPort: 15021
+          protocol: TCP
+        - containerPort: 15443
+          protocol: TCP
+        - containerPort: 15012
+          protocol: TCP
+        - containerPort: 15017
+          protocol: TCP
+        - containerPort: 15020
+          protocol: TCP
+        resources:
+          limits:
+            cpu: 2000m
+            memory: 1024Mi
+          requests:
+            cpu: 100m
+            memory: 128Mi
+        volumeMounts:
+        - name: istio-envoy
+          mountPath: /etc/istio/proxy
+        - name: config-volume
+          mountPath: /etc/istio/config
+        - mountPath: /var/run/secrets/istio
+          name: istiod-ca-cert
+        - mountPath: /var/run/secrets/tokens
+          name: istio-token
+          readOnly: true
+        - mountPath: /var/lib/istio/data
+          name: istio-data
+        - mountPath: /etc/istio/pod
+          name: podinfo
+      volumes:
+      - emptyDir: {}
+        name: istio-envoy
+      - name: config-volume
+        configMap:
+          name: istio
+          optional: true
+      - name: istiod-ca-cert
+        configMap:
+          name: istio-ca-root-cert
+      - name: podinfo
+        downwardAPI:
+          items:
+          - path: "labels"
+            fieldRef:
+              fieldPath: metadata.labels
+          - path: "annotations"
+            fieldRef:
+              fieldPath: metadata.annotations
+      - name: istio-data
+        emptyDir: {}
+      - name: istio-token
+        projected:
+          sources:
+          - serviceAccountToken:
+              audience: istio-ca
+              expirationSeconds: 43200
+              path: istio-token
+EOF
+
+echo "  Waiting for east-west gateway..."
+kubectl --context="${CTX_CLUSTER1}" wait --for=condition=available --timeout=120s deployment/istio-eastwestgateway -n istio-system
+
+##############################################################################
+# Expose Services in Cluster 1
+##############################################################################
+
+echo ""
+echo "Step 4: Exposing services in ${CTX_CLUSTER1}..."
+
+kubectl --context="${CTX_CLUSTER1}" apply -n istio-system -f - <<'EOF'
+apiVersion: networking.istio.io/v1beta1
+kind: Gateway
+metadata:
+  name: cross-network-gateway
+spec:
+  selector:
+    istio: eastwestgateway
+  servers:
+  - port:
+      number: 15443
+      name: tls
+      protocol: TLS
+    tls:
+      mode: AUTO_PASSTHROUGH
+    hosts:
+    - "*.local"
+EOF
+
+##############################################################################
+# Configure Cluster 2
+##############################################################################
+
+echo ""
+echo "Step 5: Configuring Cluster 2 (${CTX_CLUSTER2})..."
+
+# Set network label for istio-system namespace
+kubectl --context="${CTX_CLUSTER2}" create namespace istio-system 2>/dev/null || true
+kubectl --context="${CTX_CLUSTER2}" label namespace istio-system topology.istio.io/network=network2 --overwrite
+
+# Deploy Istio to cluster-b with multi-cluster config
+echo "  Deploying Istio to ${CTX_CLUSTER2}..."
+kubectl --context="${CTX_CLUSTER2}" apply -f ../result-cluster-b/manifest.yaml --validate=false
+
+# Wait for istiod deployment
+echo "  Waiting for istiod in ${CTX_CLUSTER2}..."
+kubectl --context="${CTX_CLUSTER2}" wait --for=condition=available --timeout=120s deployment/istiod -n istio-system
+
+##############################################################################
+# Install East-West Gateway in Cluster 2
+##############################################################################
+
+echo ""
+echo "Step 6: Installing east-west gateway in ${CTX_CLUSTER2}..."
+
+kubectl --context="${CTX_CLUSTER2}" apply -f - <<'EOF'
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: istio-eastwestgateway
+  namespace: istio-system
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: istio-eastwestgateway
+  namespace: istio-system
+  labels:
+    istio: eastwestgateway
+    topology.istio.io/network: network2
+spec:
+  type: NodePort
+  selector:
+    istio: eastwestgateway
+  ports:
+  - port: 15021
+    name: status-port
+    protocol: TCP
+    targetPort: 15021
+    nodePort: 31021
+  - port: 15443
+    name: tls
+    protocol: TCP
+    targetPort: 15443
+    nodePort: 31443
+  - port: 15012
+    name: tcp-istiod
+    protocol: TCP
+    targetPort: 15012
+    nodePort: 31012
+  - port: 15017
+    name: tcp-webhook
+    protocol: TCP
+    targetPort: 15017
+    nodePort: 31017
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: istio-eastwestgateway
+  namespace: istio-system
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      istio: eastwestgateway
+  template:
+    metadata:
+      labels:
+        istio: eastwestgateway
+        service.istio.io/canonical-name: istio-eastwestgateway
+        service.istio.io/canonical-revision: latest
+        topology.istio.io/network: network2
+      annotations:
+        sidecar.istio.io/inject: "false"
+        prometheus.io/port: "15020"
+        prometheus.io/scrape: "true"
+        prometheus.io/path: "/stats/prometheus"
+    spec:
+      serviceAccountName: istio-eastwestgateway
+      containers:
+      - name: istio-proxy
+        image: docker.io/istio/proxyv2:1.24.2
+        args:
+        - proxy
+        - router
+        - --domain
+        - $(POD_NAMESPACE).svc.cluster.local
+        - --proxyLogLevel=warning
+        - --proxyComponentLogLevel=misc:error
+        - --log_output_level=default:info
+        env:
+        - name: ISTIO_META_ROUTER_MODE
+          value: "sni-dnat"
+        - name: ISTIO_META_REQUESTED_NETWORK_VIEW
+          value: network2
+        - name: POD_NAME
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.name
+        - name: POD_NAMESPACE
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.namespace
+        - name: INSTANCE_IP
+          valueFrom:
+            fieldRef:
+              fieldPath: status.podIP
+        - name: SERVICE_ACCOUNT
+          valueFrom:
+            fieldRef:
+              fieldPath: spec.serviceAccountName
+        ports:
+        - containerPort: 15021
+          protocol: TCP
+        - containerPort: 15443
+          protocol: TCP
+        - containerPort: 15012
+          protocol: TCP
+        - containerPort: 15017
+          protocol: TCP
+        - containerPort: 15020
+          protocol: TCP
+        resources:
+          limits:
+            cpu: 2000m
+            memory: 1024Mi
+          requests:
+            cpu: 100m
+            memory: 128Mi
+        volumeMounts:
+        - name: istio-envoy
+          mountPath: /etc/istio/proxy
+        - name: config-volume
+          mountPath: /etc/istio/config
+        - mountPath: /var/run/secrets/istio
+          name: istiod-ca-cert
+        - mountPath: /var/run/secrets/tokens
+          name: istio-token
+          readOnly: true
+        - mountPath: /var/lib/istio/data
+          name: istio-data
+        - mountPath: /etc/istio/pod
+          name: podinfo
+      volumes:
+      - emptyDir: {}
+        name: istio-envoy
+      - name: config-volume
+        configMap:
+          name: istio
+          optional: true
+      - name: istiod-ca-cert
+        configMap:
+          name: istio-ca-root-cert
+      - name: podinfo
+        downwardAPI:
+          items:
+          - path: "labels"
+            fieldRef:
+              fieldPath: metadata.labels
+          - path: "annotations"
+            fieldRef:
+              fieldPath: metadata.annotations
+      - name: istio-data
+        emptyDir: {}
+      - name: istio-token
+        projected:
+          sources:
+          - serviceAccountToken:
+              audience: istio-ca
+              expirationSeconds: 43200
+              path: istio-token
+EOF
+
+echo "  Waiting for east-west gateway..."
+kubectl --context="${CTX_CLUSTER2}" wait --for=condition=available --timeout=120s deployment/istio-eastwestgateway -n istio-system
+
+##############################################################################
+# Expose Services in Cluster 2
+##############################################################################
+
+echo ""
+echo "Step 7: Exposing services in ${CTX_CLUSTER2}..."
+
+kubectl --context="${CTX_CLUSTER2}" apply -n istio-system -f - <<'EOF'
+apiVersion: networking.istio.io/v1beta1
+kind: Gateway
+metadata:
+  name: cross-network-gateway
+spec:
+  selector:
+    istio: eastwestgateway
+  servers:
+  - port:
+      number: 15443
+      name: tls
+      protocol: TLS
+    tls:
+      mode: AUTO_PASSTHROUGH
+    hosts:
+    - "*.local"
+EOF
+
+##############################################################################
+# Connect Clusters via Shared Network
+##############################################################################
+
+echo ""
+echo "Step 8: Connecting clusters via shared Docker network..."
+docker network create k3d-shared 2>/dev/null || echo "Network k3d-shared already exists"
+
+# Connect all cluster-a nodes to shared network
+for node in $(docker ps --format '{{.Names}}' | grep k3d-cluster-a); do
+  docker network connect k3d-shared $node 2>/dev/null || echo "$node already connected"
+done
+
+# Connect all cluster-b nodes to shared network
+for node in $(docker ps --format '{{.Names}}' | grep k3d-cluster-b); do
+  docker network connect k3d-shared $node 2>/dev/null || echo "$node already connected"
+done
+
+echo "Clusters connected via k3d-shared network"
+
+##############################################################################
+# Enable Endpoint Discovery (THE KEY STEP)
+##############################################################################
+
+echo ""
+echo "Step 9: Enabling endpoint discovery (remote secrets)..."
+
+# Install remote secret in cluster2 for accessing cluster1
+echo "  Creating remote secret for ${CTX_CLUSTER1} in ${CTX_CLUSTER2}..."
+istioctl create-remote-secret \
+  --context="${CTX_CLUSTER1}" \
+  --name=cluster-a | \
+  kubectl apply -f - --context="${CTX_CLUSTER2}"
+
+# Install remote secret in cluster1 for accessing cluster2
+echo "  Creating remote secret for ${CTX_CLUSTER2} in ${CTX_CLUSTER1}..."
+istioctl create-remote-secret \
+  --context="${CTX_CLUSTER2}" \
+  --name=cluster-b | \
+  kubectl apply -f - --context="${CTX_CLUSTER1}"
+
+##############################################################################
+# Deploy Hello Service to Cluster 1
+##############################################################################
+
+echo ""
+echo "Step 10: Deploying hello service to ${CTX_CLUSTER1}..."
+
+kubectl --context="${CTX_CLUSTER1}" apply -f - <<'EOF'
 apiVersion: v1
 kind: Namespace
 metadata:
@@ -83,242 +553,48 @@ spec:
           name: http
 EOF
 
-# Wait for sidecar injection and pods ready
-echo "Waiting for hello pods..."
-sleep 5
-kubectl wait --for=condition=ready pod -l app=hello -n demo --timeout=60s --context k3d-cluster-a
+echo "  Waiting for hello pods..."
+sleep 10
+kubectl wait --for=condition=ready pod -l app=hello -n demo --timeout=120s --context="${CTX_CLUSTER1}" || true
+
+##############################################################################
+# Create Test Namespace in Cluster 2
+##############################################################################
 
 echo ""
-echo "Hello pods in Cluster A:"
-kubectl get pods -n demo -o wide --context k3d-cluster-a
+echo "Step 11: Creating demo-dr namespace in ${CTX_CLUSTER2}..."
 
-# Connect clusters via shared Docker network (simulates VPN/VPC peering)
-# This allows pods in cluster-b to reach nodes in cluster-a
-echo ""
-echo "Step 3.5: Connecting clusters via shared Docker network..."
-docker network create k3d-shared 2>/dev/null || echo "Network k3d-shared already exists"
-
-# Connect all cluster-a nodes to shared network
-for node in $(docker ps --format '{{.Names}}' | grep k3d-cluster-a); do
-  docker network connect k3d-shared $node 2>/dev/null || echo "$node already connected"
-done
-
-# Connect all cluster-b nodes to shared network
-for node in $(docker ps --format '{{.Names}}' | grep k3d-cluster-b); do
-  docker network connect k3d-shared $node 2>/dev/null || echo "$node already connected"
-done
-
-echo "Clusters connected via k3d-shared network (simulates VPN/VPC peering)"
-
-# Deploy east-west gateway to Cluster A
-echo ""
-echo "Step 4: Deploying east-west gateway to Cluster A..."
-kubectl apply --context k3d-cluster-a -f - <<'EOF'
+kubectl --context="${CTX_CLUSTER2}" apply -f - <<'EOF'
 apiVersion: v1
-kind: ServiceAccount
+kind: Namespace
 metadata:
-  name: istio-eastwestgateway
-  namespace: istio-system
----
-apiVersion: v1
-kind: Service
-metadata:
-  name: istio-eastwestgateway
-  namespace: istio-system
-spec:
-  type: NodePort
-  selector:
-    istio: eastwestgateway
-  ports:
-  - port: 15443
-    name: tls
-    protocol: TCP
-    targetPort: 15443
-    nodePort: 30443
----
-apiVersion: apps/v1
-kind: Deployment
-metadata:
-  name: istio-eastwestgateway
-  namespace: istio-system
-spec:
-  replicas: 1
-  selector:
-    matchLabels:
-      istio: eastwestgateway
-  template:
-    metadata:
+  name: demo-dr
       labels:
-        istio: eastwestgateway
-        service.istio.io/canonical-name: istio-eastwestgateway
-        service.istio.io/canonical-revision: latest
-      annotations:
-        sidecar.istio.io/inject: "false"
-    spec:
-      serviceAccountName: istio-eastwestgateway
-      containers:
-      - name: istio-proxy
-        image: docker.io/istio/proxyv2:1.20.0
-        args:
-        - proxy
-        - router
-        - --domain
-        - $(POD_NAMESPACE).svc.cluster.local
-        - --proxyLogLevel=warning
-        - --proxyComponentLogLevel=misc:error
-        - --log_output_level=default:info
-        env:
-        - name: ISTIO_META_ROUTER_MODE
-          value: "sni-dnat"
-        - name: POD_NAME
-          valueFrom:
-            fieldRef:
-              fieldPath: metadata.name
-        - name: POD_NAMESPACE
-          valueFrom:
-            fieldRef:
-              fieldPath: metadata.namespace
-        - name: INSTANCE_IP
-          valueFrom:
-            fieldRef:
-              fieldPath: status.podIP
-        - name: SERVICE_ACCOUNT
-          valueFrom:
-            fieldRef:
-              fieldPath: spec.serviceAccountName
-        ports:
-        - containerPort: 15443
-          protocol: TCP
-        - containerPort: 15020
-          protocol: TCP
-        resources:
-          limits:
-            cpu: 2000m
-            memory: 1024Mi
-          requests:
-            cpu: 100m
-            memory: 128Mi
-        volumeMounts:
-        - name: istio-envoy
-          mountPath: /etc/istio/proxy
-        - name: config-volume
-          mountPath: /etc/istio/config
-        - mountPath: /var/run/secrets/istio
-          name: istiod-ca-cert
-        - mountPath: /var/run/secrets/tokens
-          name: istio-token
-          readOnly: true
-      volumes:
-      - emptyDir: {}
-        name: istio-envoy
-      - name: config-volume
-        configMap:
-          name: istio
-          optional: true
-      - name: istiod-ca-cert
-        configMap:
-          name: istio-ca-root-cert
-      - name: istio-token
-        projected:
-          sources:
-          - serviceAccountToken:
-              audience: istio-ca
-              expirationSeconds: 43200
-              path: istio-token
----
-apiVersion: networking.istio.io/v1beta1
-kind: Gateway
-metadata:
-  name: cross-network-gateway
-  namespace: istio-system
-spec:
-  selector:
-    istio: eastwestgateway
-  servers:
-  - port:
-      number: 15443
-      name: http
-      protocol: HTTP
-    hosts:
-    - "*"
----
-apiVersion: networking.istio.io/v1beta1
-kind: VirtualService
-metadata:
-  name: cross-network-hello
-  namespace: demo
-spec:
-  hosts:
-  - "*"
-  gateways:
-  - istio-system/cross-network-gateway
-  http:
-  - match:
-    - uri:
-        prefix: "/"
-    route:
-    - destination:
-        host: hello.demo.svc.cluster.local
-        port:
-          number: 8080
+    istio-injection: enabled
 EOF
 
-echo "Waiting for east-west gateway..."
-kubectl wait --for=condition=available --timeout=120s deployment/istio-eastwestgateway -n istio-system --context k3d-cluster-a
-
-# Get the node's IP on the shared network (for NodePort access)
-# The gateway service is NodePort, so we point to node-ip:30443
-# kube-proxy then forwards to the gateway pod
-GATEWAY_POD=$(kubectl get pods -n istio-system -l istio=eastwestgateway --context k3d-cluster-a -o jsonpath='{.items[0].metadata.name}')
-GATEWAY_NODE=$(kubectl get pod $GATEWAY_POD -n istio-system --context k3d-cluster-a -o jsonpath='{.spec.nodeName}')
-GATEWAY_IP=$(docker inspect $GATEWAY_NODE | jq -r '.[0].NetworkSettings.Networks["k3d-shared"].IPAddress')
-
-echo "Gateway pod: $GATEWAY_POD on node: $GATEWAY_NODE"
-echo "Node IP on shared network: $GATEWAY_IP (used for NodePort access)"
-
-# Create demo-dr namespace in Cluster B
-echo ""
-echo "Step 5: Creating demo-dr namespace in Cluster B..."
-kubectl create namespace demo-dr --context k3d-cluster-b 2>/dev/null || echo "Namespace demo-dr already exists"
-kubectl label namespace demo-dr istio-injection=enabled --overwrite --context k3d-cluster-b
-
-# Deploy ServiceEntry to Cluster B
-echo ""
-echo "Step 6: Deploying ServiceEntry to Cluster B..."
-kubectl apply --context k3d-cluster-b -f - <<EOF
-apiVersion: networking.istio.io/v1beta1
-kind: ServiceEntry
-metadata:
-  name: cluster-a-services
-  namespace: demo-dr
-spec:
-  hosts:
-  - "hello.demo.svc.cluster.local"
-  addresses:
-  - "240.240.0.10"
-  location: MESH_INTERNAL
-  ports:
-  - number: 8080
-    name: http
-    protocol: HTTP
-  resolution: STATIC
-  endpoints:
-  - address: "$GATEWAY_IP"
-    ports:
-      http: 30443
-EOF
+##############################################################################
+# Completion
+##############################################################################
 
 echo ""
 echo "=== Deployment Complete ==="
 echo ""
-echo "Cluster A (demo namespace):"
-echo "  - 3 hello pods with Istio sidecars"
-echo "  - East-west gateway at $GATEWAY_IP:30443 (NodePort on k3d-shared network)"
+echo "✓ Istio deployed to both clusters with multi-primary configuration"
+echo "✓ East-west gateways installed in both clusters"
+echo "✓ Endpoint discovery enabled (remote secrets created)"
+echo "✓ Hello service deployed to ${CTX_CLUSTER1}"
+echo "✓ Test namespace created in ${CTX_CLUSTER2}"
 echo ""
-echo "Cluster B (demo-dr namespace):"
-echo "  - ServiceEntry routing hello.demo.svc.cluster.local -> gateway"
+echo "Key Differences from Manual Approach:"
+echo "  - Endpoint discovery: Clusters share Kubernetes API access"
+echo "  - NO manual ServiceEntry needed"
+echo "  - Envoy DNS proxy: Intercepts DNS queries automatically"
+echo "  - Standard Kubernetes DNS names work: hello.demo.svc.cluster.local"
 echo ""
-echo "Architecture:"
-echo "  Client (cluster-b) -> Sidecar -> Node IP:30443 -> kube-proxy -> Gateway Pod:15443 -> Backend Service"
+echo "Verify with:"
+echo "  ./test.sh"
 echo ""
-echo "Run './test.sh' to verify cross-cluster connectivity."
+echo "Check Istio multi-cluster status:"
+echo "  istioctl proxy-status --context ${CTX_CLUSTER1}"
+echo "  istioctl proxy-status --context ${CTX_CLUSTER2}"

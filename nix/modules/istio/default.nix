@@ -32,9 +32,30 @@ in
     };
   };
 
+  # Multi-cluster values for istiod
+  mkMultiClusterValues = {
+    clusterId,
+    network ? null,
+    meshId ? "mesh1",
+  }:
+    {
+      pilot = {
+        autoscaleEnabled = false;  # k3s doesn't support HPA v2
+      };
+      global = {
+        meshID = meshId;
+        multiCluster = {
+          clusterName = clusterId;
+        };
+      } // (if network != null then {
+        network = network;
+      } else {});
+    };
+
   # Create namespace first
   mkNamespace = {
     namespace ? "istio-system",
+    network ? null,
   }:
     let
       yaml = pkgs.formats.yaml { };
@@ -45,7 +66,9 @@ in
           name = namespace;
           labels = {
             "istio-injection" = "disabled";
-          };
+          } // (if network != null then {
+            "topology.istio.io/network" = network;
+          } else {});
         };
       };
     in
