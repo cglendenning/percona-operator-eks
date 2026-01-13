@@ -5,6 +5,11 @@
 }:
 with lib;
 
+{
+  imports = [
+    ../backends/fleet.nix
+  ];
+
 let
   kubelib = pkgs.kubelib;
 

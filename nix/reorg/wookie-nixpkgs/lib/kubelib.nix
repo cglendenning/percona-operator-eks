@@ -117,48 +117,4 @@ rec {
     in
     lib.filter (b: b != null) allBatches;
 
-  # Generate a simple deployment script
-  generateDeployScript = { clusterContext, manifestsPackage, clusterConfig }:
-    let
-      batches = clusterConfig.platform.kubernetes.cluster.batches;
-      
-      # Get non-empty batches sorted by priority
-      sortedBatches = lib.sort (a: b: batches.${a.name}.priority < batches.${b.name}.priority) 
-        (lib.filter (b: 
-          let enabledBundles = lib.filter (bun: bun.enabled or true) (lib.attrValues b.value.bundles);
-          in enabledBundles != []
-        ) (lib.mapAttrsToList (name: value: { inherit name value; }) batches));
-      
-      batchManifests = renderBatchManifests clusterConfig;
-    in
-    pkgs.writeShellScript "deploy-manifests" ''
-      set -euo pipefail
-      
-      CONTEXT="${clusterContext}"
-      
-      echo "=== Deploying Wookie to $CONTEXT ==="
-      echo ""
-      
-      # Apply manifests batch by batch
-      ${lib.concatImapStringsSep "\n" (idx: batch: ''
-        echo "Applying batch: ${batch.name}..."
-        kubectl apply --validate=false -f ${builtins.elemAt batchManifests (idx - 1)}/manifest.yaml --context "$CONTEXT"
-        
-        # Wait a bit after namespaces and CRDs
-        ${if batch.name == "namespaces" then ''
-          echo "Waiting for namespaces to be ready..."
-          sleep 3
-        '' else if batch.name == "crds" then ''
-          echo "Waiting for CRDs to be established..."
-          sleep 5
-        '' else ""}
-        echo ""
-      '') sortedBatches}
-      
-      echo "=== Deployment complete ==="
-      echo ""
-      echo "Check deployment status:"
-      echo "  kubectl get pods -n istio-system --context $CONTEXT"
-      echo "  kubectl get pods -n wookie --context $CONTEXT"
-    '';
 }

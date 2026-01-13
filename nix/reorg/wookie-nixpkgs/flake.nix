@@ -285,11 +285,10 @@
           # Rendered Kubernetes manifests
           manifests = manifests;
           
-          # Deployment script
-          deploy = kubelib.generateDeployScript {
-            inherit clusterContext clusterConfig;
-            manifestsPackage = manifests;
-          };
+          # Deployment script (Fleet only)
+          deploy = clusterConfig.platform.kubernetes.build.scripts.deploy-fleet;
+          fleet-bundles = clusterConfig.platform.kubernetes.build.fleet-bundles;
+          fleet-status = clusterConfig.platform.kubernetes.build.scripts.fleet-status;
 
           # Multi-cluster management scripts
           create-clusters = clusterConfigA.build.scripts.create-clusters or (pkgs.writeText "placeholder" "Not configured");
@@ -300,18 +299,14 @@
           manifests-cluster-a = manifestsA;
           manifests-cluster-b = manifestsB;
 
-          # Individual cluster deployment scripts
-          deploy-cluster-a = kubelib.generateDeployScript {
-            clusterContext = clusterContextA;
-            clusterConfig = clusterConfigA;
-            manifestsPackage = manifestsA;
-          };
+          # Individual cluster deployment scripts (Fleet only)
+          deploy-cluster-a = clusterConfigA.platform.kubernetes.build.scripts.deploy-fleet;
+          fleet-bundles-cluster-a = clusterConfigA.platform.kubernetes.build.fleet-bundles;
+          fleet-status-cluster-a = clusterConfigA.platform.kubernetes.build.scripts.fleet-status;
 
-          deploy-cluster-b = kubelib.generateDeployScript {
-            clusterContext = clusterContextB;
-            clusterConfig = clusterConfigB;
-            manifestsPackage = manifestsB;
-          };
+          deploy-cluster-b = clusterConfigB.platform.kubernetes.build.scripts.deploy-fleet;
+          fleet-bundles-cluster-b = clusterConfigB.platform.kubernetes.build.fleet-bundles;
+          fleet-status-cluster-b = clusterConfigB.platform.kubernetes.build.scripts.fleet-status;
 
           # Test script for multi-cluster setup
           test-multi-cluster = pkgs.writeShellApplication {
