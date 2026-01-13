@@ -610,26 +610,15 @@ metadata:
 EOF
 
 ##############################################################################
-# Verification
+# Deployment Complete
 ##############################################################################
 
 echo ""
 echo "=== Deployment Complete ==="
 echo ""
-echo "Verification steps:"
-echo ""
-echo "1. Check istiod has discovered endpoints from both clusters:"
-echo "   kubectl exec -n istio-system deployment/istiod --context ${CTX_CLUSTER2} -- curl -s localhost:15014/debug/endpointz | grep hello.demo"
-echo ""
-echo "2. Check meshNetworks configuration:"
-echo "   kubectl get configmap istio -n istio-system --context ${CTX_CLUSTER2} -o jsonpath='{.data.mesh}' | grep -A 20 meshNetworks"
-echo ""
-echo "3. Test cross-cluster connectivity:"
-echo "   kubectl run test-pod --image=curlimages/curl --context ${CTX_CLUSTER2} -n demo-dr -- sleep 3600"
-echo "   kubectl wait --for=condition=ready pod/test-pod -n demo-dr --context ${CTX_CLUSTER2} --timeout=120s"
-echo "   kubectl exec test-pod -n demo-dr --context ${CTX_CLUSTER2} -- curl -s http://hello.demo.svc.cluster.local:8080"
-echo ""
 echo "Gateway addresses configured:"
 echo "  network1 (cluster-a): ${GATEWAY_ADDRESS_NETWORK1}:15443"
 echo "  network2 (cluster-b): ${GATEWAY_ADDRESS_NETWORK2}:15443"
+echo ""
+echo "Run ./test.sh to verify cross-cluster connectivity"
 echo ""
