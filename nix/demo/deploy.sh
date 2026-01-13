@@ -416,33 +416,36 @@ nix build .#istio-istiod-cluster-a --out-link result-istiod-a
 echo "  Building istiod for cluster-b..."
 nix build .#istio-istiod-cluster-b --out-link result-istiod-b
 
-# Patch the manifests with actual gateway IPs
+# Patch the manifests with actual gateway IPs using yq
 echo "  Patching manifests with gateway addresses..."
 echo "    Network1 gateway: ${GATEWAY_ADDRESS_NETWORK1}"
 echo "    Network2 gateway: ${GATEWAY_ADDRESS_NETWORK2}"
 
-# For cluster-a: replace service references with actual IPs
-cat result-istiod-a/manifest.yaml | \
-  sed "s|service: istio-eastwestgateway.istio-system.svc.cluster.local|address: ${GATEWAY_ADDRESS_NETWORK1}|g" | \
-  sed "/gateways:/a\\        - address: ${GATEWAY_ADDRESS_NETWORK2}\\n          port: 15443" | \
-  sed '/- address:/!s/- port: 15443//' > /tmp/istiod-cluster-a-patched.yaml
+# Check if yq is available
+if ! command -v yq &> /dev/null; then
+    echo "  ERROR: yq is required but not installed. Install with: brew install yq"
+    exit 1
+fi
 
-# Simpler approach: use yq to properly update the YAML structure
-echo "  Using yq to patch cluster-a manifest..."
-yq eval "
-  .data.mesh |= (. | from_yaml | 
-    .meshNetworks.network1.gateways[0] = {\"address\": \"${GATEWAY_ADDRESS_NETWORK1}\", \"port\": 15443} |
-    .meshNetworks.network2.gateways[0] = {\"address\": \"${GATEWAY_ADDRESS_NETWORK2}\", \"port\": 15443} |
-    to_yaml)
-" result-istiod-a/manifest.yaml > /tmp/istiod-cluster-a-patched.yaml
+echo "  Patching cluster-a manifest..."
+yq eval '
+  (select(.kind == "ConfigMap" and .metadata.name == "istio") | .data.mesh) |= (
+    . | from_yaml |
+    .meshNetworks.network1.gateways[0] = {"address": "'${GATEWAY_ADDRESS_NETWORK1}'", "port": 15443} |
+    .meshNetworks.network2.gateways[0] = {"address": "'${GATEWAY_ADDRESS_NETWORK2}'", "port": 15443} |
+    to_yaml
+  )
+' result-istiod-a/manifest.yaml > /tmp/istiod-cluster-a-patched.yaml
 
-echo "  Using yq to patch cluster-b manifest..."
-yq eval "
-  .data.mesh |= (. | from_yaml | 
-    .meshNetworks.network1.gateways[0] = {\"address\": \"${GATEWAY_ADDRESS_NETWORK1}\", \"port\": 15443} |
-    .meshNetworks.network2.gateways[0] = {\"address\": \"${GATEWAY_ADDRESS_NETWORK2}\", \"port\": 15443} |
-    to_yaml)
-" result-istiod-b/manifest.yaml > /tmp/istiod-cluster-b-patched.yaml
+echo "  Patching cluster-b manifest..."
+yq eval '
+  (select(.kind == "ConfigMap" and .metadata.name == "istio") | .data.mesh) |= (
+    . | from_yaml |
+    .meshNetworks.network1.gateways[0] = {"address": "'${GATEWAY_ADDRESS_NETWORK1}'", "port": 15443} |
+    .meshNetworks.network2.gateways[0] = {"address": "'${GATEWAY_ADDRESS_NETWORK2}'", "port": 15443} |
+    to_yaml
+  )
+' result-istiod-b/manifest.yaml > /tmp/istiod-cluster-b-patched.yaml
 
 echo "  Deploying istiod to ${CTX_CLUSTER1}..."
 kubectl --context="${CTX_CLUSTER1}" apply -f /tmp/istiod-cluster-a-patched.yaml --validate=false
@@ -501,7 +504,7 @@ spec:
       protocol: TLS
     tls:
       mode: AUTO_PASSTHROUGH
-  hosts:
+    hosts:
     - "*.local"
 EOF
 
