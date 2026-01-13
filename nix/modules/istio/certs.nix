@@ -35,6 +35,9 @@ let
         -subj "/CN=Istio Intermediate CA ${intermediateName}" \
         -out "$out/intermediate.csr"
       
+      # Create serial file
+      echo "01" > "$out/root-cert.srl"
+      
       # Sign intermediate with root CA
       cat > "$out/intermediate.cnf" << EOF
 [v3_intermediate_ca]
@@ -48,7 +51,7 @@ EOF
         -in "$out/intermediate.csr" \
         -CA "$out/root-cert.pem" \
         -CAkey "$out/root-key.pem" \
-        -CAcreateserial \
+        -CAserial "$out/root-cert.srl" \
         -out "$out/ca-cert.pem" \
         -days ${toString validityDays} \
         -sha256 \
@@ -147,6 +150,9 @@ EOF
         -subj "/CN=Istio Intermediate CA ${intermediateName}" \
         -out "$out/intermediate.csr"
       
+      # Create serial file in writable output directory
+      echo "01" > "$out/root-cert.srl"
+      
       # Sign intermediate with root CA
       cat > "$out/intermediate.cnf" << EOF
 [v3_intermediate_ca]
@@ -160,7 +166,7 @@ EOF
         -in "$out/intermediate.csr" \
         -CA ${rootCA}/root-cert.pem \
         -CAkey ${rootCA}/root-key.pem \
-        -CAcreateserial \
+        -CAserial "$out/root-cert.srl" \
         -out "$out/ca-cert.pem" \
         -days ${toString validityDays} \
         -sha256 \
@@ -171,7 +177,7 @@ EOF
       cat "$out/ca-cert.pem" "$out/root-cert.pem" > "$out/cert-chain.pem"
       
       # Clean up
-      rm -f "$out/intermediate.csr" "$out/intermediate.cnf"
+      rm -f "$out/intermediate.csr" "$out/intermediate.cnf" "$out/root-cert.srl"
     '';
 in
 {
