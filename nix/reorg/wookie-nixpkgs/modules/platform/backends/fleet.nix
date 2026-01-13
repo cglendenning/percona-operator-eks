@@ -21,7 +21,11 @@ let
         builtins.readFile "${bundle}/manifest.yaml"
       ) bundleList;
       
-      # Create Fleet Bundle CRD
+      # Check content size (Fleet has 262KB annotation limit)
+      contentSize = builtins.stringLength bundleContent;
+      tooLarge = contentSize > 200000; # Skip Fleet for batches > 200KB
+      
+      # Create Fleet Bundle CRD (only if not too large)
       fleetBundle = {
         apiVersion = "fleet.cattle.io/v1alpha1";
         kind = "Bundle";
@@ -55,7 +59,12 @@ let
         };
       };
     in
-    yaml.generate "${batchName}-bundle.yaml" fleetBundle;
+    {
+      bundle = if tooLarge then null else yaml.generate "${batchName}-bundle.yaml" fleetBundle;
+      manifest = pkgs.writeText "${batchName}-manifest.yaml" bundleContent;
+      tooLarge = tooLarge;
+      batchName = batchName;
+    };
 
   # Generate all Fleet bundles for the cluster
   generateAllFleetBundles = clusterConfig:
@@ -167,16 +176,26 @@ EOF
           echo ""
           
           ${optionalString cfg.backend.fleet.autoInstall ''
-          # Install Fleet if not present
-          if ! kubectl get namespace fleet-system --context "$CONTEXT" &>/dev/null; then
+          # Install or upgrade Fleet
+          if ! helm list -n fleet-system --kube-context "$CONTEXT" 2>/dev/null | grep -q "^fleet"; then
             echo "Installing Fleet..."
-            helm repo add fleet ${cfg.backend.fleet.helmChart.repo}
+            helm repo add fleet ${cfg.backend.fleet.helmChart.repo} 2>/dev/null || true
             helm repo update
-            helm install fleet fleet/fleet \
+            
+            echo "Installing Fleet CRDs..."
+            helm upgrade --install fleet-crd fleet/fleet-crd \
               --namespace fleet-system \
               --create-namespace \
               --wait \
-              --context "$CONTEXT" \
+              --kube-context "$CONTEXT"
+            
+            echo "Installing Fleet controller..."
+            helm upgrade --install fleet fleet/fleet \
+              --namespace fleet-system \
+              --create-namespace \
+              --wait \
+              --timeout 5m \
+              --kube-context "$CONTEXT" \
               ${optionalString (cfg.backend.fleet.helmChart.version != "latest") 
                 "--version ${cfg.backend.fleet.helmChart.version}"}
             echo "Fleet installed successfully"

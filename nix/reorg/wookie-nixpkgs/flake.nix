@@ -315,9 +315,9 @@
             text = builtins.readFile ./lib/helpers/test-multi-cluster.sh;
           };
 
-          # Multi-cluster deployment script (Fleet-based)
-          deploy-multi-cluster = pkgs.writeShellApplication {
-            name = "deploy-multi-cluster";
+          # Fleet infrastructure installation
+          deploy-fleet = pkgs.writeShellApplication {
+            name = "deploy-fleet";
             runtimeInputs = [ 
               pkgs.kubectl 
               pkgs.kubernetes-helm
@@ -325,7 +325,54 @@
             text = ''
               set -euo pipefail
               
-              echo "=== Deploying Multi-Cluster via Fleet ==="
+              echo "=== Installing Fleet Infrastructure ==="
+              echo ""
+              
+              for CLUSTER_CONTEXT in "${clusterContextA}" "${clusterContextB}"; do
+                echo "Installing Fleet in $CLUSTER_CONTEXT..."
+                
+                # Check if Fleet is already installed
+                if helm list -n fleet-system --kube-context "$CLUSTER_CONTEXT" 2>/dev/null | grep -q "^fleet"; then
+                  echo "Fleet already installed in $CLUSTER_CONTEXT"
+                else
+                  echo "Adding Fleet helm repo..."
+                  helm repo add fleet https://rancher.github.io/fleet-helm-charts/ 2>/dev/null || true
+                  helm repo update
+                  
+                  echo "Installing Fleet CRDs..."
+                  helm upgrade --install fleet-crd fleet/fleet-crd \
+                    --namespace fleet-system \
+                    --create-namespace \
+                    --wait \
+                    --kube-context "$CLUSTER_CONTEXT"
+                  
+                  echo "Installing Fleet controller..."
+                  helm upgrade --install fleet fleet/fleet \
+                    --namespace fleet-system \
+                    --create-namespace \
+                    --wait \
+                    --timeout 5m \
+                    --kube-context "$CLUSTER_CONTEXT"
+                  echo "Fleet installed successfully in $CLUSTER_CONTEXT"
+                fi
+                echo ""
+              done
+              
+              echo "=== Fleet infrastructure deployment complete ==="
+            '';
+          };
+
+          # Multi-cluster Istio deployment script (Fleet-based)
+          deploy-multi-cluster-istio = pkgs.writeShellApplication {
+            name = "deploy-multi-cluster-istio";
+            runtimeInputs = [ 
+              pkgs.kubectl 
+              pkgs.kubernetes-helm
+            ];
+            text = ''
+              set -euo pipefail
+              
+              echo "=== Deploying Multi-Cluster Istio via Fleet ==="
               echo ""
               
               echo "Deploying to cluster-a..."
@@ -336,7 +383,7 @@
               CLUSTER_CONTEXT="${clusterContextB}" ${clusterConfigB.build.scripts.deploy-fleet}/bin/deploy-multi-cluster-b-fleet
               
               echo ""
-              echo "=== Multi-cluster deployment complete ==="
+              echo "=== Multi-cluster Istio deployment complete ==="
             '';
           };
           
@@ -388,9 +435,14 @@
           program = "${self.packages.${system}.deploy-cluster-b}";
         };
 
-        deploy-multi-cluster = {
+        deploy-fleet = {
           type = "app";
-          program = "${self.packages.${system}.deploy-multi-cluster}/bin/deploy-multi-cluster";
+          program = "${self.packages.${system}.deploy-fleet}/bin/deploy-fleet";
+        };
+
+        deploy-multi-cluster-istio = {
+          type = "app";
+          program = "${self.packages.${system}.deploy-multi-cluster-istio}/bin/deploy-multi-cluster-istio";
         };
 
         test-multi-cluster = {
@@ -428,7 +480,8 @@
               echo "  nix run .#create-clusters       - Create cluster-a and cluster-b"
               echo "  nix run .#delete-clusters       - Delete both clusters"
               echo "  nix run .#status-clusters       - Show cluster status"
-              echo "  nix run .#deploy-multi-cluster  - Deploy to both clusters with remote secrets"
+              echo "  nix run .#deploy-fleet           - Install Fleet infrastructure in both clusters"
+              echo "  nix run .#deploy-multi-cluster-istio - Deploy Istio to both clusters via Fleet"
               echo "  nix run .#test-multi-cluster    - Test cross-cluster connectivity"
               echo ""
               echo "Tools available:"
