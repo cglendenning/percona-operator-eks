@@ -27,12 +27,25 @@ Datacenter 1 (Cluster A)           Datacenter 2 (Cluster B)
 
 ## Quick Start
 
+**Nix-based deployment (recommended):**
+
 ```bash
-cd demo
+cd nix/demo
+
+./setup-clusters.sh      # Create k3d clusters with proper TLS SANs
+nix run ..#deploy        # Deploy everything with Nix
+./test.sh                # Verify connectivity
+./cleanup.sh             # Remove all
+```
+
+**Legacy bash script:**
+
+```bash
+cd nix/demo
 chmod +x *.sh
 
 ./setup-clusters.sh      # Create k3d clusters with proper TLS SANs
-./deploy.sh              # Deploy Istio with endpoint discovery
+./deploy.sh              # Deploy Istio with endpoint discovery (bash version)
 ./test.sh                # Verify connectivity
 ./cleanup.sh             # Remove all
 ```

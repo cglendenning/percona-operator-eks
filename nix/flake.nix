@@ -94,6 +94,205 @@
             };
           };
 
+          # East-west gateways
+          istio-eastwestgateway-cluster-a = istioLib.mkEastWestGateway {
+            namespace = istioNamespace;
+            network = "network1";
+            nodePort = 30443;
+          };
+
+          istio-eastwestgateway-cluster-b = istioLib.mkEastWestGateway {
+            namespace = istioNamespace;
+            network = "network2";
+            nodePort = 30443;
+          };
+
+          # Demo applications
+          demo-app-cluster-a = istioLib.mkDemoApp {
+            namespace = "demo";
+          };
+
+          demo-app-cluster-b = istioLib.mkDemoApp {
+            namespace = "demo-dr";
+            network = "network2";
+          };
+
+          # Multi-cluster deployment script
+          multi-cluster-deploy = pkgs.writeShellApplication {
+            name = "multi-cluster-deploy";
+            runtimeInputs = [ pkgs.kubectl pkgs.istioctl pkgs.jq pkgs.docker pkgs.yq-go ];
+            text = ''
+              set -euo pipefail
+
+              CTX_CLUSTER1="k3d-cluster-a"
+              CTX_CLUSTER2="k3d-cluster-b"
+
+              echo "=== Deploying Istio Multi-Primary Multi-Network ==="
+              echo ""
+
+              # Step 1: Deploy istio-base (CRDs)
+              echo "Step 1: Deploying Istio base (CRDs)..."
+              kubectl --context="$CTX_CLUSTER1" apply -f ${self.packages.${system}.istio-namespace-cluster-a}/manifest.yaml
+              kubectl --context="$CTX_CLUSTER1" apply -f ${self.packages.${system}.istio-base}/manifest.yaml --validate=false
+              
+              kubectl --context="$CTX_CLUSTER2" apply -f ${self.packages.${system}.istio-namespace-cluster-b}/manifest.yaml
+              kubectl --context="$CTX_CLUSTER2" apply -f ${self.packages.${system}.istio-base}/manifest.yaml --validate=false
+
+              # Step 2: Deploy istiod (initial)
+              echo ""
+              echo "Step 2: Deploying istiod (initial deployment)..."
+              kubectl --context="$CTX_CLUSTER1" apply -f ${self.packages.${system}.istio-istiod-cluster-a}/manifest.yaml --validate=false
+              kubectl --context="$CTX_CLUSTER2" apply -f ${self.packages.${system}.istio-istiod-cluster-b}/manifest.yaml --validate=false
+
+              echo "  Waiting for istiod..."
+              kubectl --context="$CTX_CLUSTER1" wait --for=condition=available --timeout=120s deployment/istiod -n istio-system
+              kubectl --context="$CTX_CLUSTER2" wait --for=condition=available --timeout=120s deployment/istiod -n istio-system
+
+              # Step 3: Deploy east-west gateways
+              echo ""
+              echo "Step 3: Deploying east-west gateways..."
+              kubectl --context="$CTX_CLUSTER1" apply -f ${self.packages.${system}.istio-eastwestgateway-cluster-a}/manifest.yaml
+              kubectl --context="$CTX_CLUSTER2" apply -f ${self.packages.${system}.istio-eastwestgateway-cluster-b}/manifest.yaml
+
+              echo "  Waiting for gateways..."
+              kubectl --context="$CTX_CLUSTER1" wait --for=condition=available --timeout=120s deployment/istio-eastwestgateway -n istio-system
+              kubectl --context="$CTX_CLUSTER2" wait --for=condition=available --timeout=120s deployment/istio-eastwestgateway -n istio-system
+
+              # Step 4: Get gateway IPs and patch services
+              echo ""
+              echo "Step 4: Configuring gateway external IPs..."
+
+              CLUSTER_A_API_IP=$(docker inspect k3d-cluster-a-server-0 | jq -r '.[0].NetworkSettings.Networks["k3d-multicluster"].IPAddress')
+              CLUSTER_B_API_IP=$(docker inspect k3d-cluster-b-server-0 | jq -r '.[0].NetworkSettings.Networks["k3d-multicluster"].IPAddress')
+
+              echo "  Cluster A API: $CLUSTER_A_API_IP"
+              echo "  Cluster B API: $CLUSTER_B_API_IP"
+
+              CLUSTER_A_NODE_IPS=$(docker network inspect k3d-multicluster | jq -r '.[] | .Containers | to_entries[] | select(.value.Name | startswith("k3d-cluster-a")) | .value.IPv4Address | split("/")[0]' | tr '\n' ',' | sed 's/,$//')
+              CLUSTER_B_NODE_IPS=$(docker network inspect k3d-multicluster | jq -r '.[] | .Containers | to_entries[] | select(.value.Name | startswith("k3d-cluster-b")) | .value.IPv4Address | split("/")[0]' | tr '\n' ',' | sed 's/,$//')
+
+              IFS=',' read -ra CLUSTER_A_IPS_ARRAY <<< "$CLUSTER_A_NODE_IPS"
+              IFS=',' read -ra CLUSTER_B_IPS_ARRAY <<< "$CLUSTER_B_NODE_IPS"
+
+              CLUSTER_A_EXTERNAL_IPS_JSON=$(printf '%s\n' "''${CLUSTER_A_IPS_ARRAY[@]}" | jq -R . | jq -s .)
+              CLUSTER_B_EXTERNAL_IPS_JSON=$(printf '%s\n' "''${CLUSTER_B_IPS_ARRAY[@]}" | jq -R . | jq -s .)
+
+              kubectl --context="$CTX_CLUSTER1" patch service istio-eastwestgateway -n istio-system -p "{\"spec\":{\"externalIPs\":$CLUSTER_A_EXTERNAL_IPS_JSON}}"
+              kubectl --context="$CTX_CLUSTER2" patch service istio-eastwestgateway -n istio-system -p "{\"spec\":{\"externalIPs\":$CLUSTER_B_EXTERNAL_IPS_JSON}}"
+
+              GATEWAY_ADDRESS_NETWORK1="''${CLUSTER_A_IPS_ARRAY[0]}"
+              GATEWAY_ADDRESS_NETWORK2="''${CLUSTER_B_IPS_ARRAY[0]}"
+
+              echo "  Gateway network1: $GATEWAY_ADDRESS_NETWORK1"
+              echo "  Gateway network2: $GATEWAY_ADDRESS_NETWORK2"
+
+              # Step 5: Update istiod with gateway addresses
+              echo ""
+              echo "Step 5: Updating istiod with gateway addresses..."
+
+              yq eval '
+                (select(.kind == "ConfigMap" and .metadata.name == "istio") | .data.mesh) |= (
+                  . | from_yaml |
+                  .meshNetworks.network1.gateways[0] = {"address": "'"$GATEWAY_ADDRESS_NETWORK1"'", "port": 15443} |
+                  .meshNetworks.network2.gateways[0] = {"address": "'"$GATEWAY_ADDRESS_NETWORK2"'", "port": 15443} |
+                  to_yaml
+                ) |
+                (select(.kind == "ConfigMap" and .metadata.name == "istio") | .data.meshNetworks) = (
+                  {"networks": {
+                    "network1": {
+                      "endpoints": [{"fromRegistry": "cluster-a"}],
+                      "gateways": [{"address": "'"$GATEWAY_ADDRESS_NETWORK1"'", "port": 15443}]
+                    },
+                    "network2": {
+                      "endpoints": [{"fromRegistry": "cluster-b"}],
+                      "gateways": [{"address": "'"$GATEWAY_ADDRESS_NETWORK2"'", "port": 15443}]
+                    }
+                  }} | to_yaml
+                )
+              ' ${self.packages.${system}.istio-istiod-cluster-a}/manifest.yaml > /tmp/istiod-cluster-a-patched.yaml
+
+              yq eval '
+                (select(.kind == "ConfigMap" and .metadata.name == "istio") | .data.mesh) |= (
+                  . | from_yaml |
+                  .meshNetworks.network1.gateways[0] = {"address": "'"$GATEWAY_ADDRESS_NETWORK1"'", "port": 15443} |
+                  .meshNetworks.network2.gateways[0] = {"address": "'"$GATEWAY_ADDRESS_NETWORK2"'", "port": 15443} |
+                  to_yaml
+                ) |
+                (select(.kind == "ConfigMap" and .metadata.name == "istio") | .data.meshNetworks) = (
+                  {"networks": {
+                    "network1": {
+                      "endpoints": [{"fromRegistry": "cluster-a"}],
+                      "gateways": [{"address": "'"$GATEWAY_ADDRESS_NETWORK1"'", "port": 15443}]
+                    },
+                    "network2": {
+                      "endpoints": [{"fromRegistry": "cluster-b"}],
+                      "gateways": [{"address": "'"$GATEWAY_ADDRESS_NETWORK2"'", "port": 15443}]
+                    }
+                  }} | to_yaml
+                )
+              ' ${self.packages.${system}.istio-istiod-cluster-b}/manifest.yaml > /tmp/istiod-cluster-b-patched.yaml
+
+              kubectl --context="$CTX_CLUSTER1" apply -f /tmp/istiod-cluster-a-patched.yaml --validate=false
+              kubectl --context="$CTX_CLUSTER2" apply -f /tmp/istiod-cluster-b-patched.yaml --validate=false
+
+              kubectl --context="$CTX_CLUSTER1" wait --for=condition=available --timeout=120s deployment/istiod -n istio-system
+              kubectl --context="$CTX_CLUSTER2" wait --for=condition=available --timeout=120s deployment/istiod -n istio-system
+
+              # Step 6: Create remote secrets
+              echo ""
+              echo "Step 6: Creating remote secrets for endpoint discovery..."
+
+              istioctl create-remote-secret \
+                --context="$CTX_CLUSTER2" \
+                --name=cluster-b \
+                --server="https://$CLUSTER_B_API_IP:6443" | \
+                kubectl apply -f - --context="$CTX_CLUSTER1"
+
+              istioctl create-remote-secret \
+                --context="$CTX_CLUSTER1" \
+                --name=cluster-a \
+                --server="https://$CLUSTER_A_API_IP:6443" | \
+                kubectl apply -f - --context="$CTX_CLUSTER2"
+
+              echo "  Waiting for cross-cluster endpoint discovery..."
+              sleep 10
+
+              echo "  Restarting istiod pods..."
+              kubectl --context="$CTX_CLUSTER1" rollout restart deployment/istiod -n istio-system
+              kubectl --context="$CTX_CLUSTER2" rollout restart deployment/istiod -n istio-system
+
+              kubectl --context="$CTX_CLUSTER1" rollout status deployment/istiod -n istio-system --timeout=120s
+              kubectl --context="$CTX_CLUSTER2" rollout status deployment/istiod -n istio-system --timeout=120s
+
+              # Step 7: Deploy demo apps
+              echo ""
+              echo "Step 7: Deploying demo applications..."
+
+              kubectl --context="$CTX_CLUSTER1" apply -f ${self.packages.${system}.demo-app-cluster-a}/manifest.yaml
+              kubectl --context="$CTX_CLUSTER2" apply -f ${self.packages.${system}.demo-app-cluster-b}/manifest.yaml
+
+              echo "  Waiting for hello pods..."
+              for i in {1..30}; do
+                POD_COUNT=$(kubectl --context="$CTX_CLUSTER1" get pods -n demo -l app=hello --no-headers 2>/dev/null | wc -l || echo 0)
+                if [ "$POD_COUNT" -gt 0 ]; then
+                  break
+                fi
+                echo "    Waiting for StatefulSet to create pods... ($i/30)"
+                sleep 2
+              done
+
+              kubectl --context="$CTX_CLUSTER1" wait --for=condition=ready --timeout=300s pod -l app=hello -n demo
+
+              echo ""
+              echo "=== Deployment Complete ==="
+              echo ""
+              echo "Gateway addresses configured:"
+              echo "  network1 (cluster-a): $GATEWAY_ADDRESS_NETWORK1:15443"
+              echo "  network2 (cluster-b): $GATEWAY_ADDRESS_NETWORK2:15443"
+              echo ""
+            '';
+          };
+
           # Istio ingress gateway (commented out - k3d doesn't support sysctls)
           # Only needed for HTTP/HTTPS external traffic, not for PXC replication
           # istio-gateway = istioLib.mkIstioGateway {
@@ -316,6 +515,14 @@ EOF
         status = {
           type = "app";
           program = "${self.packages.${system}.k3d-scripts}/bin/k3d-status";
+        };
+        deploy = {
+          type = "app";
+          program = "${self.packages.${system}.multi-cluster-deploy}/bin/multi-cluster-deploy";
+        };
+        default = {
+          type = "app";
+          program = "${self.packages.${system}.multi-cluster-deploy}/bin/multi-cluster-deploy";
         };
       });
     };
