@@ -586,7 +586,7 @@ spec:
       containers:
       - name: hello
         image: docker.io/istio/examples-helloworld-v1:latest
-    ports:
+        ports:
         - containerPort: 8080
         env:
         - name: SERVICE_VERSION
