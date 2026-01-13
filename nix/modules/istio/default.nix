@@ -129,7 +129,7 @@ in
       name = "istio-base";
       chart = "base";
       repo = "https://istio-release.storage.googleapis.com/charts";
-      version = "1.24.2";
+      version = "1.28.2";
       inherit namespace values;
       createNamespace = false;
     };
@@ -143,7 +143,7 @@ in
       name = "istiod";
       chart = "istiod";
       repo = "https://istio-release.storage.googleapis.com/charts";
-      version = "1.24.2";
+      version = "1.28.2";
       inherit namespace values;
       createNamespace = false;
     };
@@ -157,7 +157,7 @@ in
       name = "istio-ingressgateway";
       chart = "gateway";
       repo = "https://istio-release.storage.googleapis.com/charts";
-      version = "1.24.2";
+      version = "1.28.2";
       inherit namespace values;
       createNamespace = false;
     };

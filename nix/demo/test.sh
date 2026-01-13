@@ -96,14 +96,21 @@ else
   # Check 2: Istiod loaded meshNetworks
   echo "CHECK 2: Istiod runtime meshNetworks configuration"
   echo "-------------------------------------------"
-  ISTIOD_MESH=$(kubectl exec -n istio-system deployment/istiod --context="${CTX_CLUSTER2}" -- curl -s localhost:15014/debug/mesh 2>/dev/null | grep -o '"meshNetworks":[^,]*')
-  echo "$ISTIOD_MESH"
-  if echo "$ISTIOD_MESH" | grep -q "null"; then
+  ISTIOD_MESH_FULL=$(kubectl exec -n istio-system deployment/istiod --context="${CTX_CLUSTER2}" -- curl -s localhost:15014/debug/mesh 2>/dev/null || true)
+  ISTIOD_MESH=$(echo "$ISTIOD_MESH_FULL" | grep -o '"meshNetworks":[^}]*}' || echo "")
+  
+  if [ -z "$ISTIOD_MESH" ]; then
+    echo "✗ PROBLEM: Could not extract meshNetworks from istiod"
+    echo "Full mesh config:"
+    echo "$ISTIOD_MESH_FULL" | head -20
+  elif echo "$ISTIOD_MESH" | grep -q "null"; then
     echo "✗ CRITICAL PROBLEM: Istiod has meshNetworks: null"
     echo "  This means istiod did NOT load the meshNetworks config from ConfigMap"
     echo "  Istiod will not know how to route cross-cluster traffic"
+    echo "  meshNetworks value: $ISTIOD_MESH"
   else
     echo "✓ Istiod has meshNetworks configured"
+    echo "  $ISTIOD_MESH"
   fi
   echo ""
   
@@ -111,7 +118,7 @@ else
   echo "CHECK 3: Istiod endpoint discovery for hello service"
   echo "-------------------------------------------"
   HELLO_ENDPOINTS=$(kubectl exec -n istio-system deployment/istiod --context="${CTX_CLUSTER2}" -- \
-    curl -s localhost:15014/debug/endpointz 2>/dev/null | grep -o '"hello.demo.svc.cluster.local"[^}]*"Addresses":\[[^]]*\]')
+    curl -s localhost:15014/debug/endpointz 2>/dev/null | grep -o '"hello.demo.svc.cluster.local"[^}]*"Addresses":\[[^]]*\]' || true)
   if [ -z "$HELLO_ENDPOINTS" ]; then
     echo "✗ PROBLEM: Istiod does not see hello service endpoints"
     echo "  Check if remote secret is configured correctly"
@@ -127,7 +134,7 @@ else
   GATEWAY_ENDPOINTS=$(kubectl exec -n istio-system deployment/istiod --context="${CTX_CLUSTER2}" -- \
     curl -s localhost:15014/debug/endpointz 2>/dev/null | \
     grep -A 10 '"istio-eastwestgateway.istio-system.svc.cluster.local"' | \
-    grep -A 3 '"ServicePortName":"tls"' | grep '"EndpointPort":15443')
+    grep -A 3 '"ServicePortName":"tls"' | grep '"EndpointPort":15443' || true)
   if [ -z "$GATEWAY_ENDPOINTS" ]; then
     echo "✗ PROBLEM: Istiod does not see gateway on port 15443"
   else
@@ -140,7 +147,7 @@ else
   echo "-------------------------------------------"
   echo "Looking for hello service endpoints in Envoy..."
   ENVOY_ENDPOINTS=$(kubectl exec test-pod -n demo-dr -c istio-proxy --context="${CTX_CLUSTER2}" -- \
-    pilot-agent request GET clusters 2>/dev/null | grep "hello.demo.svc.cluster.local::" | grep "::address::")
+    pilot-agent request GET clusters 2>/dev/null | grep "hello.demo.svc.cluster.local::" | grep "::address::" || true)
   
   if [ -z "$ENVOY_ENDPOINTS" ]; then
     echo "✗ CRITICAL PROBLEM: Envoy has NO endpoints for hello service"
@@ -167,13 +174,13 @@ else
   # Check 6: Envoy knows about service but summary
   echo "CHECK 6: Envoy service registry summary"
   echo "-------------------------------------------"
-  kubectl exec test-pod -n demo-dr -c istio-proxy --context="${CTX_CLUSTER2}" -- \
-    pilot-agent request GET clusters 2>/dev/null | grep "hello.demo" | head -5 || echo "  No hello service found in Envoy config"
+  (kubectl exec test-pod -n demo-dr -c istio-proxy --context="${CTX_CLUSTER2}" -- \
+    pilot-agent request GET clusters 2>/dev/null | grep "hello.demo" | head -5) || echo "  No hello service found in Envoy config"
   
   echo ""
   echo "CHECK 7: Istiod logs"
   echo "-------------------------------------------"
-  kubectl logs -n istio-system deployment/istiod --context="${CTX_CLUSTER2}" --tail=20 | grep -i error || echo "  No recent errors"
+  (kubectl logs -n istio-system deployment/istiod --context="${CTX_CLUSTER2}" --tail=20 2>/dev/null | grep -i error) || echo "  No recent errors"
   
   exit 1
 fi
