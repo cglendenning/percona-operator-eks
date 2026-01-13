@@ -117,6 +117,34 @@
             network = "network2";
           };
 
+          # Certificate generation for multi-cluster mTLS
+          istio-shared-root-ca = istioLib.mkSharedRootCA {
+            rootCAName = "Istio Root CA";
+            validityDays = 3650;
+          };
+
+          istio-cacerts-cluster-a = istioLib.mkIntermediateCA {
+            intermediateName = "cluster-a";
+            rootCA = self.packages.${system}.istio-shared-root-ca;
+            validityDays = 3650;
+          };
+
+          istio-cacerts-cluster-b = istioLib.mkIntermediateCA {
+            intermediateName = "cluster-b";
+            rootCA = self.packages.${system}.istio-shared-root-ca;
+            validityDays = 3650;
+          };
+
+          istio-cacerts-secret-cluster-a = istioLib.mkCACertsSecret {
+            namespace = "istio-system";
+            certs = self.packages.${system}.istio-cacerts-cluster-a;
+          };
+
+          istio-cacerts-secret-cluster-b = istioLib.mkCACertsSecret {
+            namespace = "istio-system";
+            certs = self.packages.${system}.istio-cacerts-cluster-b;
+          };
+
           # Multi-cluster deployment script
           multi-cluster-deploy = pkgs.writeShellApplication {
             name = "multi-cluster-deploy";
@@ -137,6 +165,15 @@
               
               kubectl --context="$CTX_CLUSTER2" apply -f ${self.packages.${system}.istio-namespace-cluster-b}/manifest.yaml
               kubectl --context="$CTX_CLUSTER2" apply -f ${self.packages.${system}.istio-base}/manifest.yaml --validate=false
+
+              # Step 1.5: Deploy CA certificates for mTLS trust
+              echo ""
+              echo "Step 1.5: Installing CA certificates for cross-cluster mTLS trust..."
+              kubectl --context="$CTX_CLUSTER1" apply -f ${self.packages.${system}.istio-cacerts-secret-cluster-a}/manifest.yaml
+              kubectl --context="$CTX_CLUSTER2" apply -f ${self.packages.${system}.istio-cacerts-secret-cluster-b}/manifest.yaml
+              
+              echo "  Shared root CA installed in both clusters"
+              echo "  Each cluster has unique intermediate CA signed by shared root"
 
               # Step 2: Deploy istiod (initial)
               echo ""

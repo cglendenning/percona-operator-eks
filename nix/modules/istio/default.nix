@@ -1,11 +1,12 @@
 # Istio configuration module
 #
 # Provides minimal Istio configurations for k3d
-# Exports: mkNamespace, mkIstioBase, mkIstiod, mkIstioGateway, defaultValues
+# Exports: mkNamespace, mkIstioBase, mkIstiod, mkIstioGateway, defaultValues, certificate functions
 { pkgs }:
 
 let
   helmLib = import ../helm/default.nix { inherit pkgs; };
+  certsLib = import ./certs.nix { inherit pkgs; };
 in
 {
   # Minimal values - let Helm charts handle defaults
@@ -450,4 +451,7 @@ in
       echo "---" >> $out/manifest.yaml
       cat ${yaml.generate "statefulset.yaml" statefulset} >> $out/manifest.yaml
     '';
+
+  # Re-export certificate functions
+  inherit (certsLib) mkSharedRootCA mkIntermediateCA mkCACertsSecret;
 }
