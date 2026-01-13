@@ -36,11 +36,36 @@ kubectl --context="${CTX_CLUSTER2}" apply -f result-base/manifest.yaml --validat
 cd demo
 
 ##############################################################################
-# Step 2: Deploy east-west gateways to both clusters
+# Step 2: Deploy istiod (initial deployment without gateway addresses)
 ##############################################################################
 
 echo ""
-echo "Step 2: Deploying east-west gateways..."
+echo "Step 2: Deploying istiod (initial deployment)..."
+
+cd ..
+nix build .#istio-istiod-cluster-a --out-link result-istiod-a
+nix build .#istio-istiod-cluster-b --out-link result-istiod-b
+
+echo "  Deploying istiod to ${CTX_CLUSTER1}..."
+kubectl --context="${CTX_CLUSTER1}" apply -f result-istiod-a/manifest.yaml --validate=false
+
+echo "  Deploying istiod to ${CTX_CLUSTER2}..."
+kubectl --context="${CTX_CLUSTER2}" apply -f result-istiod-b/manifest.yaml --validate=false
+
+echo "  Waiting for istiod in ${CTX_CLUSTER1}..."
+kubectl --context="${CTX_CLUSTER1}" wait --for=condition=available --timeout=120s deployment/istiod -n istio-system
+
+echo "  Waiting for istiod in ${CTX_CLUSTER2}..."
+kubectl --context="${CTX_CLUSTER2}" wait --for=condition=available --timeout=120s deployment/istiod -n istio-system
+
+cd demo
+
+##############################################################################
+# Step 3: Deploy east-west gateways to both clusters
+##############################################################################
+
+echo ""
+echo "Step 3: Deploying east-west gateways..."
 
 echo "  Deploying to ${CTX_CLUSTER1}..."
 kubectl --context="${CTX_CLUSTER1}" apply -f - <<'EOF'
@@ -106,6 +131,14 @@ spec:
       containers:
       - name: istio-proxy
         image: docker.io/istio/proxyv2:1.24.2
+        args:
+        - proxy
+        - router
+        - --domain
+        - $(POD_NAMESPACE).svc.cluster.local
+        - --proxyLogLevel=warning
+        - --proxyComponentLogLevel=misc:error
+        - --log_output_level=default:info
         ports:
         - containerPort: 15021
           protocol: TCP
@@ -116,6 +149,22 @@ spec:
         - containerPort: 15017
           protocol: TCP
         env:
+        - name: POD_NAME
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.name
+        - name: POD_NAMESPACE
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.namespace
+        - name: INSTANCE_IP
+          valueFrom:
+            fieldRef:
+              fieldPath: status.podIP
+        - name: SERVICE_ACCOUNT
+          valueFrom:
+            fieldRef:
+              fieldPath: spec.serviceAccountName
         - name: ISTIO_META_ROUTER_MODE
           value: "sni-dnat"
         - name: ISTIO_META_REQUESTED_NETWORK_VIEW
@@ -223,6 +272,14 @@ spec:
       containers:
       - name: istio-proxy
         image: docker.io/istio/proxyv2:1.24.2
+        args:
+        - proxy
+        - router
+        - --domain
+        - $(POD_NAMESPACE).svc.cluster.local
+        - --proxyLogLevel=warning
+        - --proxyComponentLogLevel=misc:error
+        - --log_output_level=default:info
         ports:
         - containerPort: 15021
           protocol: TCP
@@ -233,6 +290,22 @@ spec:
         - containerPort: 15017
           protocol: TCP
         env:
+        - name: POD_NAME
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.name
+        - name: POD_NAMESPACE
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.namespace
+        - name: INSTANCE_IP
+          valueFrom:
+            fieldRef:
+              fieldPath: status.podIP
+        - name: SERVICE_ACCOUNT
+          valueFrom:
+            fieldRef:
+              fieldPath: spec.serviceAccountName
         - name: ISTIO_META_ROUTER_MODE
           value: "sni-dnat"
         - name: ISTIO_META_REQUESTED_NETWORK_VIEW
@@ -281,11 +354,11 @@ kubectl --context="${CTX_CLUSTER1}" wait --for=condition=available --timeout=120
 kubectl --context="${CTX_CLUSTER2}" wait --for=condition=available --timeout=120s deployment/istio-eastwestgateway -n istio-system
 
 ##############################################################################
-# Step 3: Get gateway node IPs and patch services with externalIPs
+# Step 4: Get gateway node IPs and patch services with externalIPs
 ##############################################################################
 
 echo ""
-echo "Step 3: Configuring gateway external IPs..."
+echo "Step 4: Configuring gateway external IPs..."
 
 # Get cluster-a API server IP on shared network
 CLUSTER_A_API_IP=$(docker inspect k3d-cluster-a-server-0 | jq -r '.[0].NetworkSettings.Networks["k3d-multicluster"].IPAddress')
@@ -332,63 +405,50 @@ echo "  Gateway address for network2: ${GATEWAY_ADDRESS_NETWORK2}"
 ##############################################################################
 
 echo ""
-echo "Step 4: Building istiod manifests with gateway addresses..."
+echo "Step 4: Building and deploying istiod with gateway addresses..."
 
 cd ..
 
-# Build istiod for cluster-a with gateway addresses
-nix eval --impure --expr "
-let
-  pkgs = import <nixpkgs> {};
-  istioLib = (import ./modules/istio/default.nix { inherit pkgs; });
-in
-  pkgs.runCommand \"istio-istiod-cluster-a\" {} ''
-    mkdir -p \$out
-    cat \${istioLib.mkIstiod {
-      namespace = \"istio-system\";
-      values = istioLib.mkMultiClusterValues {
-        clusterId = \"cluster-a\";
-        network = \"network1\";
-        meshId = \"mesh1\";
-        gatewayAddresses = {
-          network1 = \"${GATEWAY_ADDRESS_NETWORK1}\";
-          network2 = \"${GATEWAY_ADDRESS_NETWORK2}\";
-        };
-      };
-    }}/manifest.yaml > \$out/manifest.yaml
-  ''
-" --raw | nix-store --realize > /tmp/istiod-cluster-a-path.txt
-ISTIOD_CLUSTER_A_PATH=$(cat /tmp/istiod-cluster-a-path.txt)
+# Build base istiod manifests with gateway addresses
+echo "  Building istiod for cluster-a..."
+nix build .#istio-istiod-cluster-a --out-link result-istiod-a
 
-# Build istiod for cluster-b with gateway addresses
-nix eval --impure --expr "
-let
-  pkgs = import <nixpkgs> {};
-  istioLib = (import ./modules/istio/default.nix { inherit pkgs; });
-in
-  pkgs.runCommand \"istio-istiod-cluster-b\" {} ''
-    mkdir -p \$out
-    cat \${istioLib.mkIstiod {
-      namespace = \"istio-system\";
-      values = istioLib.mkMultiClusterValues {
-        clusterId = \"cluster-b\";
-        network = \"network2\";
-        meshId = \"mesh1\";
-        gatewayAddresses = {
-          network1 = \"${GATEWAY_ADDRESS_NETWORK1}\";
-          network2 = \"${GATEWAY_ADDRESS_NETWORK2}\";
-        };
-      };
-    }}/manifest.yaml > \$out/manifest.yaml
-  ''
-" --raw | nix-store --realize > /tmp/istiod-cluster-b-path.txt
-ISTIOD_CLUSTER_B_PATH=$(cat /tmp/istiod-cluster-b-path.txt)
+echo "  Building istiod for cluster-b..."
+nix build .#istio-istiod-cluster-b --out-link result-istiod-b
+
+# Patch the manifests with actual gateway IPs
+echo "  Patching manifests with gateway addresses..."
+echo "    Network1 gateway: ${GATEWAY_ADDRESS_NETWORK1}"
+echo "    Network2 gateway: ${GATEWAY_ADDRESS_NETWORK2}"
+
+# For cluster-a: replace service references with actual IPs
+cat result-istiod-a/manifest.yaml | \
+  sed "s|service: istio-eastwestgateway.istio-system.svc.cluster.local|address: ${GATEWAY_ADDRESS_NETWORK1}|g" | \
+  sed "/gateways:/a\\        - address: ${GATEWAY_ADDRESS_NETWORK2}\\n          port: 15443" | \
+  sed '/- address:/!s/- port: 15443//' > /tmp/istiod-cluster-a-patched.yaml
+
+# Simpler approach: use yq to properly update the YAML structure
+echo "  Using yq to patch cluster-a manifest..."
+yq eval "
+  .data.mesh |= (. | from_yaml | 
+    .meshNetworks.network1.gateways[0] = {\"address\": \"${GATEWAY_ADDRESS_NETWORK1}\", \"port\": 15443} |
+    .meshNetworks.network2.gateways[0] = {\"address\": \"${GATEWAY_ADDRESS_NETWORK2}\", \"port\": 15443} |
+    to_yaml)
+" result-istiod-a/manifest.yaml > /tmp/istiod-cluster-a-patched.yaml
+
+echo "  Using yq to patch cluster-b manifest..."
+yq eval "
+  .data.mesh |= (. | from_yaml | 
+    .meshNetworks.network1.gateways[0] = {\"address\": \"${GATEWAY_ADDRESS_NETWORK1}\", \"port\": 15443} |
+    .meshNetworks.network2.gateways[0] = {\"address\": \"${GATEWAY_ADDRESS_NETWORK2}\", \"port\": 15443} |
+    to_yaml)
+" result-istiod-b/manifest.yaml > /tmp/istiod-cluster-b-patched.yaml
 
 echo "  Deploying istiod to ${CTX_CLUSTER1}..."
-kubectl --context="${CTX_CLUSTER1}" apply -f "${ISTIOD_CLUSTER_A_PATH}/manifest.yaml" --validate=false
+kubectl --context="${CTX_CLUSTER1}" apply -f /tmp/istiod-cluster-a-patched.yaml --validate=false
 
 echo "  Deploying istiod to ${CTX_CLUSTER2}..."
-kubectl --context="${CTX_CLUSTER2}" apply -f "${ISTIOD_CLUSTER_B_PATH}/manifest.yaml" --validate=false
+kubectl --context="${CTX_CLUSTER2}" apply -f /tmp/istiod-cluster-b-patched.yaml --validate=false
 
 cd demo
 
