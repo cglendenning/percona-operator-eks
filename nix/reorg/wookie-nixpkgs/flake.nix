@@ -286,9 +286,9 @@
           manifests = manifests;
           
           # Deployment script (Fleet only)
-          deploy = clusterConfig.platform.kubernetes.build.scripts.deploy-fleet;
-          fleet-bundles = clusterConfig.platform.kubernetes.build.fleet-bundles;
-          fleet-status = clusterConfig.platform.kubernetes.build.scripts.fleet-status;
+          deploy = clusterConfig.build.scripts.deploy-fleet;
+          fleet-bundles = clusterConfig.build.fleet-bundles;
+          fleet-status = clusterConfig.build.scripts.fleet-status;
 
           # Multi-cluster management scripts
           create-clusters = clusterConfigA.build.scripts.create-clusters or (pkgs.writeText "placeholder" "Not configured");
@@ -300,13 +300,13 @@
           manifests-cluster-b = manifestsB;
 
           # Individual cluster deployment scripts (Fleet only)
-          deploy-cluster-a = clusterConfigA.platform.kubernetes.build.scripts.deploy-fleet;
-          fleet-bundles-cluster-a = clusterConfigA.platform.kubernetes.build.fleet-bundles;
-          fleet-status-cluster-a = clusterConfigA.platform.kubernetes.build.scripts.fleet-status;
+          deploy-cluster-a = clusterConfigA.build.scripts.deploy-fleet;
+          fleet-bundles-cluster-a = clusterConfigA.build.fleet-bundles;
+          fleet-status-cluster-a = clusterConfigA.build.scripts.fleet-status;
 
-          deploy-cluster-b = clusterConfigB.platform.kubernetes.build.scripts.deploy-fleet;
-          fleet-bundles-cluster-b = clusterConfigB.platform.kubernetes.build.fleet-bundles;
-          fleet-status-cluster-b = clusterConfigB.platform.kubernetes.build.scripts.fleet-status;
+          deploy-cluster-b = clusterConfigB.build.scripts.deploy-fleet;
+          fleet-bundles-cluster-b = clusterConfigB.build.fleet-bundles;
+          fleet-status-cluster-b = clusterConfigB.build.scripts.fleet-status;
 
           # Test script for multi-cluster setup
           test-multi-cluster = pkgs.writeShellApplication {
@@ -315,23 +315,28 @@
             text = builtins.readFile ./lib/helpers/test-multi-cluster.sh;
           };
 
-          # Multi-cluster deployment script
+          # Multi-cluster deployment script (Fleet-based)
           deploy-multi-cluster = pkgs.writeShellApplication {
             name = "deploy-multi-cluster";
             runtimeInputs = [ 
               pkgs.kubectl 
-              pkgs.istioctl 
-              pkgs.docker 
-              pkgs.jq 
-              pkgs.yq-go 
+              pkgs.kubernetes-helm
             ];
             text = ''
-              export CLUSTER_A_CONTEXT="${clusterContextA}"
-              export CLUSTER_B_CONTEXT="${clusterContextB}"
-              export MANIFESTS_CLUSTER_A_PATH="${manifestsA}/manifest.yaml"
-              export MANIFESTS_CLUSTER_B_PATH="${manifestsB}/manifest.yaml"
+              set -euo pipefail
               
-              ${builtins.readFile ./lib/helpers/deploy-multi-cluster.sh}
+              echo "=== Deploying Multi-Cluster via Fleet ==="
+              echo ""
+              
+              echo "Deploying to cluster-a..."
+              CLUSTER_CONTEXT="${clusterContextA}" ${clusterConfigA.build.scripts.deploy-fleet}/bin/deploy-multi-cluster-a-fleet
+              
+              echo ""
+              echo "Deploying to cluster-b..."
+              CLUSTER_CONTEXT="${clusterContextB}" ${clusterConfigB.build.scripts.deploy-fleet}/bin/deploy-multi-cluster-b-fleet
+              
+              echo ""
+              echo "=== Multi-cluster deployment complete ==="
             '';
           };
           

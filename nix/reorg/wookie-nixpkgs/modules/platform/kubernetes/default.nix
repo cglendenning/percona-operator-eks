@@ -5,11 +5,6 @@
 }:
 with lib;
 
-{
-  imports = [
-    ../backends/fleet.nix
-  ];
-
 let
   kubelib = pkgs.kubelib;
 
@@ -114,6 +109,12 @@ let
           default = 1;
         };
 
+        dependsOn = mkOption {
+          type = types.listOf types.str;
+          default = [];
+          description = "List of batch names this batch depends on.";
+        };
+
         bundles = mkOption {
           default = { };
           type = types.attrsOf (
@@ -128,11 +129,29 @@ let
   
 in
 {
+  imports = [
+    ../backends/fleet.nix
+  ];
+
   options = {
-    build.scripts = mkOption {
-      type = types.attrsOf types.package;
+    build = mkOption {
+      type = types.submodule {
+        options = {
+          scripts = mkOption {
+            type = types.attrsOf types.package;
+            default = {};
+            description = "Build output scripts for cluster management.";
+          };
+          
+          fleet-bundles = mkOption {
+            type = types.nullOr types.package;
+            default = null;
+            description = "Fleet bundles package.";
+          };
+        };
+      };
       default = {};
-      description = "Build output scripts for cluster management.";
+      description = "Build outputs for the cluster.";
     };
 
     platform.kubernetes.cluster = mkOption {
