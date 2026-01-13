@@ -434,6 +434,18 @@ yq eval '
     .meshNetworks.network1.gateways[0] = {"address": "'${GATEWAY_ADDRESS_NETWORK1}'", "port": 15443} |
     .meshNetworks.network2.gateways[0] = {"address": "'${GATEWAY_ADDRESS_NETWORK2}'", "port": 15443} |
     to_yaml
+  ) |
+  (select(.kind == "ConfigMap" and .metadata.name == "istio") | .data.meshNetworks) = (
+    {"networks": {
+      "network1": {
+        "endpoints": [{"fromRegistry": "cluster-a"}],
+        "gateways": [{"address": "'${GATEWAY_ADDRESS_NETWORK1}'", "port": 15443}]
+      },
+      "network2": {
+        "endpoints": [{"fromRegistry": "cluster-b"}],
+        "gateways": [{"address": "'${GATEWAY_ADDRESS_NETWORK2}'", "port": 15443}]
+      }
+    }} | to_yaml
   )
 ' result-istiod-a/manifest.yaml > /tmp/istiod-cluster-a-patched.yaml
 
@@ -444,6 +456,18 @@ yq eval '
     .meshNetworks.network1.gateways[0] = {"address": "'${GATEWAY_ADDRESS_NETWORK1}'", "port": 15443} |
     .meshNetworks.network2.gateways[0] = {"address": "'${GATEWAY_ADDRESS_NETWORK2}'", "port": 15443} |
     to_yaml
+  ) |
+  (select(.kind == "ConfigMap" and .metadata.name == "istio") | .data.meshNetworks) = (
+    {"networks": {
+      "network1": {
+        "endpoints": [{"fromRegistry": "cluster-a"}],
+        "gateways": [{"address": "'${GATEWAY_ADDRESS_NETWORK1}'", "port": 15443}]
+      },
+      "network2": {
+        "endpoints": [{"fromRegistry": "cluster-b"}],
+        "gateways": [{"address": "'${GATEWAY_ADDRESS_NETWORK2}'", "port": 15443}]
+      }
+    }} | to_yaml
   )
 ' result-istiod-b/manifest.yaml > /tmp/istiod-cluster-b-patched.yaml
 
@@ -594,6 +618,17 @@ spec:
 EOF
 
 echo "  Waiting for hello pods..."
+# Wait for StatefulSet to create at least one pod
+for i in {1..30}; do
+  POD_COUNT=$(kubectl --context="${CTX_CLUSTER1}" get pods -n demo -l app=hello --no-headers 2>/dev/null | wc -l)
+  if [ "$POD_COUNT" -gt 0 ]; then
+    break
+  fi
+  echo "    Waiting for StatefulSet to create pods... ($i/30)"
+  sleep 2
+done
+
+# Now wait for pods to be ready
 kubectl --context="${CTX_CLUSTER1}" wait --for=condition=ready --timeout=300s pod -l app=hello -n demo
 
 echo ""
