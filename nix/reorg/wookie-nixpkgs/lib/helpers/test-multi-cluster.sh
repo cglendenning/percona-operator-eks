@@ -162,8 +162,8 @@ echo "Step 5: Verifying sidecar injection and connectivity..."
 echo ""
 
 # Check first hello pod has sidecar
-FIRST_HELLO_POD=$(echo $HELLO_PODS | awk '{print $1}')
-HELLO_CONTAINERS=$(kubectl get pod $FIRST_HELLO_POD -n demo --context="${CTX_CLUSTER1}" -o jsonpath='{.spec.containers[*].name}')
+FIRST_HELLO_POD=$(echo "$HELLO_PODS" | awk '{print $1}')
+HELLO_CONTAINERS=$(kubectl get pod "$FIRST_HELLO_POD" -n demo --context="${CTX_CLUSTER1}" -o jsonpath='{.spec.containers[*].name}')
 echo "$FIRST_HELLO_POD containers: $HELLO_CONTAINERS"
 if [[ "$HELLO_CONTAINERS" != *"istio-proxy"* ]]; then
   echo "  WARNING: $FIRST_HELLO_POD missing istio-proxy sidecar"
