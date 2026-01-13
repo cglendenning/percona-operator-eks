@@ -78,16 +78,101 @@ else
   echo "✗ FAILED: Could not reach service via DNS name"
   echo "  Response: $RESPONSE"
   echo ""
-  echo "Troubleshooting info:"
+  echo "=== ROOT CAUSE ANALYSIS ==="
   echo ""
   
-  # Check if Envoy knows about the service
-  echo "Checking Envoy service registry..."
+  # Check 1: ConfigMap has gateway IPs
+  echo "CHECK 1: ConfigMap meshNetworks configuration"
+  echo "-------------------------------------------"
+  MESH_NETWORKS=$(kubectl get configmap istio -n istio-system --context="${CTX_CLUSTER2}" -o jsonpath='{.data.meshNetworks}')
+  echo "$MESH_NETWORKS"
+  if echo "$MESH_NETWORKS" | grep -q "address:"; then
+    echo "✓ Gateway addresses found in ConfigMap"
+  else
+    echo "✗ PROBLEM: No gateway addresses in ConfigMap (using service names?)"
+  fi
+  echo ""
+  
+  # Check 2: Istiod loaded meshNetworks
+  echo "CHECK 2: Istiod runtime meshNetworks configuration"
+  echo "-------------------------------------------"
+  ISTIOD_MESH=$(kubectl exec -n istio-system deployment/istiod --context="${CTX_CLUSTER2}" -- curl -s localhost:15014/debug/mesh 2>/dev/null | grep -o '"meshNetworks":[^,]*')
+  echo "$ISTIOD_MESH"
+  if echo "$ISTIOD_MESH" | grep -q "null"; then
+    echo "✗ CRITICAL PROBLEM: Istiod has meshNetworks: null"
+    echo "  This means istiod did NOT load the meshNetworks config from ConfigMap"
+    echo "  Istiod will not know how to route cross-cluster traffic"
+  else
+    echo "✓ Istiod has meshNetworks configured"
+  fi
+  echo ""
+  
+  # Check 3: Istiod sees hello endpoints from cluster-a
+  echo "CHECK 3: Istiod endpoint discovery for hello service"
+  echo "-------------------------------------------"
+  HELLO_ENDPOINTS=$(kubectl exec -n istio-system deployment/istiod --context="${CTX_CLUSTER2}" -- \
+    curl -s localhost:15014/debug/endpointz 2>/dev/null | grep -o '"hello.demo.svc.cluster.local"[^}]*"Addresses":\[[^]]*\]')
+  if [ -z "$HELLO_ENDPOINTS" ]; then
+    echo "✗ PROBLEM: Istiod does not see hello service endpoints"
+    echo "  Check if remote secret is configured correctly"
+  else
+    echo "✓ Istiod sees hello service:"
+    echo "  $HELLO_ENDPOINTS"
+  fi
+  echo ""
+  
+  # Check 4: Istiod sees gateway endpoints
+  echo "CHECK 4: Istiod sees gateway endpoints on port 15443"
+  echo "-------------------------------------------"
+  GATEWAY_ENDPOINTS=$(kubectl exec -n istio-system deployment/istiod --context="${CTX_CLUSTER2}" -- \
+    curl -s localhost:15014/debug/endpointz 2>/dev/null | \
+    grep -A 10 '"istio-eastwestgateway.istio-system.svc.cluster.local"' | \
+    grep -A 3 '"ServicePortName":"tls"' | grep '"EndpointPort":15443')
+  if [ -z "$GATEWAY_ENDPOINTS" ]; then
+    echo "✗ PROBLEM: Istiod does not see gateway on port 15443"
+  else
+    echo "✓ Istiod sees gateway on port 15443"
+  fi
+  echo ""
+  
+  # Check 5: CRITICAL - Envoy sidecar has endpoints for hello service
+  echo "CHECK 5: Envoy sidecar endpoint configuration (CRITICAL)"
+  echo "-------------------------------------------"
+  echo "Looking for hello service endpoints in Envoy..."
+  ENVOY_ENDPOINTS=$(kubectl exec test-pod -n demo-dr -c istio-proxy --context="${CTX_CLUSTER2}" -- \
+    pilot-agent request GET clusters 2>/dev/null | grep "hello.demo.svc.cluster.local::" | grep "::address::")
+  
+  if [ -z "$ENVOY_ENDPOINTS" ]; then
+    echo "✗ CRITICAL PROBLEM: Envoy has NO endpoints for hello service"
+    echo "  Service is known but has zero endpoints"
+    echo "  This means istiod is not pushing gateway routes to the sidecar"
+    echo ""
+    echo "  Possible causes:"
+    echo "  1. meshNetworks not loaded by istiod (see CHECK 2)"
+    echo "  2. Gateway network label mismatch"
+    echo "  3. Istiod not applying cross-network routing logic"
+  else
+    echo "Envoy endpoints found:"
+    echo "$ENVOY_ENDPOINTS"
+    echo ""
+    if echo "$ENVOY_ENDPOINTS" | grep -q "172\.24\."; then
+      echo "✓ Endpoints are GATEWAY IPs (172.24.x.x) - routing will work!"
+    elif echo "$ENVOY_ENDPOINTS" | grep -q "10\.42\."; then
+      echo "✗ PROBLEM: Endpoints are POD IPs (10.42.x.x) - direct routing won't work"
+      echo "  Istiod is not using meshNetworks for cross-network routing"
+    fi
+  fi
+  echo ""
+  
+  # Check 6: Envoy knows about service but summary
+  echo "CHECK 6: Envoy service registry summary"
+  echo "-------------------------------------------"
   kubectl exec test-pod -n demo-dr -c istio-proxy --context="${CTX_CLUSTER2}" -- \
-    pilot-agent request GET clusters | grep hello | head -5 || echo "  No hello service found in Envoy config"
+    pilot-agent request GET clusters 2>/dev/null | grep "hello.demo" | head -5 || echo "  No hello service found in Envoy config"
   
   echo ""
-  echo "Checking istiod logs for errors..."
+  echo "CHECK 7: Istiod logs"
+  echo "-------------------------------------------"
   kubectl logs -n istio-system deployment/istiod --context="${CTX_CLUSTER2}" --tail=20 | grep -i error || echo "  No recent errors"
   
   exit 1
