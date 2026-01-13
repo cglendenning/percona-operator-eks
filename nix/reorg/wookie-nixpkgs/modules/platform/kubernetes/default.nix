@@ -32,7 +32,7 @@ let
 
             version = mkOption {
               type = types.str;
-              description = "Chart version (use underscore notation like 1_24_2).";
+              description = "Chart version (use underscore notation like 1_28_2).";
             };
 
             values = mkOption {

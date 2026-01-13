@@ -9,6 +9,7 @@ with lib;
 {
   imports = [
     ./istio.nix
+    ./demo-helloworld.nix
   ];
 
   options.projects.wookie = {

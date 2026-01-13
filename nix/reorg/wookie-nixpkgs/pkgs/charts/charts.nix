@@ -16,7 +16,7 @@ let
 in
 {
   istio-base = {
-    "1_24_2" = kubelib.downloadHelmChart {
+    "1_28_2" = kubelib.downloadHelmChart {
       repo = istio-repo;
       chart = "base";
       version = "1.24.2";
@@ -25,7 +25,7 @@ in
   };
 
   istiod = {
-    "1_24_2" = kubelib.downloadHelmChart {
+    "1_28_2" = kubelib.downloadHelmChart {
       repo = istio-repo;
       chart = "istiod";
       version = "1.24.2";
@@ -34,11 +34,11 @@ in
   };
 
   istio-gateway = {
-    "1_24_2" = kubelib.downloadHelmChart {
+    "1_28_2" = kubelib.downloadHelmChart {
       repo = istio-repo;
       chart = "gateway";
       version = "1.24.2";
-      chartHash = lib.fakeHash; 
+      chartHash = "sha256-2wfu4sg+rHtoApBGLXa3MwWoGCzj0TRW8p37ObbHsEs=";
     };
   };
 }

@@ -20,7 +20,7 @@ in
 
     version = mkOption {
       type = types.str;
-      default = "1_24_2";
+      default = "1_28_2";
       description = "Istio version to deploy (underscore notation).";
     };
 
@@ -167,7 +167,15 @@ in
         name = "istio-eastwestgateway";
         version = cfg.version;
         package = charts.istio-gateway.${cfg.version};
-        values = cfg.eastWestGateway.values;
+        # Automatically inject image configuration based on version
+        values = lib.recursiveUpdate {
+          global = {
+            hub = "docker.io/istio";
+            tag = builtins.replaceStrings ["_"] ["."] cfg.version;
+          };
+          # Set explicit image instead of relying on sidecar injection "auto"
+          image = "docker.io/istio/proxyv2:${builtins.replaceStrings ["_"] ["."] cfg.version}";
+        } cfg.eastWestGateway.values;
       };
       dependsOn = [ "istiod" ];
     };
