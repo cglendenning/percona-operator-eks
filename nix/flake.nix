@@ -188,25 +188,40 @@
               # Step 3: Deploy east-west gateways
               echo ""
               echo "Step 3: Deploying east-west gateways..."
+              
+              # Delete existing gateway deployments if they exist (selector is immutable)
+              kubectl --context="$CTX_CLUSTER1" delete deployment istio-eastwestgateway -n istio-system --ignore-not-found=true
+              kubectl --context="$CTX_CLUSTER2" delete deployment istio-eastwestgateway -n istio-system --ignore-not-found=true
+              
               kubectl --context="$CTX_CLUSTER1" apply -f ${self.packages.${system}.istio-eastwestgateway-cluster-a}/manifest.yaml
               kubectl --context="$CTX_CLUSTER2" apply -f ${self.packages.${system}.istio-eastwestgateway-cluster-b}/manifest.yaml
 
-              echo "  Waiting for gateways..."
-              kubectl --context="$CTX_CLUSTER1" wait --for=condition=available --timeout=120s deployment/istio-eastwestgateway -n istio-system
-              kubectl --context="$CTX_CLUSTER2" wait --for=condition=available --timeout=120s deployment/istio-eastwestgateway -n istio-system
+              echo "  Waiting for gateways to be ready..."
+              sleep 5  # Give time for deployments to be created
+              kubectl --context="$CTX_CLUSTER1" wait --for=condition=available --timeout=180s deployment/istio-eastwestgateway -n istio-system
+              kubectl --context="$CTX_CLUSTER2" wait --for=condition=available --timeout=180s deployment/istio-eastwestgateway -n istio-system
 
               # Step 4: Get gateway IPs and patch services
               echo ""
               echo "Step 4: Configuring gateway external IPs..."
+              echo "  (Clusters on separate networks - mimics multi-datacenter setup)"
 
-              CLUSTER_A_API_IP=$(docker inspect k3d-cluster-a-server-0 | jq -r '.[0].NetworkSettings.Networks["k3d-multicluster"].IPAddress')
-              CLUSTER_B_API_IP=$(docker inspect k3d-cluster-b-server-0 | jq -r '.[0].NetworkSettings.Networks["k3d-multicluster"].IPAddress')
+              # Each cluster uses its own default network
+              CLUSTER_A_NETWORK=$(docker inspect k3d-cluster-a-server-0 | jq -r '.[0].NetworkSettings.Networks | keys[0]')
+              CLUSTER_B_NETWORK=$(docker inspect k3d-cluster-b-server-0 | jq -r '.[0].NetworkSettings.Networks | keys[0]')
+
+              echo "  Cluster A network: $CLUSTER_A_NETWORK"
+              echo "  Cluster B network: $CLUSTER_B_NETWORK"
+
+              CLUSTER_A_API_IP=$(docker inspect k3d-cluster-a-server-0 | jq -r ".[0].NetworkSettings.Networks[\"$CLUSTER_A_NETWORK\"].IPAddress")
+              CLUSTER_B_API_IP=$(docker inspect k3d-cluster-b-server-0 | jq -r ".[0].NetworkSettings.Networks[\"$CLUSTER_B_NETWORK\"].IPAddress")
 
               echo "  Cluster A API: $CLUSTER_A_API_IP"
               echo "  Cluster B API: $CLUSTER_B_API_IP"
 
-              CLUSTER_A_NODE_IPS=$(docker network inspect k3d-multicluster | jq -r '.[] | .Containers | to_entries[] | select(.value.Name | startswith("k3d-cluster-a")) | .value.IPv4Address | split("/")[0]' | tr '\n' ',' | sed 's/,$//')
-              CLUSTER_B_NODE_IPS=$(docker network inspect k3d-multicluster | jq -r '.[] | .Containers | to_entries[] | select(.value.Name | startswith("k3d-cluster-b")) | .value.IPv4Address | split("/")[0]' | tr '\n' ',' | sed 's/,$//')
+              # Get all node IPs from each cluster's network
+              CLUSTER_A_NODE_IPS=$(docker network inspect "$CLUSTER_A_NETWORK" | jq -r '.[] | .Containers | to_entries[] | select(.value.Name | startswith("k3d-cluster-a")) | .value.IPv4Address | split("/")[0]' | tr '\n' ',' | sed 's/,$//')
+              CLUSTER_B_NODE_IPS=$(docker network inspect "$CLUSTER_B_NETWORK" | jq -r '.[] | .Containers | to_entries[] | select(.value.Name | startswith("k3d-cluster-b")) | .value.IPv4Address | split("/")[0]' | tr '\n' ',' | sed 's/,$//')
 
               IFS=',' read -ra CLUSTER_A_IPS_ARRAY <<< "$CLUSTER_A_NODE_IPS"
               IFS=',' read -ra CLUSTER_B_IPS_ARRAY <<< "$CLUSTER_B_NODE_IPS"
