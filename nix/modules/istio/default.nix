@@ -37,6 +37,7 @@ in
     clusterId,
     network ? null,
     meshId ? "mesh1",
+    gatewayAddresses ? {},
   }:
     {
       pilot = {
@@ -47,6 +48,40 @@ in
           proxyMetadata = {
             ISTIO_META_DNS_CAPTURE = "true";
             ISTIO_META_DNS_AUTO_ALLOCATE = "true";
+          };
+        };
+        meshNetworks = {
+          network1 = {
+            endpoints = [
+              { fromRegistry = "cluster-a"; }
+            ];
+            gateways = if gatewayAddresses ? network1 then [
+              {
+                address = gatewayAddresses.network1;
+                port = 15443;
+              }
+            ] else [
+              {
+                service = "istio-eastwestgateway.istio-system.svc.cluster.local";
+                port = 15443;
+              }
+            ];
+          };
+          network2 = {
+            endpoints = [
+              { fromRegistry = "cluster-b"; }
+            ];
+            gateways = if gatewayAddresses ? network2 then [
+              {
+                address = gatewayAddresses.network2;
+                port = 15443;
+              }
+            ] else [
+              {
+                service = "istio-eastwestgateway.istio-system.svc.cluster.local";
+                port = 15443;
+              }
+            ];
           };
         };
       };
