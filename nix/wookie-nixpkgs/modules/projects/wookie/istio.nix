@@ -379,7 +379,7 @@ in
                     protocol = "TLS";
                   };
                   tls.mode = "AUTO_PASSTHROUGH";
-                  hosts = [ "*.local" ];
+                  hosts = [ "*.local" "*.cluster.local" ];
                 }
               ];
             };
