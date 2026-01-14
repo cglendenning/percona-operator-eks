@@ -455,7 +455,9 @@
                 mesh: |-
                   defaultConfig:
                     discoveryAddress: istiod.istio-system.svc:15012
-                    proxyMetadata: {}
+                    proxyMetadata:
+                      ISTIO_META_DNS_CAPTURE: "true"
+                      ISTIO_META_DNS_AUTO_ALLOCATE: "true"
                     tracing:
                       zipkin:
                         address: zipkin.istio-system:9411
@@ -487,7 +489,9 @@
                 mesh: |-
                   defaultConfig:
                     discoveryAddress: istiod.istio-system.svc:15012
-                    proxyMetadata: {}
+                    proxyMetadata:
+                      ISTIO_META_DNS_CAPTURE: "true"
+                      ISTIO_META_DNS_AUTO_ALLOCATE: "true"
                     tracing:
                       zipkin:
                         address: zipkin.istio-system:9411
@@ -529,7 +533,7 @@
               echo "Waiting for endpoint synchronization (10 seconds)..."
               sleep 10
               
-              echo "meshNetworks configured and pods restarted."
+              echo "meshNetworks and DNS proxy configured, pods restarted."
               
               echo ""
               echo "=== Multi-cluster stack is up! ==="
