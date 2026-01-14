@@ -57,6 +57,10 @@ run_assertion() {
     else
       echo -e "${RED}✗${NC}"
       FAILED=$((FAILED + 1))
+      # Show first 100 chars of output for debugging critical failures
+      if [[ "$id" == "cross-cluster-http" ]] || [[ "$id" == "mtls-enabled" ]]; then
+        echo "       Error: ${output:0:100}"
+      fi
       return 1
     fi
   fi

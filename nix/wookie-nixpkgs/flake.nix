@@ -420,9 +420,9 @@
               echo "  Cluster B: https://$API_B:6443"
               
               # Create remote secrets with internal IPs
-              istioctl create-remote-secret --context=${clusterContextA} --name=cluster-a --server=https://$API_A:6443 | \
+              istioctl create-remote-secret --context=${clusterContextA} --name=cluster-a --server="https://$API_A:6443" | \
                 kubectl apply -f - --context=${clusterContextB}
-              istioctl create-remote-secret --context=${clusterContextB} --name=cluster-b --server=https://$API_B:6443 | \
+              istioctl create-remote-secret --context=${clusterContextB} --name=cluster-b --server="https://$API_B:6443" | \
                 kubectl apply -f - --context=${clusterContextA}
               echo "Remote secrets configured with internal API server IPs."
               
@@ -516,8 +516,8 @@
               kubectl rollout status deployment/istiod -n istio-system --context=${clusterContextB} --timeout=120s
               
               echo "Restarting application pods to pick up updated Envoy configuration..."
-              kubectl rollout restart statefulset/helloworld-v1 -n demo --context=${clusterContextA} || true
-              kubectl rollout status statefulset/helloworld-v1 -n demo --context=${clusterContextA} --timeout=120s || true
+              kubectl rollout restart deployment/helloworld-v1 -n demo --context=${clusterContextA} || true
+              kubectl rollout status deployment/helloworld-v1 -n demo --context=${clusterContextA} --timeout=120s || true
               
               echo "Restarting east-west gateways to pick up meshNetworks..."
               kubectl rollout restart deployment/istio-eastwestgateway -n istio-system --context=${clusterContextA}
