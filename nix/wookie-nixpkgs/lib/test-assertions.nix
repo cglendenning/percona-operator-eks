@@ -12,7 +12,7 @@ let
   ctxA = "k3d-cluster-a";
   ctxB = "k3d-cluster-b";
 
-in {
+in rec {
   # Group assertions by category
   infrastructure = [
     (mkAssertion {
@@ -161,12 +161,12 @@ in {
     (mkAssertion {
       id = "test-pod-exists";
       description = "Test pod exists in Cluster B";
-      command = "kubectl get pod test-pod -n demo --context=${ctxB}";
+      command = "kubectl get pod test-pod -n wookie-dr --context=${ctxB}";
     })
     (mkAssertion {
       id = "test-pod-sidecar";
       description = "Test pod has sidecar injected in Cluster B";
-      command = ''kubectl get pod test-pod -n demo --context=${ctxB} -o jsonpath='{.spec.containers[*].name}' | grep -q 'istio-proxy' '';
+      command = ''kubectl get pod test-pod -n wookie-dr --context=${ctxB} -o jsonpath='{.spec.containers[*].name}' | grep -q 'istio-proxy' '';
     })
     (mkAssertion {
       id = "istiod-sees-remote-endpoints";
@@ -177,7 +177,7 @@ in {
     (mkAssertion {
       id = "envoy-has-helloworld-endpoints";
       description = "Envoy sidecar in Cluster B has endpoints for helloworld service";
-      command = "kubectl exec test-pod -n demo -c istio-proxy --context=${ctxB} -- pilot-agent request GET clusters";
+      command = "kubectl exec test-pod -n wookie-dr -c istio-proxy --context=${ctxB} -- pilot-agent request GET clusters";
       expectedPattern = "helloworld.demo.svc.cluster.local";
     })
   ];
@@ -186,13 +186,13 @@ in {
     (mkAssertion {
       id = "cross-cluster-http";
       description = "HTTP request from Cluster B to helloworld in Cluster A";
-      command = "kubectl exec test-pod -n demo --context=${ctxB} -- curl -s --max-time 10 http://helloworld.demo.svc.cluster.local:5000/hello";
+      command = "kubectl exec test-pod -n wookie-dr --context=${ctxB} -- curl -s --max-time 10 http://helloworld.demo.svc.cluster.local:5000/hello";
       expectedPattern = "Hello version";
     })
     (mkAssertion {
       id = "mtls-enabled";
       description = "mTLS is enabled between services";
-      command = "kubectl exec test-pod -n demo -c istio-proxy --context=${ctxB} -- curl -s localhost:15000/config_dump";
+      command = "kubectl exec test-pod -n wookie-dr -c istio-proxy --context=${ctxB} -- curl -s localhost:15000/config_dump";
       expectedPattern = "tlsMode.*ISTIO_MUTUAL";
     })
   ];

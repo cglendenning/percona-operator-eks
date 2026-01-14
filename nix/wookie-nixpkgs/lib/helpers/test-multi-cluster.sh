@@ -7,7 +7,6 @@ set -euo pipefail
 # Color codes
 RED='\033[0;31m'
 GREEN='\033[0;32m'
-YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
 NC='\033[0m'
 
@@ -18,11 +17,12 @@ TOTAL=0
 # Ensure test pod exists before running connectivity tests
 ensure_test_pod() {
   local ctx="k3d-cluster-b"
-  if ! kubectl get pod test-pod -n demo --context="$ctx" &>/dev/null; then
-    echo -e "${BLUE}Creating test pod in Cluster B...${NC}"
-    kubectl delete pod test-pod -n demo --context="$ctx" 2>/dev/null || true
-    kubectl run test-pod --image=curlimages/curl --context="$ctx" -n demo -- sleep 3600
-    kubectl wait --for=condition=ready pod/test-pod -n demo --context="$ctx" --timeout=120s
+  local ns="wookie-dr"
+  if ! kubectl get pod test-pod -n "$ns" --context="$ctx" &>/dev/null; then
+    echo -e "${BLUE}Creating test pod in Cluster B ($ns namespace)...${NC}"
+    kubectl delete pod test-pod -n "$ns" --context="$ctx" 2>/dev/null || true
+    kubectl run test-pod --image=curlimages/curl --context="$ctx" -n "$ns" -- sleep 3600
+    kubectl wait --for=condition=ready pod/test-pod -n "$ns" --context="$ctx" --timeout=120s
     echo ""
   fi
 }
@@ -62,16 +62,38 @@ run_assertion() {
   fi
 }
 
+# Detect system
+get_system() {
+  case "$(uname -s)-$(uname -m)" in
+    Darwin-arm64) echo "aarch64-darwin" ;;
+    Darwin-x86_64) echo "x86_64-darwin" ;;
+    Linux-x86_64) echo "x86_64-linux" ;;
+    Linux-aarch64) echo "aarch64-linux" ;;
+    *) echo "x86_64-linux" ;;
+  esac
+}
+
+SYSTEM=$(get_system)
+
 # Get assertion data from Nix
 get_assertions() {
   local category="$1"
-  nix eval --json ".#lib.testAssertions.${category}" 2>/dev/null || echo "[]"
+  local result
+  # Capture stderr and stdout separately, then filter out warnings
+  result=$(nix eval --json ".#lib.${SYSTEM}.testAssertions.${category}" 2>&1 | grep -v "^warning:")
+  local exit_code=$?
+  if [ $exit_code -eq 0 ] && echo "$result" | jq -e . >/dev/null 2>&1; then
+    echo "$result"
+  else
+    echo "ERROR: Failed to get assertions for $category" >&2
+    echo "[]"
+  fi
 }
 
 # Get category metadata
 get_category_name() {
   local category="$1"
-  nix eval --raw ".#lib.testAssertions.categories.${category}.name" 2>/dev/null || echo "$category"
+  nix eval --raw ".#lib.${SYSTEM}.testAssertions.categories.${category}.name" 2>&1 | grep -v "^warning:" || echo "$category"
 }
 
 # Main test execution
@@ -81,7 +103,7 @@ main() {
   echo "Assertions defined in: lib/test-assertions.nix"
   echo "=========================================="
   echo ""
-
+  
   # Ensure test pod exists before connectivity tests
   ensure_test_pod
 
@@ -98,12 +120,19 @@ main() {
 
   for category in "${categories[@]}"; do
     category_name=$(get_category_name "$category")
-    echo ""
+echo ""
     echo -e "${BLUE}=== $category_name ===${NC}"
-    echo ""
-    
+echo ""
+
     # Get assertions for this category
     assertions=$(get_assertions "$category")
+    
+    # Debug: show what we got
+    if [ "$assertions" = "[]" ] || [ -z "$assertions" ]; then
+      echo -e "${RED}ERROR: No assertions loaded for category '$category'${NC}"
+      echo "Tried to query: .#lib.${SYSTEM}.testAssertions.${category}"
+      continue
+    fi
     
     # Parse and run each assertion
     length=$(echo "$assertions" | jq -r 'length')
@@ -114,20 +143,21 @@ main() {
       type=$(echo "$assertions" | jq -r ".[$i].type")
       pattern=$(echo "$assertions" | jq -r ".[$i].expectedPattern // empty")
       
-      run_assertion "$id" "$description" "$command" "$type" "$pattern"
+      # Run assertion and continue on failure (don't exit due to set -e)
+      run_assertion "$id" "$description" "$command" "$type" "$pattern" || true
     done
   done
 
   # Summary
-  echo ""
+echo ""
   echo "=========================================="
   echo "TEST SUMMARY"
   echo "=========================================="
-  echo ""
+echo ""
   echo "Total Assertions: $TOTAL"
   echo -e "Passed: ${GREEN}$PASSED${NC}"
   echo -e "Failed: ${RED}$FAILED${NC}"
-  echo ""
+echo ""
 
   if [ "$FAILED" -eq 0 ]; then
     echo -e "${GREEN}✓ All tests passed! Multi-cluster Istio is working correctly.${NC}"
