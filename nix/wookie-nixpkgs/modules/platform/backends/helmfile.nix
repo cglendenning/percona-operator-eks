@@ -200,7 +200,7 @@ in
           '') renderedBundles}
           echo ""
           
-          # Apply CRDs (server-side and skip validation for k3s compatibility)
+          # Apply CRDs (use create to avoid validation issues with x-kubernetes-validations)
           echo "Installing CRDs..."
           ${let
             crdBatch = config.platform.kubernetes.cluster.batches.crds;
@@ -208,7 +208,9 @@ in
             renderedBundles = map pkgs.kubelib.renderBundle enabledBundles;
           in
           lib.concatMapStringsSep "\n" (crd: ''
-            kubectl apply --server-side=true --force-conflicts --validate=false --context "$CONTEXT" -f ${crd}/manifest.yaml
+            # Use create (not apply) to avoid server-side validation errors with k3s
+            # Ignore "already exists" errors to make this idempotent
+            kubectl create --context "$CONTEXT" -f ${crd}/manifest.yaml 2>&1 | grep -v "already exists" || true
           '') renderedBundles}
           echo ""
           

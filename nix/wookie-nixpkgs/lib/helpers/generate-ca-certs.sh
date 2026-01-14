@@ -39,7 +39,7 @@ for cluster in cluster-a cluster-b; do
   openssl req -new -sha256 \
     -key "$CERTS_DIR/${cluster}-ca-key.pem" \
     -out "$CERTS_DIR/${cluster}-ca-cert.csr" \
-    -subj "/O=Istio/CN=Intermediate CA/${cluster}"
+    -subj "/O=Istio/CN=Intermediate CA for ${cluster}"
   
   # Sign intermediate CA with root CA
   openssl x509 -req \
