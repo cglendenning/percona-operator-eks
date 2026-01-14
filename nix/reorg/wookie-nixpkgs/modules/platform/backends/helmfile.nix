@@ -26,29 +26,39 @@ let
         needs = map (dep: "${cfg.cluster.uniqueIdentifier}-${batchName}-${dep}") bundle.dependsOn;
       } else null;
       
-      # For raw manifests, create a release that applies manifests via hooks
-      manifestRelease = if (builtins.length bundle.manifests) > 0 then {
-        name = releaseName;
-        namespace = bundle.namespace;
-        # Use a minimal chart with hooks to apply manifests
-        chart = pkgs.runCommand "manifest-chart-${bundleName}" {} ''
-          mkdir -p $out/templates
+      # For raw manifests, convert to a proper Helm chart structure
+      manifestRelease = if (builtins.length bundle.manifests) > 0 then
+        let
+          # Create a proper Helm chart with Chart.yaml and templates
+          chartMetadata = {
+            apiVersion = "v2";
+            name = bundleName;
+            version = "0.1.0";
+            description = "Kubernetes manifests for ${bundleName}";
+          };
           
-          # Combine all manifests
-          cat ${lib.concatMapStringsSep " " (m: "${m}/manifest.yaml") bundle.manifests} \
-            > $out/templates/manifests.yaml
-          
-          # Create Chart.yaml
-          cat > $out/Chart.yaml << 'EOF'
-          apiVersion: v2
-          name: ${bundleName}
-          version: 0.1.0
-          description: Raw manifests for ${bundleName}
-          EOF
-        '';
-        values = [ {} ];
-        needs = map (dep: "${cfg.cluster.uniqueIdentifier}-${batchName}-${dep}") bundle.dependsOn;
-      } else null;
+          helmChart = pkgs.runCommand "helm-chart-${bundleName}" {} ''
+            mkdir -p $out/templates
+            
+            # Combine all manifests into templates
+            ${lib.concatMapStringsSep "\n" (m: ''
+              cat ${m}/manifest.yaml >> $out/templates/manifests.yaml
+            '') bundle.manifests}
+            
+            # Generate Chart.yaml
+            cat > $out/Chart.yaml << 'CHARTEOF'
+            ${builtins.toJSON chartMetadata}
+            CHARTEOF
+          '';
+        in
+        {
+          name = releaseName;
+          namespace = bundle.namespace;
+          chart = "${helmChart}";
+          values = [ {} ];
+          needs = map (dep: "${cfg.cluster.uniqueIdentifier}-${batchName}-${dep}") bundle.dependsOn;
+        }
+      else null;
       
     in
     if chartRelease != null then chartRelease
@@ -119,7 +129,7 @@ in
     
     binary = mkOption {
       type = types.package;
-      default = pkgs.kubernetes-helmfile;
+      default = pkgs.helmfile;
       description = "Helmfile binary to use";
     };
   };
@@ -133,7 +143,7 @@ in
       # Generate deployment script
       scripts.deploy-helmfile = pkgs.writeShellApplication {
         name = "deploy-${cfg.cluster.uniqueIdentifier}-helmfile";
-        runtimeInputs = [ pkgs.kubernetes-helmfile pkgs.kubernetes-helm pkgs.kubectl ];
+        runtimeInputs = [ pkgs.helmfile pkgs.kubernetes-helm pkgs.kubectl ];
         text = ''
           set -euo pipefail
           
@@ -166,7 +176,7 @@ in
       # Generate diff script
       scripts.diff-helmfile = pkgs.writeShellApplication {
         name = "diff-${cfg.cluster.uniqueIdentifier}-helmfile";
-        runtimeInputs = [ pkgs.kubernetes-helmfile pkgs.kubernetes-helm pkgs.kubectl ];
+        runtimeInputs = [ pkgs.helmfile pkgs.kubernetes-helm pkgs.kubectl ];
         text = ''
           set -euo pipefail
           
@@ -185,7 +195,7 @@ in
       # Generate destroy script
       scripts.destroy-helmfile = pkgs.writeShellApplication {
         name = "destroy-${cfg.cluster.uniqueIdentifier}-helmfile";
-        runtimeInputs = [ pkgs.kubernetes-helmfile pkgs.kubernetes-helm pkgs.kubectl ];
+        runtimeInputs = [ pkgs.helmfile pkgs.kubernetes-helm pkgs.kubectl ];
         text = ''
           set -euo pipefail
           

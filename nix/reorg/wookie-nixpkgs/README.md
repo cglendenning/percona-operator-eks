@@ -2,59 +2,32 @@
 
 Declarative Kubernetes deployment system using Nix.
 
-## Quick Deploy
+## Quick Start
 
-### Single-Cluster Setup
-
-#### 1. Get Chart Hashes
+### Single Cluster
 
 ```bash
-# Build will fail and show you the correct hash
-nix build .#manifests
+# Stand up the whole stack (create cluster + deploy)
+nix run
+
+# Tear it down
+nix run .#down
 ```
 
-Copy the `got: sha256-XXXXX...` hash from the error into `pkgs/charts/charts.nix`. Repeat for each chart.
-
-#### 2. Create Cluster
+### Multi-Cluster
 
 ```bash
-nix run .#create-cluster
+# Stand up multi-cluster stack
+nix run .#up-multi
+
+# Test cross-cluster connectivity
+nix run .#test-multi-cluster
+
+# Tear it down
+nix run .#down-multi
 ```
 
-#### 3. Deploy
-
-```bash
-# Deploy via helmfile
-nix run .#deploy
-
-# Or view diff first
-nix run .#diff
-```
-
-#### 4. Verify
-
-```bash
-kubectl get pods -n istio-system
-kubectl get pods -n wookie
-```
-
-#### 5. Clean Up
-
-```bash
-nix run .#delete-cluster
-```
-
-### Multi-Cluster Setup
-
-For cross-datacenter Istio multi-primary multi-network setup, see [MULTI_CLUSTER.md](./MULTI_CLUSTER.md).
-
-Quick start:
-```bash
-nix run .#create-clusters             # Create cluster-a and cluster-b
-nix run .#deploy-multi-cluster-istio  # Deploy Istio to both clusters
-nix run .#test-multi-cluster          # Test cross-cluster connectivity
-nix run .#delete-clusters             # Cleanup
-```
+For detailed multi-cluster architecture, see [MULTI_CLUSTER.md](./MULTI_CLUSTER.md).
 
 ## Architecture
 
@@ -89,31 +62,29 @@ projects.wookie = {
 };
 ```
 
-## Available Commands
+## Commands
 
-### Single-Cluster
 ```bash
-nix run .#create-cluster       # Create k3d cluster
-nix run .#delete-cluster       # Delete cluster
-nix build .#manifests          # Build Kubernetes manifests
-nix build .#helmfile           # Build helmfile.yaml
-nix run .#deploy               # Deploy to cluster (via helmfile)
-nix run .#diff                 # Show deployment diff
-nix run .#destroy              # Destroy all releases
+# Single cluster
+nix run              # Stand up (create + deploy)
+nix run .#down       # Tear down
+
+# Multi-cluster
+nix run .#up-multi   # Stand up both clusters
+nix run .#down-multi # Tear down both clusters
+nix run .#test       # Test cross-cluster connectivity
+
+# Build outputs
+nix build .#manifests          # Raw Kubernetes manifests
+nix build .#helmfile           # Helmfile configuration
+nix build .#manifests-cluster-a
+nix build .#manifests-cluster-b
+nix build .#helmfile-cluster-a
+nix build .#helmfile-cluster-b
 ```
 
-### Multi-Cluster
-```bash
-nix run .#create-clusters             # Create cluster-a and cluster-b
-nix run .#delete-clusters             # Delete both clusters
-nix run .#status-clusters             # Show cluster status
-nix run .#deploy-multi-cluster-istio  # Deploy to both clusters (via helmfile)
-nix run .#deploy-cluster-a            # Deploy only to cluster-a
-nix run .#deploy-cluster-b            # Deploy only to cluster-b
-nix run .#diff-cluster-a              # Show cluster-a diff
-nix run .#diff-cluster-b              # Show cluster-b diff
-nix run .#test-multi-cluster          # Test cross-cluster connectivity
-```
+Advanced granular operations are available as packages (use `nix build .#<name>`):
+`deploy`, `diff`, `destroy`, `create-cluster`, `delete-cluster`, `deploy-cluster-a`, `deploy-cluster-b`, etc.
 
 ### Development
 ```bash

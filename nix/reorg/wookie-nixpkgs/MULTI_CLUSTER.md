@@ -7,17 +7,14 @@ Multi-primary multi-network Istio configuration for cross-datacenter database re
 ```bash
 cd nix/reorg/wookie-nixpkgs
 
-# 1. Create both k3d clusters on shared network
-nix run .#create-clusters
+# Stand up multi-cluster stack (creates clusters + deploys everything)
+nix run .#up-multi
 
-# 2. Deploy Istio and demo apps to both clusters
-nix run .#deploy-multi-cluster-istio
+# Test cross-cluster connectivity
+nix run .#test
 
-# 3. Test cross-cluster connectivity
-nix run .#test-multi-cluster
-
-# 4. Cleanup
-nix run .#delete-clusters
+# Tear down
+nix run .#down-multi
 ```
 
 ## Architecture
@@ -97,34 +94,23 @@ networks:
       port: 15443
 ```
 
-## Available Commands
+## Commands
 
-### Cluster Management
 ```bash
-nix run .#create-clusters    # Create both k3d clusters
-nix run .#delete-clusters    # Delete both clusters
-nix run .#status-clusters    # Show cluster status
+nix run .#up-multi    # Stand up (create clusters + deploy both)
+nix run .#down-multi  # Tear down (delete clusters)
+nix run .#test        # Test cross-cluster connectivity
 ```
 
-### Deployment
+Build outputs:
 ```bash
-nix run .#deploy-cluster-a           # Deploy only to cluster-a (via helmfile)
-nix run .#deploy-cluster-b           # Deploy only to cluster-b (via helmfile)
-nix run .#deploy-multi-cluster-istio # Deploy to both clusters (via helmfile)
-nix run .#diff-cluster-a             # Show cluster-a diff
-nix run .#diff-cluster-b             # Show cluster-b diff
+nix build .#manifests-cluster-a
+nix build .#manifests-cluster-b
+nix build .#helmfile-cluster-a
+nix build .#helmfile-cluster-b
 ```
 
-### Testing
-```bash
-nix run .#test-multi-cluster     # Test cross-cluster connectivity
-```
-
-### Build Manifests
-```bash
-nix build .#manifests-cluster-a  # Build cluster-a manifests
-nix build .#manifests-cluster-b  # Build cluster-b manifests
-```
+Granular operations available as packages: `create-clusters`, `delete-clusters`, `status-clusters`, `deploy-cluster-a`, `deploy-cluster-b`, `diff-cluster-a`, `diff-cluster-b`, `destroy-cluster-a`, `destroy-cluster-b`, `deploy-multi-cluster-istio`
 
 ## Configuration
 

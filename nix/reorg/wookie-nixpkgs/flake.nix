@@ -276,163 +276,155 @@
           manifestsB = kubelib.renderAllBundles clusterConfigB;
           clusterContextB = "k3d-cluster-b";
           
+          # Internal scripts (not exposed in packages)
+          _internal = {
+            create-cluster = clusterConfig.build.scripts.create-cluster;
+            delete-cluster = clusterConfig.build.scripts.delete-cluster;
+            deploy = clusterConfig.build.scripts.deploy-helmfile;
+            create-clusters = clusterConfigA.build.scripts.create-clusters;
+            delete-clusters = clusterConfigA.build.scripts.delete-clusters;
+            deploy-cluster-a = clusterConfigA.build.scripts.deploy-helmfile;
+            deploy-cluster-b = clusterConfigB.build.scripts.deploy-helmfile;
+          };
         in
         {
-          # Single-cluster management scripts
-          create-cluster = clusterConfig.build.scripts.create-cluster or (pkgs.writeText "placeholder" "Not configured");
-          delete-cluster = clusterConfig.build.scripts.delete-cluster or (pkgs.writeText "placeholder" "Not configured");
-
-          # Rendered Kubernetes manifests
-          manifests = manifests;
+          # Main commands
+          up = pkgs.writeShellApplication {
+            name = "up";
+            runtimeInputs = [ pkgs.k3d pkgs.helmfile pkgs.kubernetes-helm pkgs.kubectl ];
+            text = ''
+              set -euo pipefail
+              
+              echo "=== Standing up single cluster stack ==="
+              echo ""
+              
+              echo "Step 1: Creating k3d cluster..."
+              ${_internal.create-cluster}
+              
+              echo ""
+              echo "Step 2: Deploying via helmfile..."
+              CLUSTER_CONTEXT="${clusterContext}" ${_internal.deploy}/bin/deploy-local-k3d-wookie-local-helmfile
+              
+              echo ""
+              echo "=== Stack is up! ==="
+              echo ""
+              echo "Verify with:"
+              echo "  kubectl get pods -A --context ${clusterContext}"
+            '';
+          };
           
-          # Helmfile configuration
-          helmfile = clusterConfig.build.helmfile;
+          down = pkgs.writeShellApplication {
+            name = "down";
+            runtimeInputs = [ pkgs.k3d ];
+            text = ''
+              set -euo pipefail
+              
+              echo "=== Tearing down single cluster stack ==="
+              echo ""
+              
+              ${_internal.delete-cluster}
+              
+              echo ""
+              echo "=== Stack is down! ==="
+            '';
+          };
           
-          # Deployment script (helmfile)
-          deploy = clusterConfig.build.scripts.deploy-helmfile;
-          diff = clusterConfig.build.scripts.diff-helmfile;
-          destroy = clusterConfig.build.scripts.destroy-helmfile;
-
-          # Multi-cluster management scripts
-          create-clusters = clusterConfigA.build.scripts.create-clusters or (pkgs.writeText "placeholder" "Not configured");
-          delete-clusters = clusterConfigA.build.scripts.delete-clusters or (pkgs.writeText "placeholder" "Not configured");
-          status-clusters = clusterConfigA.build.scripts.status-clusters or (pkgs.writeText "placeholder" "Not configured");
-
-          # Multi-cluster manifests
-          manifests-cluster-a = manifestsA;
-          manifests-cluster-b = manifestsB;
+          up-multi = pkgs.writeShellApplication {
+            name = "up-multi";
+            runtimeInputs = [ pkgs.k3d pkgs.helmfile pkgs.kubernetes-helm pkgs.kubectl ];
+            text = ''
+              set -euo pipefail
+              
+              echo "=== Standing up multi-cluster stack ==="
+              echo ""
+              
+              echo "Step 1: Creating k3d clusters..."
+              ${_internal.create-clusters}
+              
+              echo ""
+              echo "Step 2: Deploying to cluster-a via helmfile..."
+              CLUSTER_CONTEXT="${clusterContextA}" ${_internal.deploy-cluster-a}/bin/deploy-multi-cluster-a-helmfile
+              
+              echo ""
+              echo "Step 3: Deploying to cluster-b via helmfile..."
+              CLUSTER_CONTEXT="${clusterContextB}" ${_internal.deploy-cluster-b}/bin/deploy-multi-cluster-b-helmfile
+              
+              echo ""
+              echo "=== Multi-cluster stack is up! ==="
+              echo ""
+              echo "Verify with:"
+              echo "  kubectl get pods -A --context ${clusterContextA}"
+              echo "  kubectl get pods -A --context ${clusterContextB}"
+              echo ""
+              echo "Test cross-cluster connectivity:"
+              echo "  nix run .#test"
+            '';
+          };
           
-          # Multi-cluster helmfile configs
-          helmfile-cluster-a = clusterConfigA.build.helmfile;
-          helmfile-cluster-b = clusterConfigB.build.helmfile;
+          down-multi = pkgs.writeShellApplication {
+            name = "down-multi";
+            runtimeInputs = [ pkgs.k3d pkgs.docker ];
+            text = ''
+              set -euo pipefail
+              
+              echo "=== Tearing down multi-cluster stack ==="
+              echo ""
+              
+              ${_internal.delete-clusters}
+              
+              echo ""
+              echo "=== Multi-cluster stack is down! ==="
+            '';
+          };
 
-          # Individual cluster deployment scripts (helmfile)
-          deploy-cluster-a = clusterConfigA.build.scripts.deploy-helmfile;
-          diff-cluster-a = clusterConfigA.build.scripts.diff-helmfile;
-          destroy-cluster-a = clusterConfigA.build.scripts.destroy-helmfile;
-
-          deploy-cluster-b = clusterConfigB.build.scripts.deploy-helmfile;
-          diff-cluster-b = clusterConfigB.build.scripts.diff-helmfile;
-          destroy-cluster-b = clusterConfigB.build.scripts.destroy-helmfile;
-
-          # Test script for multi-cluster setup
-          test-multi-cluster = pkgs.writeShellApplication {
+          test = pkgs.writeShellApplication {
             name = "test-multi-cluster";
             runtimeInputs = [ pkgs.kubectl pkgs.istioctl pkgs.curl ];
             text = builtins.readFile ./lib/helpers/test-multi-cluster.sh;
           };
 
-          # Multi-cluster Istio deployment script (helmfile)
-          deploy-multi-cluster-istio = pkgs.writeShellApplication {
-            name = "deploy-multi-cluster-istio";
-            runtimeInputs = [ pkgs.kubernetes-helmfile pkgs.kubernetes-helm pkgs.kubectl ];
-            text = ''
-              set -euo pipefail
-              
-              echo "=== Deploying Multi-Cluster Istio via Helmfile ==="
-              echo ""
-              
-              echo "Deploying to cluster-a (${clusterContextA})..."
-              CLUSTER_CONTEXT="${clusterContextA}" ${clusterConfigA.build.scripts.deploy-helmfile}/bin/deploy-multi-cluster-a-helmfile
-              
-              echo ""
-              echo "Deploying to cluster-b (${clusterContextB})..."
-              CLUSTER_CONTEXT="${clusterContextB}" ${clusterConfigB.build.scripts.deploy-helmfile}/bin/deploy-multi-cluster-b-helmfile
-              
-              echo ""
-              echo "=== Multi-cluster Istio deployment complete ==="
-            '';
-          };
+          # Build outputs
+          manifests = manifests;
+          helmfile = clusterConfig.build.helmfile;
+          manifests-cluster-a = manifestsA;
+          manifests-cluster-b = manifestsB;
+          helmfile-cluster-a = clusterConfigA.build.helmfile;
+          helmfile-cluster-b = clusterConfigB.build.helmfile;
           
           default = manifests;
         }
       );
 
-      # Export apps for easy execution
+      # Export apps for easy execution (only the main commands)
       apps = forAllSystems (system: {
-        # Single-cluster commands
-        create-cluster = {
+        # Single cluster
+        up = {
           type = "app";
-          program = "${self.packages.${system}.create-cluster}";
-        };
-
-        delete-cluster = {
-          type = "app";
-          program = "${self.packages.${system}.delete-cluster}";
+          program = "${self.packages.${system}.up}/bin/up";
         };
         
-        deploy = {
+        down = {
           type = "app";
-          program = "${self.packages.${system}.deploy}/bin/deploy-local-k3d-wookie-local-helmfile";
+          program = "${self.packages.${system}.down}/bin/down";
         };
         
-        diff = {
+        # Multi-cluster
+        up-multi = {
           type = "app";
-          program = "${self.packages.${system}.diff}/bin/diff-local-k3d-wookie-local-helmfile";
+          program = "${self.packages.${system}.up-multi}/bin/up-multi";
         };
         
-        destroy = {
+        down-multi = {
           type = "app";
-          program = "${self.packages.${system}.destroy}/bin/destroy-local-k3d-wookie-local-helmfile";
-        };
-
-        # Multi-cluster commands
-        create-clusters = {
-          type = "app";
-          program = "${self.packages.${system}.create-clusters}";
-        };
-
-        delete-clusters = {
-          type = "app";
-          program = "${self.packages.${system}.delete-clusters}";
-        };
-
-        status-clusters = {
-          type = "app";
-          program = "${self.packages.${system}.status-clusters}";
-        };
-
-        deploy-cluster-a = {
-          type = "app";
-          program = "${self.packages.${system}.deploy-cluster-a}/bin/deploy-multi-cluster-a-helmfile";
+          program = "${self.packages.${system}.down-multi}/bin/down-multi";
         };
         
-        diff-cluster-a = {
+        test = {
           type = "app";
-          program = "${self.packages.${system}.diff-cluster-a}/bin/diff-multi-cluster-a-helmfile";
-        };
-        
-        destroy-cluster-a = {
-          type = "app";
-          program = "${self.packages.${system}.destroy-cluster-a}/bin/destroy-multi-cluster-a-helmfile";
+          program = "${self.packages.${system}.test}/bin/test-multi-cluster";
         };
 
-        deploy-cluster-b = {
-          type = "app";
-          program = "${self.packages.${system}.deploy-cluster-b}/bin/deploy-multi-cluster-b-helmfile";
-        };
-        
-        diff-cluster-b = {
-          type = "app";
-          program = "${self.packages.${system}.diff-cluster-b}/bin/diff-multi-cluster-b-helmfile";
-        };
-        
-        destroy-cluster-b = {
-          type = "app";
-          program = "${self.packages.${system}.destroy-cluster-b}/bin/destroy-multi-cluster-b-helmfile";
-        };
-
-        deploy-multi-cluster-istio = {
-          type = "app";
-          program = "${self.packages.${system}.deploy-multi-cluster-istio}/bin/deploy-multi-cluster-istio";
-        };
-
-        test-multi-cluster = {
-          type = "app";
-          program = "${self.packages.${system}.test-multi-cluster}/bin/test-multi-cluster";
-        };
-
-        default = self.apps.${system}.create-cluster;
+        default = self.apps.${system}.up;
       });
 
       # Export dev shell
@@ -446,39 +438,29 @@
               pkgs.k3d
               pkgs.kubectl
               pkgs.kubernetes-helm
-              pkgs.kubernetes-helmfile
+              pkgs.helmfile
               pkgs.istioctl
             ];
 
             shellHook = ''
               echo "Wookie NixPkgs Development Environment"
               echo ""
-              echo "Single-cluster commands:"
-              echo "  nix run .#create-cluster  - Create local k3d cluster"
-              echo "  nix run .#delete-cluster  - Delete local k3d cluster"
-              echo "  nix build .#manifests     - Build Kubernetes manifests"
-              echo "  nix build .#helmfile      - Build helmfile.yaml"
-              echo "  nix run .#deploy          - Deploy to cluster (via helmfile)"
-              echo "  nix run .#diff            - Show deployment diff"
-              echo "  nix run .#destroy         - Destroy all releases"
+              echo "Main commands:"
+              echo "  nix run           - Stand up single cluster"
+              echo "  nix run .#down    - Tear down single cluster"
+              echo "  nix run .#up-multi   - Stand up multi-cluster"
+              echo "  nix run .#down-multi - Tear down multi-cluster"
+              echo "  nix run .#test       - Test multi-cluster connectivity"
               echo ""
-              echo "Multi-cluster commands:"
-              echo "  nix run .#create-clusters       - Create cluster-a and cluster-b"
-              echo "  nix run .#delete-clusters       - Delete both clusters"
-              echo "  nix run .#status-clusters       - Show cluster status"
-              echo "  nix run .#deploy-multi-cluster-istio - Deploy Istio to both clusters"
-              echo "  nix run .#deploy-cluster-a      - Deploy only to cluster-a"
-              echo "  nix run .#deploy-cluster-b      - Deploy only to cluster-b"
-              echo "  nix run .#diff-cluster-a        - Show cluster-a diff"
-              echo "  nix run .#diff-cluster-b        - Show cluster-b diff"
-              echo "  nix run .#test-multi-cluster    - Test cross-cluster connectivity"
+              echo "Build outputs:"
+              echo "  nix build .#manifests  - Raw Kubernetes manifests"
+              echo "  nix build .#helmfile   - Helmfile configuration"
               echo ""
-              echo "Tools available:"
-              echo "  - k3d"
-              echo "  - kubectl"
-              echo "  - helm"
-              echo "  - helmfile"
-              echo "  - istioctl"
+              echo "Advanced (packages only, use 'nix build .#<name>'):"
+              echo "  deploy, diff, destroy, create-cluster, delete-cluster"
+              echo "  deploy-cluster-a, deploy-cluster-b, diff-cluster-a, diff-cluster-b"
+              echo ""
+              echo "Tools: k3d, kubectl, helm, helmfile, istioctl"
             '';
           };
         }
