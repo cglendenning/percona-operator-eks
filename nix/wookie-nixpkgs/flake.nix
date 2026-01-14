@@ -450,7 +450,7 @@
 
           test = pkgs.writeShellApplication {
             name = "test-multi-cluster";
-            runtimeInputs = [ pkgs.kubectl pkgs.istioctl pkgs.curl ];
+            runtimeInputs = [ pkgs.kubectl pkgs.istioctl pkgs.curl pkgs.jq ];
             text = builtins.readFile ./lib/helpers/test-multi-cluster.sh;
           };
 
@@ -533,6 +533,18 @@
               echo ""
               echo "Tools: k3d, kubectl, helm, helmfile, istioctl"
             '';
+          };
+        }
+      );
+
+      # Export library functions and test assertions
+      lib = forAllSystems (system:
+        let
+          pkgs = import nixpkgs { inherit system; };
+        in {
+          testAssertions = import ./lib/test-assertions.nix { 
+            inherit (nixpkgs) lib; 
+            inherit pkgs; 
           };
         }
       );
