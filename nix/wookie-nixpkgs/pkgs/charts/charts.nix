@@ -19,7 +19,7 @@ in
     "1_28_2" = kubelib.downloadHelmChart {
       repo = istio-repo;
       chart = "base";
-      version = "1.24.2";
+      version = "1.28.2";
       chartHash = "sha256-k5gf+Ra8Z6VVlGGXmV+3uDNIIotVmQ6V6HMwKfP9SA0="; 
     };
   };
@@ -28,7 +28,7 @@ in
     "1_28_2" = kubelib.downloadHelmChart {
       repo = istio-repo;
       chart = "istiod";
-      version = "1.24.2";
+      version = "1.28.2";
       chartHash = "sha256-euJBgNmg32AKohKc1NpKZw2R1hGsEgQJHqGDvd0JQVU="; 
     };
   };
@@ -37,7 +37,7 @@ in
     "1_28_2" = kubelib.downloadHelmChart {
       repo = istio-repo;
       chart = "gateway";
-      version = "1.24.2";
+      version = "1.28.2";
       chartHash = "sha256-2wfu4sg+rHtoApBGLXa3MwWoGCzj0TRW8p37ObbHsEs=";
     };
   };
