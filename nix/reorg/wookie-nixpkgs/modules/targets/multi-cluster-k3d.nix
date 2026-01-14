@@ -146,59 +146,78 @@ with lib;
       echo "=== Setting up two k3d clusters for cross-cluster demo ==="
       echo ""
       
-      # Create dedicated shared Docker network
-      echo "Creating dedicated shared Docker network..."
-      ${pkgs.docker}/bin/docker network create "$NETWORK_NAME" --subnet="$NETWORK_SUBNET" 2>/dev/null || {
-        echo "Network exists, recreating..."
-        ${pkgs.docker}/bin/docker network rm "$NETWORK_NAME" 2>/dev/null || true
+      # Check if clusters already exist
+      if ${pkgs.k3d}/bin/k3d cluster list | grep -q "^$CLUSTER_A_NAME" && \
+         ${pkgs.k3d}/bin/k3d cluster list | grep -q "^$CLUSTER_B_NAME"; then
+        echo "Clusters already exist and are ready"
+        ${pkgs.k3d}/bin/k3d cluster list
+        echo ""
+        echo "Kubeconfig contexts:"
+        ${pkgs.kubectl}/bin/kubectl config get-contexts | grep k3d || true
+        exit 0
+      fi
+      
+      # Create or reuse Docker network
+      echo "Setting up Docker network..."
+      if ${pkgs.docker}/bin/docker network inspect "$NETWORK_NAME" >/dev/null 2>&1; then
+        echo "Network $NETWORK_NAME already exists, reusing it"
+      else
         ${pkgs.docker}/bin/docker network create "$NETWORK_NAME" --subnet="$NETWORK_SUBNET"
-      }
-      
-      echo "Network created: $NETWORK_SUBNET"
+        echo "Network created: $NETWORK_SUBNET"
+      fi
       echo ""
       
-      # Create Cluster A
-      echo "Creating Cluster A on shared network..."
-      ${pkgs.k3d}/bin/k3d cluster create "$CLUSTER_A_NAME" \
-        --servers "$CLUSTER_A_SERVERS" \
-        --agents "$CLUSTER_A_AGENTS" \
-        --api-port "$CLUSTER_A_API_PORT" \
-        --port "$CLUSTER_A_HTTP_PORT:80@loadbalancer" \
-        --port "$CLUSTER_A_HTTPS_PORT:443@loadbalancer" \
-        --network "$NETWORK_NAME" \
-        --k3s-arg "--disable=traefik@server:*" \
-        --k3s-arg "--tls-san=172.24.0.2@server:0" \
-        --k3s-arg "--tls-san=172.24.0.3@server:0" \
-        --k3s-arg "--tls-san=172.24.0.4@server:0" \
-        --k3s-arg "--tls-san=172.24.0.5@server:0" \
-        --k3s-arg "--tls-san=172.24.0.6@server:0" \
-        --k3s-arg "--tls-san=172.24.0.7@server:0" \
-        --k3s-arg "--tls-san=172.24.0.8@server:0"
+      # Create Cluster A (if it doesn't exist)
+      if ${pkgs.k3d}/bin/k3d cluster list | grep -q "^$CLUSTER_A_NAME"; then
+        echo "Cluster A already exists, skipping creation"
+      else
+        echo "Creating Cluster A on shared network..."
+        ${pkgs.k3d}/bin/k3d cluster create "$CLUSTER_A_NAME" \
+          --servers "$CLUSTER_A_SERVERS" \
+          --agents "$CLUSTER_A_AGENTS" \
+          --api-port "$CLUSTER_A_API_PORT" \
+          --port "$CLUSTER_A_HTTP_PORT:80@loadbalancer" \
+          --port "$CLUSTER_A_HTTPS_PORT:443@loadbalancer" \
+          --network "$NETWORK_NAME" \
+          --k3s-arg "--disable=traefik@server:*" \
+          --k3s-arg "--tls-san=172.24.0.2@server:0" \
+          --k3s-arg "--tls-san=172.24.0.3@server:0" \
+          --k3s-arg "--tls-san=172.24.0.4@server:0" \
+          --k3s-arg "--tls-san=172.24.0.5@server:0" \
+          --k3s-arg "--tls-san=172.24.0.6@server:0" \
+          --k3s-arg "--tls-san=172.24.0.7@server:0" \
+          --k3s-arg "--tls-san=172.24.0.8@server:0"
+      fi
       
       echo ""
-      echo "Creating Cluster B on shared network..."
-      ${pkgs.k3d}/bin/k3d cluster create "$CLUSTER_B_NAME" \
-        --servers "$CLUSTER_B_SERVERS" \
-        --agents "$CLUSTER_B_AGENTS" \
-        --api-port "$CLUSTER_B_API_PORT" \
-        --port "$CLUSTER_B_HTTP_PORT:80@loadbalancer" \
-        --port "$CLUSTER_B_HTTPS_PORT:443@loadbalancer" \
-        --network "$NETWORK_NAME" \
-        --k3s-arg "--disable=traefik@server:*" \
-        --k3s-arg "--tls-san=172.24.0.2@server:0" \
-        --k3s-arg "--tls-san=172.24.0.3@server:0" \
-        --k3s-arg "--tls-san=172.24.0.4@server:0" \
-        --k3s-arg "--tls-san=172.24.0.5@server:0" \
-        --k3s-arg "--tls-san=172.24.0.6@server:0" \
-        --k3s-arg "--tls-san=172.24.0.7@server:0" \
-        --k3s-arg "--tls-san=172.24.0.8@server:0" \
-        --k3s-arg "--tls-san=172.24.0.9@server:0" \
-        --k3s-arg "--tls-san=172.24.0.10@server:0" \
-        --k3s-arg "--tls-san=172.24.0.11@server:0" \
-        --k3s-arg "--tls-san=172.24.0.12@server:0" \
-        --k3s-arg "--tls-san=172.24.0.13@server:0" \
-        --k3s-arg "--tls-san=172.24.0.14@server:0" \
-        --k3s-arg "--tls-san=172.24.0.15@server:0"
+      # Create Cluster B (if it doesn't exist)
+      if ${pkgs.k3d}/bin/k3d cluster list | grep -q "^$CLUSTER_B_NAME"; then
+        echo "Cluster B already exists, skipping creation"
+      else
+        echo "Creating Cluster B on shared network..."
+        ${pkgs.k3d}/bin/k3d cluster create "$CLUSTER_B_NAME" \
+          --servers "$CLUSTER_B_SERVERS" \
+          --agents "$CLUSTER_B_AGENTS" \
+          --api-port "$CLUSTER_B_API_PORT" \
+          --port "$CLUSTER_B_HTTP_PORT:80@loadbalancer" \
+          --port "$CLUSTER_B_HTTPS_PORT:443@loadbalancer" \
+          --network "$NETWORK_NAME" \
+          --k3s-arg "--disable=traefik@server:*" \
+          --k3s-arg "--tls-san=172.24.0.2@server:0" \
+          --k3s-arg "--tls-san=172.24.0.3@server:0" \
+          --k3s-arg "--tls-san=172.24.0.4@server:0" \
+          --k3s-arg "--tls-san=172.24.0.5@server:0" \
+          --k3s-arg "--tls-san=172.24.0.6@server:0" \
+          --k3s-arg "--tls-san=172.24.0.7@server:0" \
+          --k3s-arg "--tls-san=172.24.0.8@server:0" \
+          --k3s-arg "--tls-san=172.24.0.9@server:0" \
+          --k3s-arg "--tls-san=172.24.0.10@server:0" \
+          --k3s-arg "--tls-san=172.24.0.11@server:0" \
+          --k3s-arg "--tls-san=172.24.0.12@server:0" \
+          --k3s-arg "--tls-san=172.24.0.13@server:0" \
+          --k3s-arg "--tls-san=172.24.0.14@server:0" \
+          --k3s-arg "--tls-san=172.24.0.15@server:0"
+      fi
       
       echo ""
       echo "Clusters created on shared network:"

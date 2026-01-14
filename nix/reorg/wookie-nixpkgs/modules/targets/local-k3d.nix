@@ -66,6 +66,13 @@ with lib;
       SERVERS="${toString config.targets.local-k3d.servers}"
       AGENTS="${toString config.targets.local-k3d.agents}"
       
+      # Check if cluster already exists
+      if ${pkgs.k3d}/bin/k3d cluster list | grep -q "^$CLUSTER_NAME"; then
+        echo "Cluster $CLUSTER_NAME already exists and is ready"
+        echo "Context: ${config.targets.local-k3d.context}"
+        exit 0
+      fi
+      
       echo "Creating k3d cluster: $CLUSTER_NAME"
       
       ${pkgs.k3d}/bin/k3d cluster create "$CLUSTER_NAME" \

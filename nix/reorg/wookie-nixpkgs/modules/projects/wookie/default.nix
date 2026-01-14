@@ -44,18 +44,24 @@ with lib;
     platform.kubernetes.cluster.batches.namespaces.bundles.wookie-namespace = {
       namespace = config.projects.wookie.namespace;
       manifests = [
-        (pkgs.writeTextFile {
-          name = "wookie-namespace";
-          text = ''
-            apiVersion: v1
-            kind: Namespace
-            metadata:
-              name: ${config.projects.wookie.namespace}
-              labels:
-                istio-injection: enabled
-                wookie.io/cluster-role: ${config.projects.wookie.clusterRole}
-          '';
-        })
+        (let
+          yaml = pkgs.formats.yaml { };
+          resource = {
+            apiVersion = "v1";
+            kind = "Namespace";
+            metadata = {
+              name = config.projects.wookie.namespace;
+              labels = {
+                "istio-injection" = "enabled";
+                "wookie.io/cluster-role" = config.projects.wookie.clusterRole;
+              };
+            };
+          };
+        in
+        pkgs.runCommand "wookie-namespace" {} ''
+          mkdir -p $out
+          cp ${yaml.generate "manifest.yaml" resource} $out/manifest.yaml
+        '')
       ];
     };
 
@@ -63,18 +69,24 @@ with lib;
     platform.kubernetes.cluster.batches.namespaces.bundles.wookie-dr-namespace = mkIf (config.projects.wookie.clusterRole != "standalone") {
       namespace = config.projects.wookie.drNamespace;
       manifests = [
-        (pkgs.writeTextFile {
-          name = "wookie-dr-namespace";
-          text = ''
-            apiVersion: v1
-            kind: Namespace
-            metadata:
-              name: ${config.projects.wookie.drNamespace}
-              labels:
-                istio-injection: enabled
-                wookie.io/cluster-role: ${config.projects.wookie.clusterRole}
-          '';
-        })
+        (let
+          yaml = pkgs.formats.yaml { };
+          resource = {
+            apiVersion = "v1";
+            kind = "Namespace";
+            metadata = {
+              name = config.projects.wookie.drNamespace;
+              labels = {
+                "istio-injection" = "enabled";
+                "wookie.io/cluster-role" = config.projects.wookie.clusterRole;
+              };
+            };
+          };
+        in
+        pkgs.runCommand "wookie-dr-namespace" {} ''
+          mkdir -p $out
+          cp ${yaml.generate "manifest.yaml" resource} $out/manifest.yaml
+        '')
       ];
     };
 

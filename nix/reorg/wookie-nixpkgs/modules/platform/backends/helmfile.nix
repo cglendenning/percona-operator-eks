@@ -12,10 +12,29 @@ let
   cfg = config.platform.kubernetes;
   yaml = pkgs.formats.yaml { };
   
+  # Resolve a bundle dependency to its full release name across all batches
+  resolveBundleDependency = depName:
+    let
+      batches = config.platform.kubernetes.cluster.batches;
+      # Search all batches for a bundle with this name
+      findInBatch = batchName: batchConfig:
+        if builtins.hasAttr depName batchConfig.bundles
+        then "${cfg.cluster.uniqueIdentifier}-${batchName}-${depName}"
+        else null;
+      
+      # Try each batch
+      results = lib.mapAttrsToList findInBatch batches;
+      validResults = lib.filter (r: r != null) results;
+    in
+    if (builtins.length validResults) > 0
+    then builtins.head validResults
+    else "${cfg.cluster.uniqueIdentifier}-unknown-${depName}"; # Fallback
+  
   # Generate a helmfile release for a bundle
   generateRelease = batchName: batchConfig: bundleName: bundle:
     let
       releaseName = "${cfg.cluster.uniqueIdentifier}-${batchName}-${bundleName}";
+      resolvedDeps = map resolveBundleDependency bundle.dependsOn;
       
       # For Helm charts, reference the chart directly
       chartRelease = if bundle.chart != null then {
@@ -23,31 +42,33 @@ let
         namespace = bundle.namespace;
         chart = "${bundle.chart.package}";
         values = [ bundle.chart.values ];
-        needs = map (dep: "${cfg.cluster.uniqueIdentifier}-${batchName}-${dep}") bundle.dependsOn;
+        needs = resolvedDeps;
+        # Note: kubeContext is set by helmfile command-line, not in config
       } else null;
       
       # For raw manifests, convert to a proper Helm chart structure
       manifestRelease = if (builtins.length bundle.manifests) > 0 then
         let
           # Create a proper Helm chart with Chart.yaml and templates
-          chartMetadata = {
-            apiVersion = "v2";
-            name = bundleName;
-            version = "0.1.0";
-            description = "Kubernetes manifests for ${bundleName}";
-          };
-          
           helmChart = pkgs.runCommand "helm-chart-${bundleName}" {} ''
             mkdir -p $out/templates
             
             # Combine all manifests into templates
+            # Handle both directory structures and plain files
             ${lib.concatMapStringsSep "\n" (m: ''
-              cat ${m}/manifest.yaml >> $out/templates/manifests.yaml
+              if [ -d ${m} ]; then
+                cat ${m}/manifest.yaml >> $out/templates/manifests.yaml
+              else
+                cat ${m} >> $out/templates/manifests.yaml
+              fi
             '') bundle.manifests}
             
-            # Generate Chart.yaml
+            # Generate Chart.yaml in YAML format
             cat > $out/Chart.yaml << 'CHARTEOF'
-            ${builtins.toJSON chartMetadata}
+            apiVersion: v2
+            name: ${bundleName}
+            version: 0.1.0
+            description: Kubernetes manifests for ${bundleName}
             CHARTEOF
           '';
         in
@@ -56,7 +77,8 @@ let
           namespace = bundle.namespace;
           chart = "${helmChart}";
           values = [ {} ];
-          needs = map (dep: "${cfg.cluster.uniqueIdentifier}-${batchName}-${dep}") bundle.dependsOn;
+          needs = resolvedDeps;
+          # Note: kubeContext is set by helmfile command-line, not in config
         }
       else null;
       
@@ -64,6 +86,10 @@ let
     if chartRelease != null then chartRelease
     else if manifestRelease != null then manifestRelease
     else null;
+  
+  # Skip namespace and CRD batches - they're created via kubectl, not helm
+  # This avoids validation issues with k8s version mismatches
+  shouldSkipBatch = batchName: batchName == "namespaces" || batchName == "crds";
   
   # Generate all releases for a batch
   generateBatchReleases = batchName: batchConfig:
@@ -79,18 +105,15 @@ let
       # Filter out nulls
       validReleases = lib.filter (r: r != null) releases;
       
-      # Add batch dependencies to first release in batch
-      releasesWithBatchDeps = if (builtins.length validReleases) > 0 then
+      # Add batch dependencies to ALL releases in batch (not just first)
+      releasesWithBatchDeps = map (release:
         let
-          firstRelease = builtins.head validReleases;
-          restReleases = builtins.tail validReleases;
           batchDeps = map (dep: "${cfg.cluster.uniqueIdentifier}-${dep}-*") batchConfig.dependsOn;
-          updatedFirstRelease = firstRelease // {
-            needs = (firstRelease.needs or []) ++ batchDeps;
-          };
         in
-        [ updatedFirstRelease ] ++ restReleases
-      else validReleases;
+        release // {
+          needs = (release.needs or []) ++ batchDeps;
+        }
+      ) validReleases;
       
     in
     releasesWithBatchDeps;
@@ -105,9 +128,11 @@ let
         (a: b: batches.${a}.priority < batches.${b}.priority)
         (lib.attrNames batches);
       
-      # Generate all releases
+      # Generate all releases (skip namespaces batch)
       allReleases = lib.flatten (map (batchName:
-        generateBatchReleases batchName batches.${batchName}
+        if shouldSkipBatch batchName
+        then []
+        else generateBatchReleases batchName batches.${batchName}
       ) sortedBatches);
       
       helmfileConfig = {
@@ -163,8 +188,33 @@ in
             exit 1
           }
           
-          # Apply helmfile
-          helmfile -f "$HELMFILE" apply \
+          # First, create namespaces (idempotent - kubectl apply handles this)
+          echo "Creating namespaces..."
+          ${let
+            namespaceBatch = config.platform.kubernetes.cluster.batches.namespaces;
+            enabledBundles = lib.filter (b: b.enabled or true) (lib.attrValues namespaceBatch.bundles);
+            renderedBundles = map pkgs.kubelib.renderBundle enabledBundles;
+          in
+          lib.concatMapStringsSep "\n" (ns: ''
+            kubectl apply --context "$CONTEXT" -f ${ns}/manifest.yaml
+          '') renderedBundles}
+          echo ""
+          
+          # Apply CRDs (server-side and skip validation for k3s compatibility)
+          echo "Installing CRDs..."
+          ${let
+            crdBatch = config.platform.kubernetes.cluster.batches.crds;
+            enabledBundles = lib.filter (b: b.enabled or true) (lib.attrValues crdBatch.bundles);
+            renderedBundles = map pkgs.kubelib.renderBundle enabledBundles;
+          in
+          lib.concatMapStringsSep "\n" (crd: ''
+            kubectl apply --server-side=true --force-conflicts --validate=false --context "$CONTEXT" -f ${crd}/manifest.yaml
+          '') renderedBundles}
+          echo ""
+          
+          # Apply helmfile (operators, services)
+          echo "Deploying via helmfile..."
+          helmfile -f "$HELMFILE" sync \
             --kube-context "$CONTEXT" \
             --concurrency 1
           

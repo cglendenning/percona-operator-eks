@@ -110,17 +110,28 @@ in
     platform.kubernetes.cluster.batches.namespaces.bundles.istio-system = {
       namespace = cfg.namespace;
       manifests = [
-        (pkgs.writeTextFile {
-          name = "istio-namespace";
-          text = ''
-            apiVersion: v1
-            kind: Namespace
-            metadata:
-              name: ${cfg.namespace}
-              labels:
-                istio-injection: disabled
-          '';
-        })
+        (let
+          yaml = pkgs.formats.yaml { };
+          # Extract network from eastWestGateway config (same as used for gateway deployment)
+          network = if cfg.eastWestGateway.enabled
+                    then cfg.eastWestGateway.values.labels.topology_istio_io_network or "network1"
+                    else "network1";
+          resource = {
+            apiVersion = "v1";
+            kind = "Namespace";
+            metadata = {
+              name = cfg.namespace;
+              labels = {
+                "istio-injection" = "disabled";
+                "topology.istio.io/network" = network;
+              };
+            };
+          };
+        in
+        pkgs.runCommand "istio-namespace" {} ''
+          mkdir -p $out
+          cp ${yaml.generate "manifest.yaml" resource} $out/manifest.yaml
+        '')
       ];
     };
 
@@ -133,7 +144,7 @@ in
         package = charts.istio-base.${cfg.version};
         values = cfg.base.values;
       };
-      dependsOn = [ "istio-system" ];
+      # Note: Namespaces are created via kubectl before helmfile runs
     };
 
     # Deploy Istiod (control plane)
@@ -157,7 +168,7 @@ in
         package = charts.istio-gateway.${cfg.version};
         values = cfg.gateway.values;
       };
-      dependsOn = [ "istiod" ];
+      # Note: Dependency on istiod is handled by batch-level dependency
     };
 
     # Deploy East-West gateway for multi-cluster (optional)
@@ -392,7 +403,7 @@ in
           '') allManifests}
         '')
       ];
-      dependsOn = [ "istiod" ];
+      # Note: Dependency on istiod is handled by batch-level dependency
     };
   };
 }

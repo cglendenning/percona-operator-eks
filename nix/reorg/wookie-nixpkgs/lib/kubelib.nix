@@ -42,7 +42,7 @@ rec {
   combineManifests = manifests:
     pkgs.runCommand "combined-manifests" {} ''
       mkdir -p $out
-      cat ${lib.concatMapStringsSep " " (m: "${m}") manifests} > $out/manifest.yaml
+      cat ${lib.concatMapStringsSep " " (m: "${m}/manifest.yaml") manifests} > $out/manifest.yaml
     '';
 
   # Render a bundle (either Helm chart or raw manifests)

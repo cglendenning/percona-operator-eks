@@ -331,23 +331,90 @@
           
           up-multi = pkgs.writeShellApplication {
             name = "up-multi";
-            runtimeInputs = [ pkgs.k3d pkgs.helmfile pkgs.kubernetes-helm pkgs.kubectl ];
+            runtimeInputs = [ pkgs.k3d pkgs.helmfile pkgs.kubernetes-helm pkgs.kubectl pkgs.istioctl pkgs.openssl ];
             text = ''
               set -euo pipefail
+              
+              CERTS_DIR="''${ISTIO_CERTS_DIR:-./certs}"
               
               echo "=== Standing up multi-cluster stack ==="
               echo ""
               
-              echo "Step 1: Creating k3d clusters..."
+              echo "Step 1: Checking/generating shared CA certificates..."
+              if [ ! -f "$CERTS_DIR/root-cert.pem" ]; then
+                echo "Certificates not found, generating..."
+                ${pkgs.writeShellScript "gen-certs" (builtins.readFile ./lib/helpers/generate-ca-certs.sh)} "$CERTS_DIR"
+              else
+                echo "Using existing certificates in $CERTS_DIR"
+                echo "Root CA fingerprint:"
+                openssl x509 -in "$CERTS_DIR/root-cert.pem" -noout -fingerprint -sha256
+              fi
+              echo ""
+              
+              echo "Step 2: Creating k3d clusters..."
               ${_internal.create-clusters}
               
               echo ""
-              echo "Step 2: Deploying to cluster-a via helmfile..."
+              echo "Step 3: Installing shared CA certificates..."
+              
+              # Cluster A
+              echo "Creating cacerts secret in ${clusterContextA} (istio-system namespace)..."
+              kubectl create namespace istio-system --context="${clusterContextA}" --dry-run=client -o yaml | \
+                kubectl apply --context="${clusterContextA}" -f -
+              
+              # Label namespace with network (required for multi-cluster)
+              kubectl label namespace istio-system topology.istio.io/network=network1 \
+                --context="${clusterContextA}" --overwrite
+              
+              kubectl create secret generic cacerts -n istio-system \
+                --from-file=ca-cert.pem="$CERTS_DIR/cluster-a-ca-cert.pem" \
+                --from-file=ca-key.pem="$CERTS_DIR/cluster-a-ca-key.pem" \
+                --from-file=root-cert.pem="$CERTS_DIR/root-cert.pem" \
+                --from-file=cert-chain.pem="$CERTS_DIR/cluster-a-cert-chain.pem" \
+                --context="${clusterContextA}" \
+                --dry-run=client -o yaml | \
+                kubectl apply --context="${clusterContextA}" -f -
+              
+              # Cluster B
+              echo "Creating cacerts secret in ${clusterContextB} (istio-system namespace)..."
+              kubectl create namespace istio-system --context="${clusterContextB}" --dry-run=client -o yaml | \
+                kubectl apply --context="${clusterContextB}" -f -
+              
+              # Label namespace with network (required for multi-cluster)
+              kubectl label namespace istio-system topology.istio.io/network=network2 \
+                --context="${clusterContextB}" --overwrite
+              
+              kubectl create secret generic cacerts -n istio-system \
+                --from-file=ca-cert.pem="$CERTS_DIR/cluster-b-ca-cert.pem" \
+                --from-file=ca-key.pem="$CERTS_DIR/cluster-b-ca-key.pem" \
+                --from-file=root-cert.pem="$CERTS_DIR/root-cert.pem" \
+                --from-file=cert-chain.pem="$CERTS_DIR/cluster-b-cert-chain.pem" \
+                --context="${clusterContextB}" \
+                --dry-run=client -o yaml | \
+                kubectl apply --context="${clusterContextB}" -f -
+              
+              echo "Certificates installed in both clusters."
+              echo ""
+              
+              echo "Step 4: Deploying to cluster-a via helmfile..."
               CLUSTER_CONTEXT="${clusterContextA}" ${_internal.deploy-cluster-a}/bin/deploy-multi-cluster-a-helmfile
               
               echo ""
-              echo "Step 3: Deploying to cluster-b via helmfile..."
+              echo "Step 5: Deploying to cluster-b via helmfile..."
               CLUSTER_CONTEXT="${clusterContextB}" ${_internal.deploy-cluster-b}/bin/deploy-multi-cluster-b-helmfile
+              
+              echo ""
+              echo "Step 6: Configuring cross-cluster service discovery..."
+              echo "Waiting for istiod to be ready in both clusters..."
+              kubectl wait --for=condition=available --timeout=180s deployment/istiod -n istio-system --context=${clusterContextA}
+              kubectl wait --for=condition=available --timeout=180s deployment/istiod -n istio-system --context=${clusterContextB}
+              
+              echo "Creating remote secrets for endpoint discovery..."
+              istioctl create-remote-secret --context=${clusterContextA} --name=cluster-a | \
+                kubectl apply -f - --context=${clusterContextB}
+              istioctl create-remote-secret --context=${clusterContextB} --name=cluster-b | \
+                kubectl apply -f - --context=${clusterContextA}
+              echo "Remote secrets configured."
               
               echo ""
               echo "=== Multi-cluster stack is up! ==="
@@ -355,6 +422,10 @@
               echo "Verify with:"
               echo "  kubectl get pods -A --context ${clusterContextA}"
               echo "  kubectl get pods -A --context ${clusterContextB}"
+              echo ""
+              echo "Verify mTLS certificates:"
+              echo "  kubectl get secret cacerts -n istio-system --context ${clusterContextA}"
+              echo "  kubectl get secret cacerts -n istio-system --context ${clusterContextB}"
               echo ""
               echo "Test cross-cluster connectivity:"
               echo "  nix run .#test"

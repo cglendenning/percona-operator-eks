@@ -44,17 +44,23 @@ in
     platform.kubernetes.cluster.batches.namespaces.bundles."helloworld-namespace" = {
       namespace = cfg.namespace;
       manifests = [
-        (pkgs.writeTextFile {
-          name = "helloworld-namespace";
-          text = ''
-            apiVersion: v1
-            kind: Namespace
-            metadata:
-              name: ${cfg.namespace}
-              labels:
-                istio-injection: enabled
-          '';
-        })
+        (let
+          yaml = pkgs.formats.yaml { };
+          resource = {
+            apiVersion = "v1";
+            kind = "Namespace";
+            metadata = {
+              name = cfg.namespace;
+              labels = {
+                "istio-injection" = "enabled";
+              };
+            };
+          };
+        in
+        pkgs.runCommand "helloworld-namespace" {} ''
+          mkdir -p $out
+          cp ${yaml.generate "manifest.yaml" resource} $out/manifest.yaml
+        '')
       ];
     };
 
@@ -62,61 +68,100 @@ in
     platform.kubernetes.cluster.batches.services.bundles.helloworld = {
       namespace = cfg.namespace;
       manifests = [
-        (pkgs.writeTextFile {
-          name = "helloworld-app";
-          text = ''
-            ---
-            apiVersion: v1
-            kind: Service
-            metadata:
-              name: helloworld
-              namespace: ${cfg.namespace}
-              labels:
-                app: helloworld
-                service: helloworld
-            spec:
-              ports:
-              - port: 5000
-                name: http
-              selector:
-                app: helloworld
-            ---
-            apiVersion: apps/v1
-            kind: Deployment
-            metadata:
-              name: helloworld-${cfg.version}
-              namespace: ${cfg.namespace}
-              labels:
-                app: helloworld
-                version: ${cfg.version}
-            spec:
-              replicas: ${toString cfg.replicas}
-              selector:
-                matchLabels:
-                  app: helloworld
-                  version: ${cfg.version}
-              template:
-                metadata:
-                  labels:
-                    app: helloworld
-                    version: ${cfg.version}
-                spec:
-                  containers:
-                  - name: helloworld
-                    image: ${cfg.image}
-                    resources:
-                      requests:
-                        cpu: "100m"
-                    imagePullPolicy: IfNotPresent
-                    ports:
-                    - containerPort: 5000
-                    env:
-                    - name: SERVICE_VERSION
-                      value: ${cfg.version}
-          '';
-        })
+        (let
+          yaml = pkgs.formats.yaml { };
+          
+          service = {
+            apiVersion = "v1";
+            kind = "Service";
+            metadata = {
+              name = "helloworld";
+              namespace = cfg.namespace;
+              labels = {
+                app = "helloworld";
+                service = "helloworld";
+              };
+            };
+            spec = {
+              ports = [
+                {
+                  port = 5000;
+                  name = "http";
+                }
+              ];
+              selector = {
+                app = "helloworld";
+              };
+            };
+          };
+          
+          deployment = {
+            apiVersion = "apps/v1";
+            kind = "Deployment";
+            metadata = {
+              name = "helloworld-${cfg.version}";
+              namespace = cfg.namespace;
+              labels = {
+                app = "helloworld";
+                version = cfg.version;
+              };
+            };
+            spec = {
+              replicas = cfg.replicas;
+              selector = {
+                matchLabels = {
+                  app = "helloworld";
+                  version = cfg.version;
+                };
+              };
+              template = {
+                metadata = {
+                  labels = {
+                    app = "helloworld";
+                    version = cfg.version;
+                  };
+                };
+                spec = {
+                  containers = [
+                    {
+                      name = "helloworld";
+                      image = cfg.image;
+                      resources = {
+                        requests = {
+                          cpu = "100m";
+                        };
+                      };
+                      imagePullPolicy = "IfNotPresent";
+                      ports = [
+                        {
+                          containerPort = 5000;
+                        }
+                      ];
+                      env = [
+                        {
+                          name = "SERVICE_VERSION";
+                          value = cfg.version;
+                        }
+                      ];
+                    }
+                  ];
+                };
+              };
+            };
+          };
+          
+          serviceYaml = yaml.generate "service.yaml" service;
+          deploymentYaml = yaml.generate "deployment.yaml" deployment;
+        in
+        pkgs.runCommand "helloworld-app" {} ''
+          mkdir -p $out
+          cat ${serviceYaml} > $out/manifest.yaml
+          echo "---" >> $out/manifest.yaml
+          cat ${deploymentYaml} >> $out/manifest.yaml
+        '')
       ];
-      dependsOn = [ "helloworld-namespace" "istiod" ];
+      # Note: Namespaces are created via kubectl before helmfile runs
+      # Dependencies on other services are handled by batch-level ordering
     };
   };
 }
