@@ -417,6 +417,96 @@
               echo "Remote secrets configured."
               
               echo ""
+              echo "Step 7: Configuring meshNetworks..."
+              echo "Waiting for east-west gateways to get LoadBalancer IPs..."
+              kubectl wait --for=jsonpath='{.status.loadBalancer.ingress}' --timeout=60s \
+                service/istio-eastwestgateway -n istio-system --context=${clusterContextA} || true
+              kubectl wait --for=jsonpath='{.status.loadBalancer.ingress}' --timeout=60s \
+                service/istio-eastwestgateway -n istio-system --context=${clusterContextB} || true
+              
+              # Get gateway IPs
+              GW_A=$(kubectl get svc istio-eastwestgateway -n istio-system --context=${clusterContextA} \
+                -o jsonpath='{.status.loadBalancer.ingress[0].ip}')
+              GW_B=$(kubectl get svc istio-eastwestgateway -n istio-system --context=${clusterContextB} \
+                -o jsonpath='{.status.loadBalancer.ingress[0].ip}')
+              
+              echo "Gateway IPs:"
+              echo "  Cluster A: $GW_A"
+              echo "  Cluster B: $GW_B"
+              
+              # Configure meshNetworks in both clusters
+              cat <<EOF | kubectl apply --context=${clusterContextA} -f -
+              apiVersion: v1
+              kind: ConfigMap
+              metadata:
+                name: istio
+                namespace: istio-system
+              data:
+                mesh: |-
+                  defaultConfig:
+                    discoveryAddress: istiod.istio-system.svc:15012
+                    proxyMetadata: {}
+                    tracing:
+                      zipkin:
+                        address: zipkin.istio-system:9411
+                  enablePrometheusMerge: true
+                  rootNamespace: istio-system
+                  trustDomain: cluster.local
+                  meshNetworks:
+                    network1:
+                      endpoints:
+                      - fromRegistry: cluster-a
+                      gateways:
+                      - address: $GW_A
+                        port: 15443
+                    network2:
+                      endpoints:
+                      - fromRegistry: cluster-b
+                      gateways:
+                      - address: $GW_B
+                        port: 15443
+              EOF
+              
+              cat <<EOF | kubectl apply --context=${clusterContextB} -f -
+              apiVersion: v1
+              kind: ConfigMap
+              metadata:
+                name: istio
+                namespace: istio-system
+              data:
+                mesh: |-
+                  defaultConfig:
+                    discoveryAddress: istiod.istio-system.svc:15012
+                    proxyMetadata: {}
+                    tracing:
+                      zipkin:
+                        address: zipkin.istio-system:9411
+                  enablePrometheusMerge: true
+                  rootNamespace: istio-system
+                  trustDomain: cluster.local
+                  meshNetworks:
+                    network1:
+                      endpoints:
+                      - fromRegistry: cluster-a
+                      gateways:
+                      - address: $GW_A
+                        port: 15443
+                    network2:
+                      endpoints:
+                      - fromRegistry: cluster-b
+                      gateways:
+                      - address: $GW_B
+                        port: 15443
+              EOF
+              
+              echo "Restarting istiod to pick up meshNetworks configuration..."
+              kubectl rollout restart deployment/istiod -n istio-system --context=${clusterContextA}
+              kubectl rollout restart deployment/istiod -n istio-system --context=${clusterContextB}
+              kubectl rollout status deployment/istiod -n istio-system --context=${clusterContextA} --timeout=120s
+              kubectl rollout status deployment/istiod -n istio-system --context=${clusterContextB} --timeout=120s
+              echo "meshNetworks configured."
+              
+              echo ""
               echo "=== Multi-cluster stack is up! ==="
               echo ""
               echo "Verify with:"
