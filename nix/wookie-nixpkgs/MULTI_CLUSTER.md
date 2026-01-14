@@ -5,7 +5,7 @@ Multi-primary multi-network Istio configuration for cross-datacenter database re
 ## Quick Start
 
 ```bash
-cd nix/reorg/wookie-nixpkgs
+cd nix/wookie-nixpkgs
 
 # Stand up multi-cluster stack (creates clusters + deploys everything)
 nix run .#up-multi
@@ -235,7 +235,7 @@ Benefits:
 ## Directory Structure
 
 ```
-nix/reorg/wookie-nixpkgs/
+nix/wookie-nixpkgs/
 ├── flake.nix                          # Main flake with multi-cluster configs
 ├── modules/
 │   ├── platform/
