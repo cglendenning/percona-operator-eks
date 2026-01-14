@@ -10,8 +10,8 @@ cd nix/reorg/wookie-nixpkgs
 # 1. Create both k3d clusters on shared network
 nix run .#create-clusters
 
-# 2. Deploy Istio and demo apps to both clusters with automatic service discovery
-nix run .#deploy-multi-cluster
+# 2. Deploy Istio and demo apps to both clusters
+nix run .#deploy-multi-cluster-istio
 
 # 3. Test cross-cluster connectivity
 nix run .#test-multi-cluster
@@ -108,9 +108,11 @@ nix run .#status-clusters    # Show cluster status
 
 ### Deployment
 ```bash
-nix run .#deploy-cluster-a       # Deploy only to cluster-a
-nix run .#deploy-cluster-b       # Deploy only to cluster-b
-nix run .#deploy-multi-cluster   # Deploy to both with remote secrets
+nix run .#deploy-cluster-a           # Deploy only to cluster-a (via helmfile)
+nix run .#deploy-cluster-b           # Deploy only to cluster-b (via helmfile)
+nix run .#deploy-multi-cluster-istio # Deploy to both clusters (via helmfile)
+nix run .#diff-cluster-a             # Show cluster-a diff
+nix run .#diff-cluster-b             # Show cluster-b diff
 ```
 
 ### Testing
@@ -250,7 +252,10 @@ Benefits:
 nix/reorg/wookie-nixpkgs/
 ├── flake.nix                          # Main flake with multi-cluster configs
 ├── modules/
-│   ├── platform/kubernetes/           # Kubernetes deployment system
+│   ├── platform/
+│   │   ├── kubernetes/                # Kubernetes deployment system
+│   │   └── backends/
+│   │       └── helmfile.nix          # Helmfile backend
 │   ├── projects/wookie/
 │   │   ├── default.nix               # Wookie project definition
 │   │   ├── istio.nix                 # Istio component
@@ -273,6 +278,7 @@ This implementation uses the Nix module system with:
 - Separate targets for cluster-a and cluster-b
 - Modular project structure (wookie with istio + demo-helloworld components)
 - Batch-based deployment system (namespaces → CRDs → operators → services)
+- Helmfile backend for orchestrated deployment with dependency management
 - Automatic manifest generation from Helm charts
 - Type-safe configuration with module options
 

@@ -8,7 +8,7 @@ let
 
   # To get chart hashes:
   # 1. Use a fake hash (lib.fakeHash or any invalid hash)
-  # 2. Try to build: nix build .#fleet-bundles
+  # 2. Try to build: nix build .#manifests
   # 3. Nix will error and show you the correct hash:
   #    "got: sha256-XXXXX..."
   # 4. Copy that hash here

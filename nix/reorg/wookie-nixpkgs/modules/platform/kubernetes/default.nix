@@ -130,7 +130,7 @@ let
 in
 {
   imports = [
-    ../backends/fleet.nix
+    ../backends/helmfile.nix
   ];
 
   options = {
@@ -143,10 +143,10 @@ in
             description = "Build output scripts for cluster management.";
           };
           
-          fleet-bundles = mkOption {
-            type = types.nullOr types.package;
+          helmfile = mkOption {
+            type = types.nullOr types.path;
             default = null;
-            description = "Fleet bundles package.";
+            description = "Generated helmfile.yaml";
           };
         };
       };
@@ -163,10 +163,9 @@ in
             type = types.str;
             description = ''
               Unique identifier for the cluster. Should be unique per build output.
-              So a good example of making it unique could be {}
-
-              Will be used to help fleet and helmfile distinquish between batches and batch dependencies
-              that may get deplkoyed to the same cluster.
+              
+              Will be used to distinguish between batches and batch dependencies
+              that may get deployed to the same cluster.
 
               Examples:
 

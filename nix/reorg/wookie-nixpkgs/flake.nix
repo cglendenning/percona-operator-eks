@@ -285,10 +285,13 @@
           # Rendered Kubernetes manifests
           manifests = manifests;
           
-          # Deployment script (Fleet only)
-          deploy = clusterConfig.build.scripts.deploy-fleet;
-          fleet-bundles = clusterConfig.build.fleet-bundles;
-          fleet-status = clusterConfig.build.scripts.fleet-status;
+          # Helmfile configuration
+          helmfile = clusterConfig.build.helmfile;
+          
+          # Deployment script (helmfile)
+          deploy = clusterConfig.build.scripts.deploy-helmfile;
+          diff = clusterConfig.build.scripts.diff-helmfile;
+          destroy = clusterConfig.build.scripts.destroy-helmfile;
 
           # Multi-cluster management scripts
           create-clusters = clusterConfigA.build.scripts.create-clusters or (pkgs.writeText "placeholder" "Not configured");
@@ -298,15 +301,19 @@
           # Multi-cluster manifests
           manifests-cluster-a = manifestsA;
           manifests-cluster-b = manifestsB;
+          
+          # Multi-cluster helmfile configs
+          helmfile-cluster-a = clusterConfigA.build.helmfile;
+          helmfile-cluster-b = clusterConfigB.build.helmfile;
 
-          # Individual cluster deployment scripts (Fleet only)
-          deploy-cluster-a = clusterConfigA.build.scripts.deploy-fleet;
-          fleet-bundles-cluster-a = clusterConfigA.build.fleet-bundles;
-          fleet-status-cluster-a = clusterConfigA.build.scripts.fleet-status;
+          # Individual cluster deployment scripts (helmfile)
+          deploy-cluster-a = clusterConfigA.build.scripts.deploy-helmfile;
+          diff-cluster-a = clusterConfigA.build.scripts.diff-helmfile;
+          destroy-cluster-a = clusterConfigA.build.scripts.destroy-helmfile;
 
-          deploy-cluster-b = clusterConfigB.build.scripts.deploy-fleet;
-          fleet-bundles-cluster-b = clusterConfigB.build.fleet-bundles;
-          fleet-status-cluster-b = clusterConfigB.build.scripts.fleet-status;
+          deploy-cluster-b = clusterConfigB.build.scripts.deploy-helmfile;
+          diff-cluster-b = clusterConfigB.build.scripts.diff-helmfile;
+          destroy-cluster-b = clusterConfigB.build.scripts.destroy-helmfile;
 
           # Test script for multi-cluster setup
           test-multi-cluster = pkgs.writeShellApplication {
@@ -315,72 +322,22 @@
             text = builtins.readFile ./lib/helpers/test-multi-cluster.sh;
           };
 
-          # Fleet infrastructure installation
-          deploy-fleet = pkgs.writeShellApplication {
-            name = "deploy-fleet";
-            runtimeInputs = [ 
-              pkgs.kubectl 
-              pkgs.kubernetes-helm
-            ];
-            text = ''
-              set -euo pipefail
-              
-              echo "=== Installing Fleet Infrastructure ==="
-              echo ""
-              
-              for CLUSTER_CONTEXT in "${clusterContextA}" "${clusterContextB}"; do
-                echo "Installing Fleet in $CLUSTER_CONTEXT..."
-                
-                # Check if Fleet is already installed
-                if helm list -n fleet-system --kube-context "$CLUSTER_CONTEXT" 2>/dev/null | grep -q "^fleet"; then
-                  echo "Fleet already installed in $CLUSTER_CONTEXT"
-                else
-                  echo "Adding Fleet helm repo..."
-                  helm repo add fleet https://rancher.github.io/fleet-helm-charts/ 2>/dev/null || true
-                  helm repo update
-                  
-                  echo "Installing Fleet CRDs..."
-                  helm upgrade --install fleet-crd fleet/fleet-crd \
-                    --namespace fleet-system \
-                    --create-namespace \
-                    --wait \
-                    --kube-context "$CLUSTER_CONTEXT"
-                  
-                  echo "Installing Fleet controller..."
-                  helm upgrade --install fleet fleet/fleet \
-                    --namespace fleet-system \
-                    --create-namespace \
-                    --wait \
-                    --timeout 5m \
-                    --kube-context "$CLUSTER_CONTEXT"
-                  echo "Fleet installed successfully in $CLUSTER_CONTEXT"
-                fi
-                echo ""
-              done
-              
-              echo "=== Fleet infrastructure deployment complete ==="
-            '';
-          };
-
-          # Multi-cluster Istio deployment script (Fleet-based)
+          # Multi-cluster Istio deployment script (helmfile)
           deploy-multi-cluster-istio = pkgs.writeShellApplication {
             name = "deploy-multi-cluster-istio";
-            runtimeInputs = [ 
-              pkgs.kubectl 
-              pkgs.kubernetes-helm
-            ];
+            runtimeInputs = [ pkgs.kubernetes-helmfile pkgs.kubernetes-helm pkgs.kubectl ];
             text = ''
               set -euo pipefail
               
-              echo "=== Deploying Multi-Cluster Istio via Fleet ==="
+              echo "=== Deploying Multi-Cluster Istio via Helmfile ==="
               echo ""
               
-              echo "Deploying to cluster-a..."
-              CLUSTER_CONTEXT="${clusterContextA}" ${clusterConfigA.build.scripts.deploy-fleet}/bin/deploy-multi-cluster-a-fleet
+              echo "Deploying to cluster-a (${clusterContextA})..."
+              CLUSTER_CONTEXT="${clusterContextA}" ${clusterConfigA.build.scripts.deploy-helmfile}/bin/deploy-multi-cluster-a-helmfile
               
               echo ""
-              echo "Deploying to cluster-b..."
-              CLUSTER_CONTEXT="${clusterContextB}" ${clusterConfigB.build.scripts.deploy-fleet}/bin/deploy-multi-cluster-b-fleet
+              echo "Deploying to cluster-b (${clusterContextB})..."
+              CLUSTER_CONTEXT="${clusterContextB}" ${clusterConfigB.build.scripts.deploy-helmfile}/bin/deploy-multi-cluster-b-helmfile
               
               echo ""
               echo "=== Multi-cluster Istio deployment complete ==="
@@ -406,7 +363,17 @@
         
         deploy = {
           type = "app";
-          program = "${self.packages.${system}.deploy}";
+          program = "${self.packages.${system}.deploy}/bin/deploy-local-k3d-wookie-local-helmfile";
+        };
+        
+        diff = {
+          type = "app";
+          program = "${self.packages.${system}.diff}/bin/diff-local-k3d-wookie-local-helmfile";
+        };
+        
+        destroy = {
+          type = "app";
+          program = "${self.packages.${system}.destroy}/bin/destroy-local-k3d-wookie-local-helmfile";
         };
 
         # Multi-cluster commands
@@ -427,17 +394,32 @@
 
         deploy-cluster-a = {
           type = "app";
-          program = "${self.packages.${system}.deploy-cluster-a}";
+          program = "${self.packages.${system}.deploy-cluster-a}/bin/deploy-multi-cluster-a-helmfile";
+        };
+        
+        diff-cluster-a = {
+          type = "app";
+          program = "${self.packages.${system}.diff-cluster-a}/bin/diff-multi-cluster-a-helmfile";
+        };
+        
+        destroy-cluster-a = {
+          type = "app";
+          program = "${self.packages.${system}.destroy-cluster-a}/bin/destroy-multi-cluster-a-helmfile";
         };
 
         deploy-cluster-b = {
           type = "app";
-          program = "${self.packages.${system}.deploy-cluster-b}";
+          program = "${self.packages.${system}.deploy-cluster-b}/bin/deploy-multi-cluster-b-helmfile";
         };
-
-        deploy-fleet = {
+        
+        diff-cluster-b = {
           type = "app";
-          program = "${self.packages.${system}.deploy-fleet}/bin/deploy-fleet";
+          program = "${self.packages.${system}.diff-cluster-b}/bin/diff-multi-cluster-b-helmfile";
+        };
+        
+        destroy-cluster-b = {
+          type = "app";
+          program = "${self.packages.${system}.destroy-cluster-b}/bin/destroy-multi-cluster-b-helmfile";
         };
 
         deploy-multi-cluster-istio = {
@@ -464,6 +446,7 @@
               pkgs.k3d
               pkgs.kubectl
               pkgs.kubernetes-helm
+              pkgs.kubernetes-helmfile
               pkgs.istioctl
             ];
 
@@ -474,20 +457,27 @@
               echo "  nix run .#create-cluster  - Create local k3d cluster"
               echo "  nix run .#delete-cluster  - Delete local k3d cluster"
               echo "  nix build .#manifests     - Build Kubernetes manifests"
-              echo "  nix run .#deploy          - Deploy to cluster"
+              echo "  nix build .#helmfile      - Build helmfile.yaml"
+              echo "  nix run .#deploy          - Deploy to cluster (via helmfile)"
+              echo "  nix run .#diff            - Show deployment diff"
+              echo "  nix run .#destroy         - Destroy all releases"
               echo ""
               echo "Multi-cluster commands:"
               echo "  nix run .#create-clusters       - Create cluster-a and cluster-b"
               echo "  nix run .#delete-clusters       - Delete both clusters"
               echo "  nix run .#status-clusters       - Show cluster status"
-              echo "  nix run .#deploy-fleet           - Install Fleet infrastructure in both clusters"
-              echo "  nix run .#deploy-multi-cluster-istio - Deploy Istio to both clusters via Fleet"
+              echo "  nix run .#deploy-multi-cluster-istio - Deploy Istio to both clusters"
+              echo "  nix run .#deploy-cluster-a      - Deploy only to cluster-a"
+              echo "  nix run .#deploy-cluster-b      - Deploy only to cluster-b"
+              echo "  nix run .#diff-cluster-a        - Show cluster-a diff"
+              echo "  nix run .#diff-cluster-b        - Show cluster-b diff"
               echo "  nix run .#test-multi-cluster    - Test cross-cluster connectivity"
               echo ""
               echo "Tools available:"
               echo "  - k3d"
               echo "  - kubectl"
               echo "  - helm"
+              echo "  - helmfile"
               echo "  - istioctl"
             '';
           };
