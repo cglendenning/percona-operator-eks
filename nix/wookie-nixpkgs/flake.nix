@@ -410,11 +410,21 @@
               kubectl wait --for=condition=available --timeout=180s deployment/istiod -n istio-system --context=${clusterContextB}
               
               echo "Creating remote secrets for endpoint discovery..."
-              istioctl create-remote-secret --context=${clusterContextA} --name=cluster-a | \
+              
+              # Get the internal API server IPs
+              API_A=$(docker inspect k3d-cluster-a-server-0 -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}')
+              API_B=$(docker inspect k3d-cluster-b-server-0 -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}')
+              
+              echo "API Server IPs:"
+              echo "  Cluster A: https://$API_A:6443"
+              echo "  Cluster B: https://$API_B:6443"
+              
+              # Create remote secrets with internal IPs
+              istioctl create-remote-secret --context=${clusterContextA} --name=cluster-a --server=https://$API_A:6443 | \
                 kubectl apply -f - --context=${clusterContextB}
-              istioctl create-remote-secret --context=${clusterContextB} --name=cluster-b | \
+              istioctl create-remote-secret --context=${clusterContextB} --name=cluster-b --server=https://$API_B:6443 | \
                 kubectl apply -f - --context=${clusterContextA}
-              echo "Remote secrets configured."
+              echo "Remote secrets configured with internal API server IPs."
               
               echo ""
               echo "Step 7: Configuring meshNetworks..."
@@ -504,7 +514,22 @@
               kubectl rollout restart deployment/istiod -n istio-system --context=${clusterContextB}
               kubectl rollout status deployment/istiod -n istio-system --context=${clusterContextA} --timeout=120s
               kubectl rollout status deployment/istiod -n istio-system --context=${clusterContextB} --timeout=120s
-              echo "meshNetworks configured."
+              
+              echo "Restarting application pods to pick up updated Envoy configuration..."
+              kubectl rollout restart statefulset/helloworld-v1 -n demo --context=${clusterContextA} || true
+              kubectl rollout status statefulset/helloworld-v1 -n demo --context=${clusterContextA} --timeout=120s || true
+              
+              echo "Restarting east-west gateways to pick up meshNetworks..."
+              kubectl rollout restart deployment/istio-eastwestgateway -n istio-system --context=${clusterContextA}
+              kubectl rollout restart deployment/istio-eastwestgateway -n istio-system --context=${clusterContextB}
+              kubectl rollout status deployment/istio-eastwestgateway -n istio-system --context=${clusterContextA} --timeout=120s
+              kubectl rollout status deployment/istio-eastwestgateway -n istio-system --context=${clusterContextB} --timeout=120s
+              
+              echo ""
+              echo "Waiting for endpoint synchronization (10 seconds)..."
+              sleep 10
+              
+              echo "meshNetworks configured and pods restarted."
               
               echo ""
               echo "=== Multi-cluster stack is up! ==="
