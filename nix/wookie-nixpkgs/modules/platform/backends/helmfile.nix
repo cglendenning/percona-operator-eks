@@ -12,29 +12,37 @@ let
   cfg = config.platform.kubernetes;
   yaml = pkgs.formats.yaml { };
   
+  # Skip namespace and CRD batches - they're created via kubectl, not helm
+  # This avoids validation issues with k8s version mismatches
+  shouldSkipBatch = batchName: batchName == "namespaces" || batchName == "crds";
+  
   # Resolve a bundle dependency to its full release name across all batches
+  # Returns null if the dependency is in a skipped batch
   resolveBundleDependency = depName:
     let
       batches = config.platform.kubernetes.cluster.batches;
       # Search all batches for a bundle with this name
       findInBatch = batchName: batchConfig:
         if builtins.hasAttr depName batchConfig.bundles
-        then "${cfg.cluster.uniqueIdentifier}-${batchName}-${depName}"
+        then { inherit batchName; releaseName = "${cfg.cluster.uniqueIdentifier}-${batchName}-${depName}"; }
         else null;
       
       # Try each batch
       results = lib.mapAttrsToList findInBatch batches;
       validResults = lib.filter (r: r != null) results;
+      result = if (builtins.length validResults) > 0 then builtins.head validResults else null;
     in
-    if (builtins.length validResults) > 0
-    then builtins.head validResults
-    else "${cfg.cluster.uniqueIdentifier}-unknown-${depName}"; # Fallback
+    # Return null if dependency is in a skipped batch, otherwise return the release name
+    if result == null then null
+    else if shouldSkipBatch result.batchName then null
+    else result.releaseName;
   
   # Generate a helmfile release for a bundle
   generateRelease = batchName: batchConfig: bundleName: bundle:
     let
       releaseName = "${cfg.cluster.uniqueIdentifier}-${batchName}-${bundleName}";
-      resolvedDeps = map resolveBundleDependency bundle.dependsOn;
+      # Resolve dependencies and filter out null values (skipped batches)
+      resolvedDeps = lib.filter (d: d != null) (map resolveBundleDependency bundle.dependsOn);
       
       # For Helm charts, reference the chart directly
       chartRelease = if bundle.chart != null then {
@@ -87,10 +95,6 @@ let
     else if manifestRelease != null then manifestRelease
     else null;
   
-  # Skip namespace and CRD batches - they're created via kubectl, not helm
-  # This avoids validation issues with k8s version mismatches
-  shouldSkipBatch = batchName: batchName == "namespaces" || batchName == "crds";
-  
   # Generate all releases for a batch
   generateBatchReleases = batchName: batchConfig:
     let
@@ -106,9 +110,11 @@ let
       validReleases = lib.filter (r: r != null) releases;
       
       # Add batch dependencies to ALL releases in batch (not just first)
+      # Filter out dependencies on skipped batches (namespaces, crds)
       releasesWithBatchDeps = map (release:
         let
-          batchDeps = map (dep: "${cfg.cluster.uniqueIdentifier}-${dep}-*") batchConfig.dependsOn;
+          filteredBatchDeps = lib.filter (dep: !(shouldSkipBatch dep)) batchConfig.dependsOn;
+          batchDeps = map (dep: "${cfg.cluster.uniqueIdentifier}-${dep}-*") filteredBatchDeps;
         in
         release // {
           needs = (release.needs or []) ++ batchDeps;
@@ -200,7 +206,7 @@ in
           '') renderedBundles}
           echo ""
           
-          # Apply CRDs (use create to avoid validation issues with x-kubernetes-validations)
+          # Apply CRDs (use create with --validate=false for k3s compatibility)
           echo "Installing CRDs..."
           ${let
             crdBatch = config.platform.kubernetes.cluster.batches.crds;
@@ -208,9 +214,9 @@ in
             renderedBundles = map pkgs.kubelib.renderBundle enabledBundles;
           in
           lib.concatMapStringsSep "\n" (crd: ''
-            # Use create (not apply) to avoid server-side validation errors with k3s
+            # Use create with --validate=false to bypass x-kubernetes-validations issues
             # Ignore "already exists" errors to make this idempotent
-            kubectl create --context "$CONTEXT" -f ${crd}/manifest.yaml 2>&1 | grep -v "already exists" || true
+            kubectl create --validate=false --context "$CONTEXT" -f ${crd}/manifest.yaml 2>&1 | grep -v "already exists" || true
           '') renderedBundles}
           echo ""
           
