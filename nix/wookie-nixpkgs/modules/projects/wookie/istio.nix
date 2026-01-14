@@ -194,6 +194,53 @@ in
             };
           };
           
+          # ClusterRole for gateway
+          clusterRole = {
+            apiVersion = "rbac.authorization.k8s.io/v1";
+            kind = "ClusterRole";
+            metadata = {
+              name = "istio-eastwestgateway";
+            };
+            rules = [
+              {
+                apiGroups = [ "" ];
+                resources = [ "pods" "nodes" "services" "endpoints" ];
+                verbs = [ "get" "watch" "list" ];
+              }
+              {
+                apiGroups = [ "" ];
+                resources = [ "configmaps" ];
+                verbs = [ "get" ];
+              }
+              {
+                apiGroups = [ "certificates.k8s.io" ];
+                resources = [ "certificatesigningrequests" ];
+                verbs = [ "create" ];
+              }
+            ];
+          };
+          
+          # ClusterRoleBinding
+          clusterRoleBinding = {
+            apiVersion = "rbac.authorization.k8s.io/v1";
+            kind = "ClusterRoleBinding";
+            metadata = {
+              name = "istio-eastwestgateway";
+            };
+            roleRef = {
+              apiGroup = "rbac.authorization.k8s.io";
+              kind = "ClusterRole";
+              name = "istio-eastwestgateway";
+            };
+            subjects = [
+              {
+                kind = "ServiceAccount";
+                name = "istio-eastwestgateway";
+                namespace = cfg.namespace;
+              }
+            ];
+          };
+          
           # Service
           service = {
             apiVersion = "v1";
@@ -326,6 +373,7 @@ in
                         { name = "istio-data"; mountPath = "/var/lib/istio/data"; }
                         { name = "podinfo"; mountPath = "/etc/istio/pod"; }
                         { name = "istiod-ca-cert"; mountPath = "/var/run/secrets/istio"; }
+                        { name = "istio-token"; mountPath = "/var/run/secrets/tokens"; }
                       ];
                     }
                   ];
@@ -351,6 +399,20 @@ in
                       configMap = {
                         name = "istio-ca-root-cert";
                         optional = true;
+                      };
+                    }
+                    {
+                      name = "istio-token";
+                      projected = {
+                        sources = [
+                          {
+                            serviceAccountToken = {
+                              audience = "istio-ca";
+                              expirationSeconds = 43200;
+                              path = "istio-token";
+                            };
+                          }
+                        ];
                       };
                     }
                   ];
@@ -388,6 +450,8 @@ in
           # Combine all manifests
           allManifests = [
             serviceAccount
+            clusterRole
+            clusterRoleBinding
             service
             deployment
             gateway

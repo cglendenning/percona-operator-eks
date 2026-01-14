@@ -49,8 +49,10 @@ run_assertion() {
       return 1
     fi
   elif [ "$type" = "pattern-match" ]; then
-    output=$(eval "$command" 2>&1 || echo "")
-    if echo "$output" | grep -qE "$pattern"; then
+    output=$(eval "$command" 2>&1 || true)
+    # Check if pattern exists in output (use count instead of -q for reliability)
+    match_count=$(echo "$output" | grep -c "$pattern" || echo "0")
+    if [ "$match_count" -gt 0 ]; then
       echo -e "${GREEN}✓${NC}"
       PASSED=$((PASSED + 1))
       return 0

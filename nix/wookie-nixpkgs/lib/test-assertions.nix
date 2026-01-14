@@ -28,7 +28,7 @@ in rec {
     (mkAssertion {
       id = "same-docker-network";
       description = "Cluster A and B are on same Docker network";
-      command = "docker network inspect k3d-multicluster | grep -E 'k3d-cluster-[ab]-server-0' | wc -l";
+      command = "docker network inspect k3d-multicluster | grep -E 'k3d-cluster-[ab]-server-0' | wc -l | tr -d ' '";
       expectedPattern = "^[2-9]";
     })
   ];
@@ -193,7 +193,7 @@ in rec {
       id = "mtls-enabled";
       description = "mTLS is enabled between services";
       command = "kubectl exec test-pod -n wookie-dr -c istio-proxy --context=${ctxB} -- curl -s localhost:15000/config_dump";
-      expectedPattern = "istio_mutual";
+      expectedPattern = "MUTUAL_TLS";
     })
   ];
 
