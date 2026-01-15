@@ -1,7 +1,0 @@
-# See what address kubectl is using
-kubectl config view --context=k3d-cluster-a | grep server:
-
-# Check the k3d certificate SANs
-docker exec k3d-cluster-a-server-0 cat /var/lib/rancher/k3s/server/tls/serving-kube-apiserver.crt | openssl x509 -noout -text | grep -A 1 "Subject Alternative Name"
-
-kubectl get secret cacerts -n istio-system --context=k3d-cluster-a --insecure-skip-tls-verify
