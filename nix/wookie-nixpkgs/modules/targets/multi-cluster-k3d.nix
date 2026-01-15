@@ -290,5 +290,37 @@ with lib;
       echo "Contexts:"
       ${pkgs.kubectl}/bin/kubectl config get-contexts | grep -E "(CURRENT|k3d)" || echo "No contexts found"
     '';
+    
+    # Helper script to get k3d API server IPs (returns as shell variables)
+    build.scripts.get-api-ips = pkgs.writeShellScript "get-k3d-api-ips" ''
+      CLUSTER_A_NAME="${config.targets.multi-cluster-k3d.clusterA.clusterName}"
+      CLUSTER_B_NAME="${config.targets.multi-cluster-k3d.clusterB.clusterName}"
+      
+      API_A=$(${pkgs.docker}/bin/docker inspect k3d-$CLUSTER_A_NAME-server-0 -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}')
+      API_B=$(${pkgs.docker}/bin/docker inspect k3d-$CLUSTER_B_NAME-server-0 -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}')
+      
+      echo "API_A=$API_A"
+      echo "API_B=$API_B"
+    '';
+    
+    # Helper values for use in flake
+    build.helpers.k3d = {
+      clusterA = {
+        name = config.targets.multi-cluster-k3d.clusterA.clusterName;
+        context = config.targets.multi-cluster-k3d.clusterA.context;
+        serverContainer = "k3d-${config.targets.multi-cluster-k3d.clusterA.clusterName}-server-0";
+      };
+      clusterB = {
+        name = config.targets.multi-cluster-k3d.clusterB.clusterName;
+        context = config.targets.multi-cluster-k3d.clusterB.context;
+        serverContainer = "k3d-${config.targets.multi-cluster-k3d.clusterB.clusterName}-server-0";
+      };
+      
+      # Script snippets that can be sourced
+      getApiIps = ''
+        API_A=$(${pkgs.docker}/bin/docker inspect k3d-${config.targets.multi-cluster-k3d.clusterA.clusterName}-server-0 -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}')
+        API_B=$(${pkgs.docker}/bin/docker inspect k3d-${config.targets.multi-cluster-k3d.clusterB.clusterName}-server-0 -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}')
+      '';
+    };
   };
 }
