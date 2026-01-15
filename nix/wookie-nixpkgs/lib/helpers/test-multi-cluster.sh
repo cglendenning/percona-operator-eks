@@ -122,6 +122,7 @@ main() {
     "application"
     "connectivity"
     "endToEnd"
+    "cleanup"
   )
 
   for category in "${categories[@]}"; do

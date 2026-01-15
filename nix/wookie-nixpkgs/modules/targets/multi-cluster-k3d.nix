@@ -303,8 +303,8 @@ with lib;
       echo "API_B=$API_B"
     '';
     
-    # Helper values for use in flake
-    build.helpers.k3d = {
+    # Helper values for use in flake (stored as passthru)
+    build.k3d = {
       clusterA = {
         name = config.targets.multi-cluster-k3d.clusterA.clusterName;
         context = config.targets.multi-cluster-k3d.clusterA.context;

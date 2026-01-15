@@ -1,6 +1,6 @@
 [
-  ./modules/projects/wookie
-  ./modules/targets/multi-cluster-k3d.nix
+  ../modules/projects/wookie
+  ../modules/targets/multi-cluster-k3d.nix
   {
     targets.multi-cluster-k3d.enable = true;
 

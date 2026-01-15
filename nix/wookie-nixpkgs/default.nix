@@ -46,6 +46,14 @@ rec {
   # Export configurations for external use
   inherit mkConfig wookieLocalConfig clusterAConfig clusterBConfig;
   
+  # Export test assertions for each system
+  testAssertions = forAllSystems (system:
+    let
+      pkgs = import nixpkgs { inherit system; };
+    in
+    import ./lib/test-assertions.nix { inherit (nixpkgs) lib; inherit pkgs; }
+  );
+  
   # Export packages for each system
   packages = forAllSystems (system:
     let
@@ -138,7 +146,7 @@ rec {
       up-multi = 
         let
           certScript = clusterConfigA.projects.wookie.istio.helpers.mkCertificateScript;
-          k3d = clusterConfigA.build.helpers.k3d;
+          k3d = clusterConfigA.build.k3d;
           meshGen = clusterConfigA.projects.wookie.istio.helpers.meshNetworksGenerator;
         in
         pkgs.writeShellApplication {
@@ -239,7 +247,7 @@ rec {
       # Granular Istio management commands
       wookie-istio-down = 
         let
-          k3d = clusterConfigA.build.helpers.k3d;
+          k3d = clusterConfigA.build.k3d;
         in
         pkgs.writeShellApplication {
           name = "wookie-istio-down";
@@ -258,7 +266,7 @@ rec {
         let
           certScript = clusterConfigA.projects.wookie.istio.helpers.mkCertificateScript;
           meshGen = clusterConfigA.projects.wookie.istio.helpers.meshNetworksGenerator;
-          k3d = clusterConfigA.build.helpers.k3d;
+          k3d = clusterConfigA.build.k3d;
         in
         pkgs.writeShellApplication {
           name = "wookie-istio-up";
@@ -323,7 +331,7 @@ rec {
       wookie-istio-helloworld = 
         let
           helloworldManifest = "${pkgs.kubelib.renderBundle clusterConfigA.platform.kubernetes.cluster.batches.services.bundles.helloworld}/manifest.yaml";
-          k3d = clusterConfigA.build.helpers.k3d;
+          k3d = clusterConfigA.build.k3d;
         in
         pkgs.writeShellApplication {
           name = "wookie-istio-helloworld";

@@ -1,6 +1,6 @@
 [
-  ./modules/projects/wookie
-  ./modules/targets/local-k3d.nix
+  ../modules/projects/wookie
+  ../modules/targets/local-k3d.nix
   {
     targets.local-k3d = {
       enable = true;

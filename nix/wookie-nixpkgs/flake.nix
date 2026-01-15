@@ -7,6 +7,8 @@
 
   outputs = { self, nixpkgs }:
     let
+      systems = [ "x86_64-linux" "aarch64-linux" "x86_64-darwin" "aarch64-darwin" ];
+      forAllSystems = f: nixpkgs.lib.genAttrs systems (system: f system);
       wookie = import ./default.nix { inherit nixpkgs; };
     in
     {
@@ -22,9 +24,10 @@
       # Export NixOS modules for reuse
       nixosModules = wookie.nixosModules;
       
-      # Export library functions for advanced use
-      lib = {
+      # Export library functions for advanced use (per-system for testAssertions)
+      lib = forAllSystems (system: {
         inherit (wookie) mkConfig wookieLocalConfig clusterAConfig clusterBConfig;
-      };
+        testAssertions = wookie.testAssertions.${system};
+      });
     };
 }

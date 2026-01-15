@@ -148,6 +148,12 @@ in
             default = null;
             description = "Generated helmfile.yaml";
           };
+          
+          k3d = mkOption {
+            type = types.attrs;
+            default = {};
+            description = "k3d cluster helper values (set by target modules).";
+          };
         };
       };
       default = {};

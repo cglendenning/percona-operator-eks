@@ -197,6 +197,19 @@ in rec {
     })
   ];
 
+  cleanup = [
+    (mkAssertion {
+      id = "delete-test-pod";
+      description = "Delete test pod from Cluster B";
+      command = "kubectl delete pod test-pod -n wookie-dr --context=${ctxB} --ignore-not-found=true";
+    })
+    (mkAssertion {
+      id = "verify-test-pod-gone";
+      description = "Verify test pod is deleted";
+      command = "! kubectl get pod test-pod -n wookie-dr --context=${ctxB} 2>/dev/null";
+    })
+  ];
+
   # All assertions grouped
   all = lib.flatten [
     infrastructure
@@ -206,6 +219,7 @@ in rec {
     application
     connectivity
     endToEnd
+    cleanup
   ];
 
   # Category metadata
@@ -217,5 +231,6 @@ in rec {
     application = { name = "APPLICATION DEPLOYMENT"; assertions = application; };
     connectivity = { name = "CROSS-CLUSTER CONNECTIVITY"; assertions = connectivity; };
     endToEnd = { name = "END-TO-END CONNECTIVITY TEST"; assertions = endToEnd; };
+    cleanup = { name = "CLEANUP"; assertions = cleanup; };
   };
 }
