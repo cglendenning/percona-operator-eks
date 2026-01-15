@@ -13,6 +13,54 @@ let
     inherit lib;
   };
 
+  # Istio helper functions for generating configurations
+  yaml = pkgs.formats.yaml {};
+  
+  helpers = {
+    # Bash function that generates meshNetworks ConfigMap at runtime
+    # Usage: generate_mesh_config "$GW_A" "$GW_B" | kubectl apply -f -
+    meshNetworksGenerator = pkgs.writeShellScript "generate-mesh-config" ''
+      GW_A="$1"
+      GW_B="$2"
+      cat <<EOF
+      apiVersion: v1
+      kind: ConfigMap
+      metadata:
+        name: istio
+        namespace: istio-system
+      data:
+        mesh: |-
+          defaultConfig:
+            discoveryAddress: istiod.istio-system.svc:15012
+            proxyMetadata:
+              ISTIO_META_DNS_CAPTURE: "true"
+              ISTIO_META_DNS_AUTO_ALLOCATE: "true"
+            tracing:
+              zipkin:
+                address: zipkin.istio-system:9411
+          enablePrometheusMerge: true
+          rootNamespace: istio-system
+          trustDomain: cluster.local
+          meshNetworks:
+            network1:
+              endpoints:
+              - fromRegistry: cluster-a
+              gateways:
+              - address: $GW_A
+                port: 15443
+            network2:
+              endpoints:
+              - fromRegistry: cluster-b
+              gateways:
+              - address: $GW_B
+                port: 15443
+      EOF
+    '';
+    
+    # Generate certificate authority structure
+    mkCertificateScript = pkgs.writeShellScript "generate-ca-certs" (builtins.readFile ../../../lib/helpers/generate-ca-certs.sh);
+  };
+
 in
 {
   options.projects.wookie.istio = {
@@ -34,6 +82,13 @@ in
       type = types.enum [ "minimal" "default" "demo" ];
       default = "default";
       description = "Istio installation profile.";
+    };
+    
+    helpers = mkOption {
+      type = types.attrs;
+      readOnly = true;
+      internal = true;
+      description = "Helper functions for generating Istio configurations.";
     };
 
     base = {
@@ -105,7 +160,71 @@ in
     };
   };
 
-  config = mkIf cfg.enable {
+  # Wookie project-level options (from default.nix)
+  options.projects.wookie = {
+    enable = mkEnableOption "Wookie project (PXC + Istio multi-cluster)";
+
+    namespace = mkOption {
+      type = types.str;
+      default = "wookie";
+      description = "Primary namespace for Wookie project resources.";
+    };
+
+    drNamespace = mkOption {
+      type = types.str;
+      default = "wookie-dr";
+      description = "Disaster recovery namespace for Wookie project.";
+    };
+
+    clusterRole = mkOption {
+      type = types.enum [ "primary" "dr" "standalone" ];
+      default = "standalone";
+      description = ''
+        Role of this cluster in multi-cluster setup:
+        - primary: Main production cluster
+        - dr: Disaster recovery cluster
+        - standalone: Single cluster deployment
+      '';
+    };
+
+    # Demo helloworld options (from demo-helloworld.nix)
+    demo-helloworld = {
+      enable = mkEnableOption "Demo helloworld application for multi-cluster testing";
+
+      namespace = mkOption {
+        type = types.str;
+        default = "demo";
+        description = "Namespace for the helloworld application.";
+      };
+
+      replicas = mkOption {
+        type = types.int;
+        default = 3;
+        description = "Number of helloworld replicas.";
+      };
+
+      version = mkOption {
+        type = types.str;
+        default = "v1";
+        description = "Version label for the helloworld application.";
+      };
+
+      image = mkOption {
+        type = types.str;
+        default = "docker.io/istio/examples-helloworld-v1";
+        description = "Container image for helloworld.";
+      };
+    };
+  };
+
+  config = mkMerge [
+    # Export helpers (always available)
+    {
+      projects.wookie.istio.helpers = helpers;
+    }
+    
+    # Istio configuration
+    (mkIf cfg.enable {
     # Create istio-system namespace
     platform.kubernetes.cluster.batches.namespaces.bundles.istio-system = {
       namespace = cfg.namespace;
@@ -469,5 +588,191 @@ in
       ];
       # Note: Dependency on istiod is handled by batch-level dependency
     };
-  };
+    })
+
+    # Wookie project configuration
+    (mkIf config.projects.wookie.enable {
+      # Create wookie namespace
+      platform.kubernetes.cluster.batches.namespaces.bundles.wookie-namespace = {
+        namespace = config.projects.wookie.namespace;
+        manifests = [
+          (let
+            yaml = pkgs.formats.yaml { };
+            resource = {
+              apiVersion = "v1";
+              kind = "Namespace";
+              metadata = {
+                name = config.projects.wookie.namespace;
+                labels = {
+                  "istio-injection" = "enabled";
+                  "wookie.io/cluster-role" = config.projects.wookie.clusterRole;
+                };
+              };
+            };
+          in
+          pkgs.runCommand "wookie-namespace" {} ''
+            mkdir -p $out
+            cp ${yaml.generate "manifest.yaml" resource} $out/manifest.yaml
+          '')
+        ];
+      };
+
+      # Create wookie-dr namespace if in multi-cluster mode
+      platform.kubernetes.cluster.batches.namespaces.bundles.wookie-dr-namespace = mkIf (config.projects.wookie.clusterRole != "standalone") {
+        namespace = config.projects.wookie.drNamespace;
+        manifests = [
+          (let
+            yaml = pkgs.formats.yaml { };
+            resource = {
+              apiVersion = "v1";
+              kind = "Namespace";
+              metadata = {
+                name = config.projects.wookie.drNamespace;
+                labels = {
+                  "istio-injection" = "enabled";
+                  "wookie.io/cluster-role" = config.projects.wookie.clusterRole;
+                };
+              };
+            };
+          in
+          pkgs.runCommand "wookie-dr-namespace" {} ''
+            mkdir -p $out
+            cp ${yaml.generate "manifest.yaml" resource} $out/manifest.yaml
+          '')
+        ];
+      };
+
+      # Enable Istio by default for Wookie project
+      projects.wookie.istio.enable = mkDefault true;
+    })
+
+    # Helloworld demo configuration
+    (mkIf config.projects.wookie.demo-helloworld.enable (
+      let
+        demoCfg = config.projects.wookie.demo-helloworld;
+      in {
+        # Create namespace
+        platform.kubernetes.cluster.batches.namespaces.bundles."helloworld-namespace" = {
+          namespace = demoCfg.namespace;
+          manifests = [
+            (let
+              yaml = pkgs.formats.yaml { };
+              resource = {
+                apiVersion = "v1";
+                kind = "Namespace";
+                metadata = {
+                  name = demoCfg.namespace;
+                  labels = {
+                    "istio-injection" = "enabled";
+                  };
+                };
+              };
+            in
+            pkgs.runCommand "helloworld-namespace" {} ''
+              mkdir -p $out
+              cp ${yaml.generate "manifest.yaml" resource} $out/manifest.yaml
+            '')
+          ];
+        };
+
+        # Deploy helloworld service and deployment
+        platform.kubernetes.cluster.batches.services.bundles.helloworld = {
+          namespace = demoCfg.namespace;
+          manifests = [
+            (let
+              yaml = pkgs.formats.yaml { };
+              
+              service = {
+                apiVersion = "v1";
+                kind = "Service";
+                metadata = {
+                  name = "helloworld";
+                  namespace = demoCfg.namespace;
+                  labels = {
+                    app = "helloworld";
+                    service = "helloworld";
+                  };
+                };
+                spec = {
+                  ports = [
+                    {
+                      port = 5000;
+                      name = "http";
+                    }
+                  ];
+                  selector = {
+                    app = "helloworld";
+                  };
+                };
+              };
+              
+              deployment = {
+                apiVersion = "apps/v1";
+                kind = "Deployment";
+                metadata = {
+                  name = "helloworld-${demoCfg.version}";
+                  namespace = demoCfg.namespace;
+                  labels = {
+                    app = "helloworld";
+                    version = demoCfg.version;
+                  };
+                };
+                spec = {
+                  replicas = demoCfg.replicas;
+                  selector = {
+                    matchLabels = {
+                      app = "helloworld";
+                      version = demoCfg.version;
+                    };
+                  };
+                  template = {
+                    metadata = {
+                      labels = {
+                        app = "helloworld";
+                        version = demoCfg.version;
+                      };
+                    };
+                    spec = {
+                      containers = [
+                        {
+                          name = "helloworld";
+                          image = demoCfg.image;
+                          resources = {
+                            requests = {
+                              cpu = "100m";
+                            };
+                          };
+                          imagePullPolicy = "IfNotPresent";
+                          ports = [
+                            {
+                              containerPort = 5000;
+                            }
+                          ];
+                          env = [
+                            {
+                              name = "SERVICE_VERSION";
+                              value = demoCfg.version;
+                            }
+                          ];
+                        }
+                      ];
+                    };
+                  };
+                };
+              };
+              
+              serviceYaml = yaml.generate "service.yaml" service;
+              deploymentYaml = yaml.generate "deployment.yaml" deployment;
+            in
+            pkgs.runCommand "helloworld-app" {} ''
+              mkdir -p $out
+              cat ${serviceYaml} > $out/manifest.yaml
+              echo "---" >> $out/manifest.yaml
+              cat ${deploymentYaml} >> $out/manifest.yaml
+            '')
+          ];
+        };
+      }
+    ))
+  ];
 }

@@ -329,240 +329,95 @@
             '';
           };
           
-          up-multi = pkgs.writeShellApplication {
-            name = "up-multi";
-            runtimeInputs = [ pkgs.k3d pkgs.helmfile pkgs.kubernetes-helm pkgs.kubectl pkgs.istioctl pkgs.openssl ];
-            text = ''
-              set -euo pipefail
-              
-              CERTS_DIR="''${ISTIO_CERTS_DIR:-./certs}"
-              
-              echo "=== Standing up multi-cluster stack ==="
-              echo ""
-              
-              echo "Step 1: Checking/generating shared CA certificates..."
-              if [ ! -f "$CERTS_DIR/root-cert.pem" ]; then
-                echo "Certificates not found, generating..."
-                ${pkgs.writeShellScript "gen-certs" (builtins.readFile ./lib/helpers/generate-ca-certs.sh)} "$CERTS_DIR"
-              else
-                echo "Using existing certificates in $CERTS_DIR"
-                echo "Root CA fingerprint:"
-                openssl x509 -in "$CERTS_DIR/root-cert.pem" -noout -fingerprint -sha256
-              fi
-              echo ""
-              
-              echo "Step 2: Creating k3d clusters..."
-              ${_internal.create-clusters}
-              
-              echo ""
-              echo "Step 3: Installing shared CA certificates..."
-              
-              # Cluster A
-              echo "Creating cacerts secret in ${clusterContextA} (istio-system namespace)..."
-              kubectl create namespace istio-system --context="${clusterContextA}" --dry-run=client -o yaml | \
-                kubectl apply --context="${clusterContextA}" -f -
-              
-              # Label namespace with network (required for multi-cluster)
-              kubectl label namespace istio-system topology.istio.io/network=network1 \
-                --context="${clusterContextA}" --overwrite
-              
-              kubectl create secret generic cacerts -n istio-system \
-                --from-file=ca-cert.pem="$CERTS_DIR/cluster-a-ca-cert.pem" \
-                --from-file=ca-key.pem="$CERTS_DIR/cluster-a-ca-key.pem" \
-                --from-file=root-cert.pem="$CERTS_DIR/root-cert.pem" \
-                --from-file=cert-chain.pem="$CERTS_DIR/cluster-a-cert-chain.pem" \
-                --context="${clusterContextA}" \
-                --dry-run=client -o yaml | \
-                kubectl apply --context="${clusterContextA}" -f -
-              
-              # Cluster B
-              echo "Creating cacerts secret in ${clusterContextB} (istio-system namespace)..."
-              kubectl create namespace istio-system --context="${clusterContextB}" --dry-run=client -o yaml | \
-                kubectl apply --context="${clusterContextB}" -f -
-              
-              # Label namespace with network (required for multi-cluster)
-              kubectl label namespace istio-system topology.istio.io/network=network2 \
-                --context="${clusterContextB}" --overwrite
-              
-              kubectl create secret generic cacerts -n istio-system \
-                --from-file=ca-cert.pem="$CERTS_DIR/cluster-b-ca-cert.pem" \
-                --from-file=ca-key.pem="$CERTS_DIR/cluster-b-ca-key.pem" \
-                --from-file=root-cert.pem="$CERTS_DIR/root-cert.pem" \
-                --from-file=cert-chain.pem="$CERTS_DIR/cluster-b-cert-chain.pem" \
-                --context="${clusterContextB}" \
-                --dry-run=client -o yaml | \
-                kubectl apply --context="${clusterContextB}" -f -
-              
-              echo "Certificates installed in both clusters."
-              echo ""
-              
-              echo "Step 4: Deploying to cluster-a via helmfile..."
-              CLUSTER_CONTEXT="${clusterContextA}" ${_internal.deploy-cluster-a}/bin/deploy-multi-cluster-a-helmfile
-              
-              echo ""
-              echo "Step 5: Deploying to cluster-b via helmfile..."
-              CLUSTER_CONTEXT="${clusterContextB}" ${_internal.deploy-cluster-b}/bin/deploy-multi-cluster-b-helmfile
-              
-              echo ""
-              echo "Step 6: Configuring cross-cluster service discovery..."
-              echo "Waiting for istiod to be ready in both clusters..."
-              kubectl wait --for=condition=available --timeout=180s deployment/istiod -n istio-system --context=${clusterContextA}
-              kubectl wait --for=condition=available --timeout=180s deployment/istiod -n istio-system --context=${clusterContextB}
-              
-              echo "Creating remote secrets for endpoint discovery..."
-              
-              # Get the internal API server IPs
-              API_A=$(docker inspect k3d-cluster-a-server-0 -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}')
-              API_B=$(docker inspect k3d-cluster-b-server-0 -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}')
-              
-              echo "API Server IPs:"
-              echo "  Cluster A: https://$API_A:6443"
-              echo "  Cluster B: https://$API_B:6443"
-              
-              # Create remote secrets with internal IPs
-              istioctl create-remote-secret --context=${clusterContextA} --name=cluster-a --server="https://$API_A:6443" | \
-                kubectl apply -f - --context=${clusterContextB}
-              istioctl create-remote-secret --context=${clusterContextB} --name=cluster-b --server="https://$API_B:6443" | \
-                kubectl apply -f - --context=${clusterContextA}
-              echo "Remote secrets configured with internal API server IPs."
-              
-              echo ""
-              echo "Step 7: Configuring meshNetworks..."
-              echo "Waiting for east-west gateways to get LoadBalancer IPs..."
-              kubectl wait --for=jsonpath='{.status.loadBalancer.ingress}' --timeout=60s \
-                service/istio-eastwestgateway -n istio-system --context=${clusterContextA} || true
-              kubectl wait --for=jsonpath='{.status.loadBalancer.ingress}' --timeout=60s \
-                service/istio-eastwestgateway -n istio-system --context=${clusterContextB} || true
-              
-              # Get gateway IPs
-              GW_A=$(kubectl get svc istio-eastwestgateway -n istio-system --context=${clusterContextA} \
-                -o jsonpath='{.status.loadBalancer.ingress[0].ip}')
-              GW_B=$(kubectl get svc istio-eastwestgateway -n istio-system --context=${clusterContextB} \
-                -o jsonpath='{.status.loadBalancer.ingress[0].ip}')
-              
-              echo "Gateway IPs:"
-              echo "  Cluster A: $GW_A"
-              echo "  Cluster B: $GW_B"
-              
-              # Configure meshNetworks in both clusters
-              cat <<EOF | kubectl apply --context=${clusterContextA} -f -
-              apiVersion: v1
-              kind: ConfigMap
-              metadata:
-                name: istio
-                namespace: istio-system
-              data:
-                mesh: |-
-                  defaultConfig:
-                    discoveryAddress: istiod.istio-system.svc:15012
-                    proxyMetadata:
-                      ISTIO_META_DNS_CAPTURE: "true"
-                      ISTIO_META_DNS_AUTO_ALLOCATE: "true"
-                    tracing:
-                      zipkin:
-                        address: zipkin.istio-system:9411
-                  enablePrometheusMerge: true
-                  rootNamespace: istio-system
-                  trustDomain: cluster.local
-                  meshNetworks:
-                    network1:
-                      endpoints:
-                      - fromRegistry: cluster-a
-                      gateways:
-                      - address: $GW_A
-                        port: 15443
-                    network2:
-                      endpoints:
-                      - fromRegistry: cluster-b
-                      gateways:
-                      - address: $GW_B
-                        port: 15443
-              EOF
-              
-              cat <<EOF | kubectl apply --context=${clusterContextB} -f -
-              apiVersion: v1
-              kind: ConfigMap
-              metadata:
-                name: istio
-                namespace: istio-system
-              data:
-                mesh: |-
-                  defaultConfig:
-                    discoveryAddress: istiod.istio-system.svc:15012
-                    proxyMetadata:
-                      ISTIO_META_DNS_CAPTURE: "true"
-                      ISTIO_META_DNS_AUTO_ALLOCATE: "true"
-                    tracing:
-                      zipkin:
-                        address: zipkin.istio-system:9411
-                  enablePrometheusMerge: true
-                  rootNamespace: istio-system
-                  trustDomain: cluster.local
-                  meshNetworks:
-                    network1:
-                      endpoints:
-                      - fromRegistry: cluster-a
-                      gateways:
-                      - address: $GW_A
-                        port: 15443
-                    network2:
-                      endpoints:
-                      - fromRegistry: cluster-b
-                      gateways:
-                      - address: $GW_B
-                        port: 15443
-              EOF
-              
-              echo "Restarting istiod to pick up meshNetworks configuration..."
-              kubectl rollout restart deployment/istiod -n istio-system --context=${clusterContextA}
-              kubectl rollout restart deployment/istiod -n istio-system --context=${clusterContextB}
-              kubectl rollout status deployment/istiod -n istio-system --context=${clusterContextA} --timeout=120s
-              kubectl rollout status deployment/istiod -n istio-system --context=${clusterContextB} --timeout=120s
-              
-              echo "Restarting application pods to pick up updated Envoy configuration..."
-              kubectl rollout restart deployment/helloworld-v1 -n demo --context=${clusterContextA} || true
-              kubectl rollout status deployment/helloworld-v1 -n demo --context=${clusterContextA} --timeout=120s || true
-              
-              echo "Restarting east-west gateways to pick up meshNetworks..."
-              kubectl rollout restart deployment/istio-eastwestgateway -n istio-system --context=${clusterContextA}
-              kubectl rollout restart deployment/istio-eastwestgateway -n istio-system --context=${clusterContextB}
-              kubectl rollout status deployment/istio-eastwestgateway -n istio-system --context=${clusterContextA} --timeout=120s
-              kubectl rollout status deployment/istio-eastwestgateway -n istio-system --context=${clusterContextB} --timeout=120s
-              
-              echo ""
-              echo "Waiting for endpoint synchronization (10 seconds)..."
-              sleep 10
-              
-              echo "meshNetworks and DNS proxy configured, pods restarted."
-              
-              echo ""
-              echo "=== Multi-cluster stack is up! ==="
-              echo ""
-              echo "Verify with:"
-              echo "  kubectl get pods -A --context ${clusterContextA}"
-              echo "  kubectl get pods -A --context ${clusterContextB}"
-              echo ""
-              echo "Verify mTLS certificates:"
-              echo "  kubectl get secret cacerts -n istio-system --context ${clusterContextA}"
-              echo "  kubectl get secret cacerts -n istio-system --context ${clusterContextB}"
-              echo ""
-              echo "Test cross-cluster connectivity:"
-              echo "  nix run .#test"
-            '';
-          };
+          up-multi = 
+            let
+              certScript = clusterConfigA.projects.wookie.istio.helpers.mkCertificateScript;
+            in
+            pkgs.writeShellApplication {
+              name = "up-multi";
+              runtimeInputs = [ pkgs.k3d pkgs.helmfile pkgs.kubernetes-helm pkgs.kubectl pkgs.istioctl pkgs.openssl pkgs.docker ];
+              text = ''
+                set -euo pipefail
+                CERTS_DIR="./certs"
+                
+                echo "=== Standing up multi-cluster stack ==="
+                
+                # 1. Generate certificates if needed
+                if [ ! -f "$CERTS_DIR/root-cert.pem" ]; then
+                  echo "Generating certificates..."
+                  ${certScript} "$CERTS_DIR"
+                else
+                  echo "Using existing certificates"
+                  openssl x509 -in "$CERTS_DIR/root-cert.pem" -noout -fingerprint -sha256
+                fi
+                
+                # 2. Create clusters
+                echo "Creating k3d clusters..."
+                ${_internal.create-clusters}
+                
+                # 3. Install CA certificates
+                for CLUSTER in cluster-a cluster-b; do
+                  CTX="k3d-$CLUSTER"
+                  NET=$([[ "$CLUSTER" == "cluster-a" ]] && echo "network1" || echo "network2")
+                  
+                  kubectl create namespace istio-system --context="$CTX" --dry-run=client -o yaml | kubectl apply --context="$CTX" -f -
+                  kubectl label namespace istio-system topology.istio.io/network=$NET --context="$CTX" --overwrite
+                  kubectl create secret generic cacerts -n istio-system \
+                    --from-file=ca-cert.pem="$CERTS_DIR/$CLUSTER-ca-cert.pem" \
+                    --from-file=ca-key.pem="$CERTS_DIR/$CLUSTER-ca-key.pem" \
+                    --from-file=root-cert.pem="$CERTS_DIR/root-cert.pem" \
+                    --from-file=cert-chain.pem="$CERTS_DIR/$CLUSTER-cert-chain.pem" \
+                    --context="$CTX" --dry-run=client -o yaml | kubectl apply --context="$CTX" -f -
+                done
+                
+                # 4. Deploy Istio and apps
+                echo "Deploying cluster-a..."
+                CLUSTER_CONTEXT="${clusterContextA}" ${_internal.deploy-cluster-a}/bin/deploy-multi-cluster-a-helmfile
+                echo "Deploying cluster-b..."
+                CLUSTER_CONTEXT="${clusterContextB}" ${_internal.deploy-cluster-b}/bin/deploy-multi-cluster-b-helmfile
+                
+                # 5. Configure cross-cluster discovery
+                echo "Waiting for istiod..."
+                kubectl wait --for=condition=available --timeout=180s deployment/istiod -n istio-system --context=${clusterContextA}
+                kubectl wait --for=condition=available --timeout=180s deployment/istiod -n istio-system --context=${clusterContextB}
+                
+                API_A=$(docker inspect k3d-cluster-a-server-0 -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}')
+                API_B=$(docker inspect k3d-cluster-b-server-0 -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}')
+                
+                istioctl create-remote-secret --context=${clusterContextA} --name=cluster-a --server="https://$API_A:6443" | kubectl apply -f - --context=${clusterContextB}
+                istioctl create-remote-secret --context=${clusterContextB} --name=cluster-b --server="https://$API_B:6443" | kubectl apply -f - --context=${clusterContextA}
+                
+                # 6. Configure meshNetworks
+                echo "Configuring meshNetworks..."
+                kubectl wait --for=jsonpath='{.status.loadBalancer.ingress}' --timeout=60s service/istio-eastwestgateway -n istio-system --context=${clusterContextA} || true
+                kubectl wait --for=jsonpath='{.status.loadBalancer.ingress}' --timeout=60s service/istio-eastwestgateway -n istio-system --context=${clusterContextB} || true
+                
+                GW_A=$(kubectl get svc istio-eastwestgateway -n istio-system --context=${clusterContextA} -o jsonpath='{.status.loadBalancer.ingress[0].ip}')
+                GW_B=$(kubectl get svc istio-eastwestgateway -n istio-system --context=${clusterContextB} -o jsonpath='{.status.loadBalancer.ingress[0].ip}')
+                
+                # Use Nix-generated meshNetworks config generator
+                ${clusterConfigA.projects.wookie.istio.helpers.meshNetworksGenerator} "$GW_A" "$GW_B" | kubectl apply -f - --context=${clusterContextA}
+                ${clusterConfigB.projects.wookie.istio.helpers.meshNetworksGenerator} "$GW_A" "$GW_B" | kubectl apply -f - --context=${clusterContextB}
+                
+                # 7. Restart pods to pick up config
+                for CTX in ${clusterContextA} ${clusterContextB}; do
+                  kubectl rollout restart deployment/istiod -n istio-system --context=$CTX
+                  kubectl rollout restart deployment/istio-eastwestgateway -n istio-system --context=$CTX
+                done
+                kubectl rollout restart deployment/helloworld-v1 -n demo --context=${clusterContextA} || true
+                
+                echo ""
+                echo "=== Multi-cluster stack is up! ==="
+                echo "Test: nix run .#test"
+              '';
+            };
           
           down-multi = pkgs.writeShellApplication {
             name = "down-multi";
             runtimeInputs = [ pkgs.k3d pkgs.docker ];
             text = ''
-              set -euo pipefail
-              
               echo "=== Tearing down multi-cluster stack ==="
-              echo ""
-              
               ${_internal.delete-clusters}
-              
-              echo ""
               echo "=== Multi-cluster stack is down! ==="
             '';
           };
@@ -572,6 +427,103 @@
             runtimeInputs = [ pkgs.kubectl pkgs.istioctl pkgs.curl pkgs.jq ];
             text = builtins.readFile ./lib/helpers/test-multi-cluster.sh;
           };
+
+          # Granular Istio management commands
+          wookie-istio-down = pkgs.writeShellApplication {
+            name = "wookie-istio-down";
+            runtimeInputs = [ pkgs.kubectl ];
+            text = ''
+              echo "=== Removing Istio components (keeping k3d clusters) ==="
+              for CONTEXT in k3d-cluster-a k3d-cluster-b; do
+                kubectl delete namespace istio-system --context="$CONTEXT" --ignore-not-found=true
+              done
+              echo "=== Istio components removed! ==="
+              echo "Clusters still running. To remove: nix run .#down-multi"
+            '';
+          };
+
+          wookie-istio-up =
+            let
+              certScript = clusterConfigA.projects.wookie.istio.helpers.mkCertificateScript;
+              meshGen = clusterConfigA.projects.wookie.istio.helpers.meshNetworksGenerator;
+            in
+            pkgs.writeShellApplication {
+              name = "wookie-istio-up";
+              runtimeInputs = [ pkgs.kubectl pkgs.helmfile pkgs.istioctl pkgs.openssl pkgs.docker ];
+              text = ''
+                set -euo pipefail
+                CERTS_DIR="./certs"
+                
+                echo "=== Deploying Istio components (without helloworld) ==="
+                
+                # 1. Generate/reuse certificates
+                [ ! -f "$CERTS_DIR/root-cert.pem" ] && ${certScript} "$CERTS_DIR" || echo "Using existing certificates"
+                
+                # 2. Install CA certificates
+                for CLUSTER in cluster-a cluster-b; do
+                  CTX="k3d-$CLUSTER"
+                  NET=$([[ "$CLUSTER" == "cluster-a" ]] && echo "network1" || echo "network2")
+                  kubectl create namespace istio-system --context="$CTX" --dry-run=client -o yaml | kubectl apply --context="$CTX" -f -
+                  kubectl label namespace istio-system topology.istio.io/network=$NET --context="$CTX" --overwrite
+                  kubectl create secret generic cacerts -n istio-system \
+                    --from-file=ca-cert.pem="$CERTS_DIR/$CLUSTER-ca-cert.pem" \
+                    --from-file=ca-key.pem="$CERTS_DIR/$CLUSTER-ca-key.pem" \
+                    --from-file=root-cert.pem="$CERTS_DIR/root-cert.pem" \
+                    --from-file=cert-chain.pem="$CERTS_DIR/$CLUSTER-cert-chain.pem" \
+                    --context="$CTX" --dry-run=client -o yaml | kubectl apply --context="$CTX" -f -
+                done
+                
+                # 3. Deploy Istio (without helloworld - deployments filter that out)
+                CLUSTER_CONTEXT="k3d-cluster-a" ${_internal.deploy-cluster-a}/bin/deploy-multi-cluster-a-helmfile
+                CLUSTER_CONTEXT="k3d-cluster-b" ${_internal.deploy-cluster-b}/bin/deploy-multi-cluster-b-helmfile
+                
+                # 4. Configure cross-cluster
+                kubectl wait --for=condition=available --timeout=180s deployment/istiod -n istio-system --context=k3d-cluster-a
+                kubectl wait --for=condition=available --timeout=180s deployment/istiod -n istio-system --context=k3d-cluster-b
+                
+                API_A=$(docker inspect k3d-cluster-a-server-0 -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}')
+                API_B=$(docker inspect k3d-cluster-b-server-0 -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}')
+                istioctl create-remote-secret --context=k3d-cluster-a --name=cluster-a --server="https://$API_A:6443" | kubectl apply -f - --context=k3d-cluster-b
+                istioctl create-remote-secret --context=k3d-cluster-b --name=cluster-b --server="https://$API_B:6443" | kubectl apply -f - --context=k3d-cluster-a
+                
+                # 5. Configure meshNetworks
+                kubectl wait --for=jsonpath='{.status.loadBalancer.ingress}' --timeout=60s service/istio-eastwestgateway -n istio-system --context=k3d-cluster-a || true
+                kubectl wait --for=jsonpath='{.status.loadBalancer.ingress}' --timeout=60s service/istio-eastwestgateway -n istio-system --context=k3d-cluster-b || true
+                
+                GW_A=$(kubectl get svc istio-eastwestgateway -n istio-system --context=k3d-cluster-a -o jsonpath='{.status.loadBalancer.ingress[0].ip}')
+                GW_B=$(kubectl get svc istio-eastwestgateway -n istio-system --context=k3d-cluster-b -o jsonpath='{.status.loadBalancer.ingress[0].ip}')
+                
+                ${meshGen} "$GW_A" "$GW_B" | kubectl apply -f - --context=k3d-cluster-a
+                ${meshGen} "$GW_A" "$GW_B" | kubectl apply -f - --context=k3d-cluster-b
+                
+                # 6. Restart to pick up config
+                for CTX in k3d-cluster-a k3d-cluster-b; do
+                  kubectl rollout restart deployment/istiod -n istio-system --context=$CTX
+                  kubectl rollout restart deployment/istio-eastwestgateway -n istio-system --context=$CTX
+                done
+                
+                echo ""
+                echo "=== Istio is up! ==="
+                echo "Deploy helloworld: nix run .#wookie-istio-helloworld"
+              '';
+            };
+
+          wookie-istio-helloworld = 
+            let
+              helloworldManifest = "${pkgs.kubelib.renderBundle clusterConfigA.platform.kubernetes.cluster.batches.services.bundles.helloworld}/manifest.yaml";
+            in
+            pkgs.writeShellApplication {
+              name = "wookie-istio-helloworld";
+              runtimeInputs = [ pkgs.kubectl ];
+              text = ''
+                echo "=== Deploying helloworld demo to cluster-a ==="
+                kubectl apply -f ${helloworldManifest} --context=k3d-cluster-a
+                echo "Waiting for helloworld pods..."
+                kubectl wait --for=condition=ready pod -l app=helloworld -n demo --context=k3d-cluster-a --timeout=120s
+                echo "=== Helloworld demo is up! ==="
+                echo "Test: nix run .#test"
+              '';
+            };
 
           # Build outputs
           manifests = manifests;
@@ -612,6 +564,22 @@
         test = {
           type = "app";
           program = "${self.packages.${system}.test}/bin/test-multi-cluster";
+        };
+        
+        # Granular Istio management
+        wookie-istio-down = {
+          type = "app";
+          program = "${self.packages.${system}.wookie-istio-down}/bin/wookie-istio-down";
+        };
+        
+        wookie-istio-up = {
+          type = "app";
+          program = "${self.packages.${system}.wookie-istio-up}/bin/wookie-istio-up";
+        };
+        
+        wookie-istio-helloworld = {
+          type = "app";
+          program = "${self.packages.${system}.wookie-istio-helloworld}/bin/wookie-istio-helloworld";
         };
 
         default = self.apps.${system}.up;
