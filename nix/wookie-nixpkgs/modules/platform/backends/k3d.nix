@@ -1,4 +1,4 @@
-{..
+{
   config,
   lib,
   pkgs,
@@ -33,9 +33,9 @@ in
       servers = 1;
 
       k3d-cmd = "${pkgs.k3d}/bin/k3d";
-      vault-cmd = "${pkgs.k3d}/bin/vault";
+      vault-cmd = "${pkgs.vault}/bin/vault";
       allNamespaces = cluster.batches.namespaces.bundles.namespaces.objects;
-      allNodePorts =  flatten ( 
+      allNodePorts = flatten ( 
         map (service: service.spec.ports) ( 
           filter (service: lib.hasAttr "type" service.spec && service.spec.type == "NodePort") ( 
             getResourcesOfKind "Service" cluster.batches
@@ -51,7 +51,7 @@ in
       }) onlyExplicitNodePorts;
 
       namespaceArrayLit =
-        "namespaces=(" + lib.concatStringSep " " (map (o: ''"${o.metadata.name}"'') allNamespaces) + ")";
+        "namespaces=(" + lib.concatStringsSep " " (map (o: ''"${o.metadata.name}"'') allNamespaces) + ")";
 
       k3d-config = {
         apiVersion = "k3d.io/v1alpha5";
@@ -92,10 +92,6 @@ in
                 endpoint:
                   - https://${registry}
     
-              "quay.io":
-                endpoint:
-                  - https://${registry}
-
               "${registry}":
                 endpoint:
                   - https://${registry}
@@ -123,6 +119,12 @@ in
                   "server:*"
                 ];
               }
+              {
+                arg = "--cluster-cidr=172.17.0.0/16";
+                nodeFilters = [
+                  "server:*"
+                ];
+              }
             ];
           };
         };
@@ -145,7 +147,7 @@ in
             k3d-up = {
               description = "Spin up new k3d cluster.";
               script = pkgs.writeShellScriptBin "k3d-up" ''
-                set -euo pipefile
+                set -euo pipefail
                 ${k3d-cmd} cluster create -c ${k3d-config-yaml} --kubeconfig-update-default=false
                 ${k3d-cmd} kubeconfig merge ${k3dClusterName} --output $KUBECONFIG
                 
@@ -173,7 +175,7 @@ in
 
                 if [ ! -f "$VAULT_TOKEN_FILE" ]; then
                   echo "~/.vault-token not found, running vault login..."
-                  ${vault-cmd} login -method ldap
+                  ${vault-cmd} login  -method ldap
                 fi
 
                 VAULT_TOKEN="$(cat "$VAULT_TOKEN_FILE")"
