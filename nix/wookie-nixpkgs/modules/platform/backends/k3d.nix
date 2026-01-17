@@ -120,7 +120,7 @@ in
                 ];
               }
               {
-                arg = "--cluster-cidr=172.17.0.0/16";
+                arg = "--service-cidr=172.17.0.0/16";
                 nodeFilters = [
                   "server:*"
                 ];
