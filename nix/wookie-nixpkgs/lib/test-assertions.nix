@@ -142,8 +142,12 @@ in rec {
     (mkAssertion {
       id = "helloworld-pods-running";
       description = "Helloworld pods are running in Cluster A";
-      command = "kubectl get pods -n demo --context=${ctxA} -l app=helloworld --field-selector=status.phase=Running";
-      expectedPattern = "helloworld";
+      command = ''
+        # Wait for at least one pod to be ready
+        kubectl wait --for=condition=ready pod -l app=helloworld -n demo --context=${ctxA} --timeout=30s >/dev/null 2>&1 || true
+        # Then check if any are running
+        kubectl get pods -n demo --context=${ctxA} -l app=helloworld -o jsonpath='{range .items[*]}{.status.phase}{"\n"}{end}' | grep -q 'Running'
+      '';
     })
     (mkAssertion {
       id = "helloworld-service";
@@ -197,6 +201,92 @@ in rec {
     })
   ];
 
+  dynamicDiscovery = [
+    (mkAssertion {
+      id = "create-discovery-namespace";
+      description = "Create test namespace in Cluster A with Istio injection";
+      command = ''kubectl create namespace automatic-discovery-test --context=${ctxA} --dry-run=client -o yaml | kubectl apply --context=${ctxA} -f - && kubectl label namespace automatic-discovery-test istio-injection=enabled --context=${ctxA} --overwrite'';
+    })
+    (mkAssertion {
+      id = "deploy-nginx-service";
+      description = "Deploy nginx service in new namespace";
+      command = ''
+        cat <<EOF | kubectl apply --context=${ctxA} -f -
+apiVersion: v1
+kind: Service
+metadata:
+  name: nginx-test
+  namespace: automatic-discovery-test
+spec:
+  ports:
+  - port: 80
+    name: http
+  selector:
+    app: nginx-test
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: nginx-test
+  namespace: automatic-discovery-test
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: nginx-test
+  template:
+    metadata:
+      labels:
+        app: nginx-test
+    spec:
+      containers:
+      - name: nginx
+        image: nginx:alpine
+        ports:
+        - containerPort: 80
+EOF
+      '';
+    })
+    (mkAssertion {
+      id = "wait-nginx-ready";
+      description = "Wait for nginx pod to be ready";
+      command = "kubectl wait --for=condition=ready pod -l app=nginx-test -n automatic-discovery-test --context=${ctxA} --timeout=90s";
+    })
+    (mkAssertion {
+      id = "nginx-has-sidecar";
+      description = "Nginx pod has Istio sidecar injected";
+      command = ''kubectl get pod -n automatic-discovery-test --context=${ctxA} -l app=nginx-test -o jsonpath='{.items[0].spec.containers[*].name}' | grep -q 'istio-proxy' '';
+    })
+    (mkAssertion {
+      id = "cluster-b-discovers-nginx";
+      description = "Cluster B Istiod discovers new nginx service endpoints";
+      command = ''
+        # Give Istiod time to discover the new service
+        sleep 5
+        kubectl exec -n istio-system deployment/istiod --context=${ctxB} -- curl -s localhost:15014/debug/endpointz | grep -q 'nginx-test.automatic-discovery-test'
+      '';
+    })
+    (mkAssertion {
+      id = "cluster-b-envoy-sees-nginx";
+      description = "Cluster B test pod Envoy has nginx endpoints";
+      command = ''
+        sleep 3
+        kubectl exec test-pod -n wookie-dr -c istio-proxy --context=${ctxB} -- pilot-agent request GET clusters | grep -q 'nginx-test.automatic-discovery-test.svc.cluster.local'
+      '';
+    })
+    (mkAssertion {
+      id = "cross-cluster-nginx-http";
+      description = "HTTP request from Cluster B to nginx in Cluster A";
+      command = "kubectl exec test-pod -n wookie-dr --context=${ctxB} -- curl -s --max-time 10 http://nginx-test.automatic-discovery-test.svc.cluster.local";
+      expectedPattern = "Welcome to nginx";
+    })
+    (mkAssertion {
+      id = "cleanup-discovery-namespace";
+      description = "Clean up automatic discovery test namespace";
+      command = "kubectl delete namespace automatic-discovery-test --context=${ctxA} --ignore-not-found=true --timeout=60s";
+    })
+  ];
+
   cleanup = [
     (mkAssertion {
       id = "delete-test-pod";
@@ -219,6 +309,7 @@ in rec {
     application
     connectivity
     endToEnd
+    dynamicDiscovery
     cleanup
   ];
 
@@ -231,6 +322,7 @@ in rec {
     application = { name = "APPLICATION DEPLOYMENT"; assertions = application; };
     connectivity = { name = "CROSS-CLUSTER CONNECTIVITY"; assertions = connectivity; };
     endToEnd = { name = "END-TO-END CONNECTIVITY TEST"; assertions = endToEnd; };
+    dynamicDiscovery = { name = "DYNAMIC SERVICE DISCOVERY"; assertions = dynamicDiscovery; };
     cleanup = { name = "CLEANUP"; assertions = cleanup; };
   };
 }

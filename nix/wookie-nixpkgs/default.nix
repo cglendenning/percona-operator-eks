@@ -36,10 +36,10 @@ let
       ];
     };
 
-  # Cluster configurations (imported from configs/)
-  wookieLocalConfig = system: mkConfig system (import ./configs/local.nix);
-  clusterAConfig = system: mkConfig system (import ./configs/cluster-a.nix);
-  clusterBConfig = system: mkConfig system (import ./configs/cluster-b.nix);
+  # Cluster configurations (imported from profiles/)
+  wookieLocalConfig = system: mkConfig system (import ./modules/profiles/local-dev.nix);
+  clusterAConfig = system: mkConfig system (import ./modules/profiles/multi-primary.nix);
+  clusterBConfig = system: mkConfig system (import ./modules/profiles/multi-dr.nix);
 
 in
 rec {

@@ -40,14 +40,19 @@ modules/
 ├── projects/wookie/       # Wookie project (Istio + PXC)
 │   ├── istio.nix         # Istio component
 │   └── pxc.nix           # PXC component (future)
-└── targets/              # Deployment targets (local, prod, dr)
+├── targets/              # Deployment targets (local-k3d, multi-cluster-k3d)
+└── profiles/             # Complete environment configurations
+    ├── local-dev.nix     # Single-cluster local development
+    ├── multi-primary.nix # Multi-cluster primary
+    └── multi-dr.nix      # Multi-cluster DR
 ```
 
 Deployment uses helmfile to orchestrate Helm releases with proper dependency ordering.
 
 ## Configuration
 
-Edit `flake.nix` to customize:
+Profiles are complete environment configurations that compose platform + projects + targets.
+Edit profiles in `modules/profiles/` to customize:
 
 ```nix
 projects.wookie = {

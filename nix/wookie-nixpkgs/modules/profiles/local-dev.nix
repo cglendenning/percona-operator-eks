@@ -1,6 +1,9 @@
+# Profile: Local development single-cluster configuration
+# This profile configures a standalone Wookie cluster with Istio for local development
+
 [
-  ../modules/projects/wookie
-  ../modules/targets/local-k3d.nix
+  ../projects/wookie
+  ../targets/local-k3d.nix
   {
     targets.local-k3d = {
       enable = true;

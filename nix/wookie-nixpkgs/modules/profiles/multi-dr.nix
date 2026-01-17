@@ -1,6 +1,9 @@
+# Profile: Multi-cluster DR cluster (Cluster B)
+# This is the disaster recovery cluster in a multi-primary multi-network Istio mesh
+
 [
-  ../modules/projects/wookie
-  ../modules/targets/multi-cluster-k3d.nix
+  ../projects/wookie
+  ../targets/multi-cluster-k3d.nix
   {
     targets.multi-cluster-k3d.enable = true;
 

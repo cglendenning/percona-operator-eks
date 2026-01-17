@@ -122,6 +122,7 @@ main() {
     "application"
     "connectivity"
     "endToEnd"
+    "dynamicDiscovery"
     "cleanup"
   )
 
