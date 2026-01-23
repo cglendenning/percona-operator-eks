@@ -26,7 +26,7 @@
       
       # Export library functions for advanced use (per-system for testAssertions)
       lib = forAllSystems (system: {
-        inherit (wookie) mkConfig wookieLocalConfig clusterAConfig clusterBConfig;
+        inherit (wookie) mkConfig wookieLocalConfig clusterAConfig clusterBConfig pmmConfig;
         testAssertions = wookie.testAssertions.${system};
       });
     };

@@ -40,11 +40,12 @@ let
   wookieLocalConfig = system: mkConfig system (import ./modules/profiles/local-dev.nix);
   clusterAConfig = system: mkConfig system (import ./modules/profiles/multi-primary.nix);
   clusterBConfig = system: mkConfig system (import ./modules/profiles/multi-dr.nix);
+  pmmConfig = system: mkConfig system (import ./modules/profiles/local-pmm.nix);
 
 in
 rec {
   # Export configurations for external use
-  inherit mkConfig wookieLocalConfig clusterAConfig clusterBConfig;
+  inherit mkConfig wookieLocalConfig clusterAConfig clusterBConfig pmmConfig;
   
   # Export test assertions for each system
   testAssertions = forAllSystems (system:
@@ -90,6 +91,12 @@ rec {
       clusterConfigB = configB.config;
       manifestsB = kubelib.renderAllBundles clusterConfigB;
       
+      # PMM configuration
+      pmmCfg = pmmConfig system;
+      pmmClusterConfig = pmmCfg.config;
+      pmmManifests = kubelib.renderAllBundles pmmClusterConfig;
+      pmmContext = pmmClusterConfig.target.kubeContext or "k3d-pmm";
+      
       # Internal scripts (not exposed in packages)
       _internal = {
         create-cluster = clusterConfig.build.scripts.create-cluster;
@@ -99,6 +106,9 @@ rec {
         delete-clusters = clusterConfigA.build.scripts.delete-clusters;
         deploy-cluster-a = clusterConfigA.build.scripts.deploy-helmfile;
         deploy-cluster-b = clusterConfigB.build.scripts.deploy-helmfile;
+        pmm-create-cluster = pmmClusterConfig.build.scripts.create-cluster;
+        pmm-delete-cluster = pmmClusterConfig.build.scripts.delete-cluster;
+        pmm-deploy = pmmClusterConfig.build.scripts.deploy-helmfile;
       };
     in
     {
@@ -345,6 +355,115 @@ rec {
             echo "Test: nix run .#test"
           '';
         };
+      
+      # PMM commands
+      pmm-up = pkgs.writeShellApplication {
+        name = "pmm-up";
+        runtimeInputs = [ pkgs.k3d pkgs.helmfile pkgs.kubernetes-helm pkgs.kubectl ];
+        text = ''
+          set -euo pipefail
+          
+          echo "=== Standing up PMM stack ==="
+          
+          # Create k3d cluster
+          echo "Creating k3d cluster..."
+          ${_internal.pmm-create-cluster}
+          
+          # Deploy via helmfile
+          echo "Deploying PMM, Vault, and External Secrets..."
+          CLUSTER_CONTEXT="${pmmContext}" ${_internal.pmm-deploy}/bin/deploy-local-k3d-pmm-helmfile
+          
+          # Install External Secrets Operator via Helm
+          echo "Installing External Secrets Operator..."
+          helm repo add external-secrets https://charts.external-secrets.io || true
+          helm repo update
+          helm upgrade --install external-secrets \
+            external-secrets/external-secrets \
+            -n external-secrets \
+            --create-namespace \
+            --set installCRDs=true \
+            --wait --timeout=3m
+          
+          # Wait for deployments
+          echo "Waiting for Vault..."
+          kubectl wait --for=condition=available --timeout=180s deployment/vault -n vault --context="${pmmContext}"
+          
+          echo "Waiting for PMM..."
+          kubectl wait --for=condition=available --timeout=300s deployment/pmm-server -n pmm --context="${pmmContext}"
+          
+          # Apply SecretStore and ExternalSecret (after ESO is ready)
+          echo "Applying SecretStore and ExternalSecret..."
+          sleep 5
+          CLUSTER_CONTEXT="${pmmContext}" ${_internal.pmm-deploy}/bin/deploy-local-k3d-pmm-helmfile
+          
+          # Run token setup
+          echo ""
+          echo "Setting up PMM service account token..."
+          export KUBE_CONTEXT="${pmmContext}"
+          ${pmmClusterConfig.build.scripts.setup-pmm-token}
+          
+          echo ""
+          echo "=== PMM Stack Ready ==="
+          echo ""
+          echo "PMM Server: http://localhost:8080 (admin/admin)"
+          echo "Vault: kubectl port-forward -n vault svc/vault 8200:8200"
+          echo "Vault Root Token: root"
+          echo ""
+          echo "To view the synced secret:"
+          echo "  kubectl get secret pmm-token -n pmm -o jsonpath='{.data.pmmservertoken}' | base64 -d"
+        '';
+      };
+      
+      pmm-down = pkgs.writeShellApplication {
+        name = "pmm-down";
+        runtimeInputs = [ pkgs.k3d ];
+        text = ''
+          set -euo pipefail
+          
+          echo "=== Tearing down PMM stack ==="
+          ${_internal.pmm-delete-cluster}
+          echo "=== PMM stack is down! ==="
+        '';
+      };
+      
+      pmm-status = pkgs.writeShellApplication {
+        name = "pmm-status";
+        runtimeInputs = [ pkgs.kubectl ];
+        text = ''
+          set -euo pipefail
+          
+          kubectl config use-context ${pmmContext} 2>/dev/null || true
+          
+          echo "=== PMM Stack Status ==="
+          echo ""
+          echo "Namespaces:"
+          kubectl get namespace pmm vault external-secrets 2>/dev/null || echo "Namespaces not found"
+          
+          echo ""
+          echo "PMM:"
+          kubectl get all -n pmm 2>/dev/null || echo "PMM namespace not found"
+          
+          echo ""
+          echo "Vault:"
+          kubectl get all -n vault 2>/dev/null || echo "Vault namespace not found"
+          
+          echo ""
+          echo "External Secrets:"
+          kubectl get all -n external-secrets 2>/dev/null || echo "External Secrets namespace not found"
+          
+          echo ""
+          echo "PMM Token Secret:"
+          kubectl get secret pmm-token -n pmm 2>/dev/null || echo "Secret not found"
+          
+          echo ""
+          echo "SecretStore:"
+          kubectl get secretstore -n pmm 2>/dev/null || echo "No SecretStore found"
+          
+          echo ""
+          echo "ExternalSecret:"
+          kubectl get externalsecret -n pmm 2>/dev/null || echo "No ExternalSecret found"
+        '';
+      };
 
       # Build outputs
       manifests = manifests;
@@ -353,6 +472,8 @@ rec {
       manifests-cluster-b = manifestsB;
       helmfile-cluster-a = clusterConfigA.build.helmfile;
       helmfile-cluster-b = clusterConfigB.build.helmfile;
+      pmm-manifests = pmmManifests;
+      pmm-helmfile = pmmClusterConfig.build.helmfile;
       
       default = manifests;
     }
@@ -406,6 +527,22 @@ rec {
       wookie-istio-helloworld = {
         type = "app";
         program = "${pkgs.lib.getExe self.wookie-istio-helloworld}";
+      };
+      
+      # PMM apps
+      pmm-up = {
+        type = "app";
+        program = "${pkgs.lib.getExe self.pmm-up}";
+      };
+      
+      pmm-down = {
+        type = "app";
+        program = "${pkgs.lib.getExe self.pmm-down}";
+      };
+      
+      pmm-status = {
+        type = "app";
+        program = "${pkgs.lib.getExe self.pmm-status}";
       };
 
       default = apps.${system}.up;
