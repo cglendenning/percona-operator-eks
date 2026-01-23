@@ -8,6 +8,7 @@
     targets.local-k3d = {
       enable = true;
       clusterName = "pmm";
+      apiPort = 6445;  # Use different port to avoid conflicts with multi-cluster setup (6443=cluster-a, 6444=cluster-b)
     };
 
     projects.pmm = {

@@ -159,42 +159,57 @@ in
         (mkIf cfg.pmm.enable {
           pmm-namespace = {
             namespace = cfg.pmm.namespace;
-            manifests = [(pkgs.runCommand "pmm-namespace" {} ''
-              mkdir -p $out
-              cp ${yaml.generate "manifest.yaml" {
-                apiVersion = "v1";
-                kind = "Namespace";
-                metadata.name = cfg.pmm.namespace;
-              }} $out/manifest.yaml
-            '')];
+            manifests = [(
+              let
+                ns = {
+                  apiVersion = "v1";
+                  kind = "Namespace";
+                  metadata.name = cfg.pmm.namespace;
+                };
+              in
+              pkgs.runCommand "pmm-namespace" {} ''
+                mkdir -p $out
+                cat ${yaml.generate "manifest.yaml" ns} > $out/manifest.yaml
+              ''
+            )];
           };
         })
         
         (mkIf cfg.vault.enable {
           vault-namespace = {
             namespace = cfg.vault.namespace;
-            manifests = [(pkgs.runCommand "vault-namespace" {} ''
-              mkdir -p $out
-              cp ${yaml.generate "manifest.yaml" {
-                apiVersion = "v1";
-                kind = "Namespace";
-                metadata.name = cfg.vault.namespace;
-              }} $out/manifest.yaml
-            '')];
+            manifests = [(
+              let
+                ns = {
+                  apiVersion = "v1";
+                  kind = "Namespace";
+                  metadata.name = cfg.vault.namespace;
+                };
+              in
+              pkgs.runCommand "vault-namespace" {} ''
+                mkdir -p $out
+                cat ${yaml.generate "manifest.yaml" ns} > $out/manifest.yaml
+              ''
+            )];
           };
         })
         
         (mkIf cfg.externalSecrets.enable {
           external-secrets-namespace = {
             namespace = cfg.externalSecrets.namespace;
-            manifests = [(pkgs.runCommand "external-secrets-namespace" {} ''
-              mkdir -p $out
-              cp ${yaml.generate "manifest.yaml" {
-                apiVersion = "v1";
-                kind = "Namespace";
-                metadata.name = cfg.externalSecrets.namespace;
-              }} $out/manifest.yaml
-            '')];
+            manifests = [(
+              let
+                ns = {
+                  apiVersion = "v1";
+                  kind = "Namespace";
+                  metadata.name = cfg.externalSecrets.namespace;
+                };
+              in
+              pkgs.runCommand "external-secrets-namespace" {} ''
+                mkdir -p $out
+                cat ${yaml.generate "manifest.yaml" ns} > $out/manifest.yaml
+              ''
+            )];
           };
         })
       ];
@@ -204,10 +219,9 @@ in
     (mkIf cfg.pmm.enable {
       platform.kubernetes.cluster.batches.services.bundles.pmm-server = {
         namespace = cfg.pmm.namespace;
-        manifests = [
-          (pkgs.runCommand "pmm-deployment" {} ''
-            mkdir -p $out
-            cp ${yaml.generate "manifest.yaml" {
+        manifests = [(
+          let
+            deployment = {
               apiVersion = "apps/v1";
               kind = "Deployment";
               metadata = {
@@ -245,11 +259,9 @@ in
                   }];
                 };
               };
-            }} $out/manifest.yaml
-          '')
-          (pkgs.runCommand "pmm-service" {} ''
-            mkdir -p $out
-            cp ${yaml.generate "manifest.yaml" {
+            };
+            
+            service = {
               apiVersion = "v1";
               kind = "Service";
               metadata = {
@@ -264,9 +276,18 @@ in
                   { name = "https"; port = 443; targetPort = 443; protocol = "TCP"; }
                 ];
               };
-            }} $out/manifest.yaml
-          '')
-        ];
+            };
+            
+            allManifests = [ deployment service ];
+          in
+          pkgs.runCommand "pmm-server-manifests" {} ''
+            mkdir -p $out
+            ${lib.concatMapStringsSep "\n" (manifest: ''
+              echo "---" >> $out/manifest.yaml
+              cat ${yaml.generate "manifest.yaml" manifest} >> $out/manifest.yaml
+            '') allManifests}
+          ''
+        )];
       };
     })
     
@@ -274,10 +295,9 @@ in
     (mkIf cfg.vault.enable {
       platform.kubernetes.cluster.batches.services.bundles.vault = {
         namespace = cfg.vault.namespace;
-        manifests = [
-          (pkgs.runCommand "vault-deployment" {} ''
-            mkdir -p $out
-            cp ${yaml.generate "manifest.yaml" {
+        manifests = [(
+          let
+            deployment = {
               apiVersion = "apps/v1";
               kind = "Deployment";
               metadata = {
@@ -318,11 +338,9 @@ in
                   };
                 };
               };
-            }} $out/manifest.yaml
-          '')
-          (pkgs.runCommand "vault-service" {} ''
-            mkdir -p $out
-            cp ${yaml.generate "manifest.yaml" {
+            };
+            
+            service = {
               apiVersion = "v1";
               kind = "Service";
               metadata = {
@@ -338,83 +356,83 @@ in
                   { name = "https-internal"; port = 8201; targetPort = 8201; protocol = "TCP"; }
                 ];
               };
-            }} $out/manifest.yaml
-          '')
-        ];
+            };
+            
+            allManifests = [ deployment service ];
+          in
+          pkgs.runCommand "vault-manifests" {} ''
+            mkdir -p $out
+            ${lib.concatMapStringsSep "\n" (manifest: ''
+              echo "---" >> $out/manifest.yaml
+              cat ${yaml.generate "manifest.yaml" manifest} >> $out/manifest.yaml
+            '') allManifests}
+          ''
+        )];
       };
     })
     
     # External Secrets configuration (SecretStore and ExternalSecret)
+    # These are deployed AFTER ESO is installed, so we expose them as a separate build output
     (mkIf cfg.externalSecrets.enable {
-      platform.kubernetes.cluster.batches.services.bundles.pmm-external-secrets = {
-        namespace = cfg.pmm.namespace;
-        manifests = [
-          (pkgs.runCommand "vault-token-secret" {} ''
-            mkdir -p $out
-            cp ${yaml.generate "manifest.yaml" {
-              apiVersion = "v1";
-              kind = "Secret";
-              metadata = {
-                name = "vault-token";
-                namespace = cfg.pmm.namespace;
+      build.scripts.pmm-external-secrets-manifests = pkgs.writeText "pmm-external-secrets.yaml" (
+        builtins.concatStringsSep "\n---\n" [
+          (builtins.readFile (yaml.generate "vault-token-secret.yaml" {
+            apiVersion = "v1";
+            kind = "Secret";
+            metadata = {
+              name = "vault-token";
+              namespace = cfg.pmm.namespace;
+            };
+            type = "Opaque";
+            stringData.token = cfg.vault.rootToken;
+          }))
+          (builtins.readFile (yaml.generate "secretstore.yaml" {
+            apiVersion = "external-secrets.io/v1beta1";
+            kind = "SecretStore";
+            metadata = {
+              name = "vault-backend";
+              namespace = cfg.pmm.namespace;
+            };
+            spec = {
+              provider.vault = {
+                server = "http://vault.${cfg.vault.namespace}.svc.cluster.local:8200";
+                path = "secret";
+                version = "v2";
+                auth.tokenSecretRef = {
+                  name = "vault-token";
+                  key = "token";
+                };
               };
-              type = "Opaque";
-              stringData.token = cfg.vault.rootToken;
-            }} $out/manifest.yaml
-          '')
-          (pkgs.runCommand "secretstore" {} ''
-            mkdir -p $out
-            cp ${yaml.generate "manifest.yaml" {
-              apiVersion = "external-secrets.io/v1beta1";
-              kind = "SecretStore";
-              metadata = {
+            };
+          }))
+          (builtins.readFile (yaml.generate "externalsecret.yaml" {
+            apiVersion = "external-secrets.io/v1beta1";
+            kind = "ExternalSecret";
+            metadata = {
+              name = "pmm-token";
+              namespace = cfg.pmm.namespace;
+            };
+            spec = {
+              refreshInterval = "1m";
+              secretStoreRef = {
                 name = "vault-backend";
-                namespace = cfg.pmm.namespace;
+                kind = "SecretStore";
               };
-              spec = {
-                provider.vault = {
-                  server = "http://vault.${cfg.vault.namespace}.svc.cluster.local:8200";
-                  path = "secret";
-                  version = "v2";
-                  auth.tokenSecretRef = {
-                    name = "vault-token";
-                    key = "token";
-                  };
-                };
-              };
-            }} $out/manifest.yaml
-          '')
-          (pkgs.runCommand "externalsecret" {} ''
-            mkdir -p $out
-            cp ${yaml.generate "manifest.yaml" {
-              apiVersion = "external-secrets.io/v1beta1";
-              kind = "ExternalSecret";
-              metadata = {
+              target = {
                 name = "pmm-token";
-                namespace = cfg.pmm.namespace;
+                creationPolicy = "Owner";
               };
-              spec = {
-                refreshInterval = "1m";
-                secretStoreRef = {
-                  name = "vault-backend";
-                  kind = "SecretStore";
+              data = [{
+                secretKey = "pmmservertoken";
+                remoteRef = {
+                  key = "pmm/wookie";
+                  property = "token";
                 };
-                target = {
-                  name = "pmm-token";
-                  creationPolicy = "Owner";
-                };
-                data = [{
-                  secretKey = "pmmservertoken";
-                  remoteRef = {
-                    key = "pmm/wookie";
-                    property = "token";
-                  };
-                }];
-              };
-            }} $out/manifest.yaml
-          '')
-        ];
-      };
+              }];
+            };
+          }))
+        ]
+      );
     })
   ]);
 }

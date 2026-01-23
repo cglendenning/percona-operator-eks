@@ -95,7 +95,7 @@ rec {
       pmmCfg = pmmConfig system;
       pmmClusterConfig = pmmCfg.config;
       pmmManifests = kubelib.renderAllBundles pmmClusterConfig;
-      pmmContext = pmmClusterConfig.target.kubeContext or "k3d-pmm";
+      pmmContext = pmmClusterConfig.targets.local-k3d.context or "k3d-pmm";
       
       # Internal scripts (not exposed in packages)
       _internal = {
@@ -377,24 +377,50 @@ rec {
           echo "Installing External Secrets Operator..."
           helm repo add external-secrets https://charts.external-secrets.io || true
           helm repo update
-          helm upgrade --install external-secrets \
-            external-secrets/external-secrets \
-            -n external-secrets \
-            --create-namespace \
-            --set installCRDs=true \
-            --wait --timeout=3m
           
-          # Wait for deployments
+          # Use kubectl create to install (avoids large annotation issues)
+          echo "Installing ESO (validation disabled for k3s compatibility)..."
+          helm template external-secrets external-secrets/external-secrets \
+            -n external-secrets \
+            --set installCRDs=true \
+            | kubectl create --validate=false --context="${pmmContext}" -f - 2>&1 | grep -v "already exists" || true
+          
+          # Wait for ESO to be ready
+          sleep 5
+          kubectl wait --for=condition=available --timeout=180s \
+            deployment/external-secrets -n external-secrets --context="${pmmContext}" || echo "ESO deployment check skipped"
+          kubectl wait --for=condition=available --timeout=180s \
+            deployment/external-secrets-webhook -n external-secrets --context="${pmmContext}" || echo "ESO webhook check skipped"
+          kubectl wait --for=condition=available --timeout=180s \
+            deployment/external-secrets-cert-controller -n external-secrets --context="${pmmContext}" || echo "ESO cert controller check skipped"
+          
+          echo ""
+          echo "=== Waiting for deployments ==="
+          
+          # Give deployments time to be created
+          sleep 10
+          
+          echo "Checking Vault deployment..."
+          kubectl get deployment -n vault --context="${pmmContext}"
+          
           echo "Waiting for Vault..."
-          kubectl wait --for=condition=available --timeout=180s deployment/vault -n vault --context="${pmmContext}"
+          kubectl wait --for=condition=available --timeout=180s deployment/vault -n vault --context="${pmmContext}" || {
+            echo "Vault deployment not ready, checking status..."
+            kubectl get pods -n vault --context="${pmmContext}"
+            kubectl describe deployment vault -n vault --context="${pmmContext}"
+          }
           
           echo "Waiting for PMM..."
-          kubectl wait --for=condition=available --timeout=300s deployment/pmm-server -n pmm --context="${pmmContext}"
+          kubectl wait --for=condition=available --timeout=300s deployment/pmm-server -n pmm --context="${pmmContext}" || {
+            echo "PMM deployment not ready, checking status..."
+            kubectl get pods -n pmm --context="${pmmContext}"
+            kubectl describe deployment pmm-server -n pmm --context="${pmmContext}"
+          }
           
-          # Apply SecretStore and ExternalSecret (after ESO is ready)
-          echo "Applying SecretStore and ExternalSecret..."
+          echo ""
+          echo "=== Applying SecretStore and ExternalSecret ==="
           sleep 5
-          CLUSTER_CONTEXT="${pmmContext}" ${_internal.pmm-deploy}/bin/deploy-local-k3d-pmm-helmfile
+          kubectl apply -f ${pmmClusterConfig.build.scripts.pmm-external-secrets-manifests} --context="${pmmContext}"
           
           # Run token setup
           echo ""

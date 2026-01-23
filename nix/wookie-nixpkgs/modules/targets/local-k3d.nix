@@ -79,6 +79,7 @@ with lib;
         --servers "$SERVERS" \
         --agents "$AGENTS" \
         --api-port "$API_PORT" \
+        --k3s-arg "--tls-san=0.0.0.0@server:0" \
         ${optionalString config.targets.local-k3d.disableTraefik ''--k3s-arg "--disable=traefik@server:*"''}
       
       echo ""
