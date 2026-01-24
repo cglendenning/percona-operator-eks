@@ -78,7 +78,7 @@ with lib;
       ${pkgs.k3d}/bin/k3d cluster create "$CLUSTER_NAME" \
         --servers "$SERVERS" \
         --agents "$AGENTS" \
-        --api-port "$API_PORT" \
+        --api-port "0.0.0.0:$API_PORT" \
         --k3s-arg "--tls-san=0.0.0.0@server:0" \
         ${optionalString config.targets.local-k3d.disableTraefik ''--k3s-arg "--disable=traefik@server:*"''}
       
