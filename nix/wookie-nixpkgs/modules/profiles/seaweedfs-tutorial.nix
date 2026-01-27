@@ -1,6 +1,8 @@
 # Profile: SeaweedFS Tutorial - Two namespace replication setup
 # This profile configures SeaweedFS in two namespaces for replication testing
 
+{ pkgs, lib, ... }:
+
 [
   ../targets/local-k3d.nix
   {
@@ -9,9 +11,14 @@
       clusterName = "seaweedfs-tutorial";
     };
 
-    platform.kubernetes.cluster = {
-      uniqueIdentifier = "seaweedfs-tutorial";
-      
+    platform.kubernetes.cluster = let
+      charts = import ../../pkgs/charts/charts.nix { 
+        kubelib = pkgs.kubelib;
+        inherit lib;
+      };
+      seaweedfsChart = charts.seaweedfs."4_0_406";
+    in {
+      # uniqueIdentifier is set by local-k3d target module
       defaults = {
         ingress = null;
         clusterIssuer = null;
@@ -66,10 +73,7 @@
               chart = {
                 name = "seaweedfs";
                 version = "4_0_406";
-                package = (import ../../pkgs/charts/charts.nix { 
-                  kubelib = pkgs.kubelib;
-                  inherit lib;
-                }).seaweedfs."4_0_406";
+                package = seaweedfsChart;
                 values = {
                   master = {
                     enabled = true;
@@ -104,10 +108,7 @@
               chart = {
                 name = "seaweedfs";
                 version = "4_0_406";
-                package = (import ../../pkgs/charts/charts.nix { 
-                  kubelib = pkgs.kubelib;
-                  inherit lib;
-                }).seaweedfs."4_0_406";
+                package = seaweedfsChart;
                 values = {
                   master = {
                     enabled = true;

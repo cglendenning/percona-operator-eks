@@ -48,7 +48,7 @@ in
       repo = seaweedfs-repo;
       chart = "seaweedfs";
       version = "4.0.406";
-      chartHash = lib.fakeHash;
+      chartHash = "sha256-asrXr0Hslpw9Cg+aaqc7g6htkWyaalfZ+JKCc4t0J2Y="; 
     };
   };
 }

@@ -13,8 +13,9 @@ This tutorial walks you through deploying SeaweedFS to two namespaces in a singl
 ```bash
 # 1. Get the chart hash (first time only)
 cd nix/wookie-nixpkgs
-nix build .#seaweedfs-manifests
-# If hash error, update charts.nix with the correct hash from error message
+nix build .#seaweedfs-helmfile
+# If you get a hash error when building manifests, that's OK - 
+# we use helmfile which doesn't need the manifest build
 
 # 2. Deploy everything
 nix run .#seaweedfs-up
@@ -36,8 +37,18 @@ nix run .#seaweedfs-down
 
 First, we need to get the correct hash for the SeaweedFS Helm chart. The chart is configured in `nix/wookie-nixpkgs/pkgs/charts/charts.nix` with a placeholder hash.
 
+**Note:** The SeaweedFS chart requires Helm 3.14+ for the `fromToml` function. If building manifests fails due to Helm version, that's fine - we use helmfile for deployment which will work with the Helm version available at runtime.
+
+To get the chart hash:
+
 ```bash
 cd nix/wookie-nixpkgs
+nix build .#seaweedfs-helmfile
+```
+
+If you want to build manifests (optional, requires Helm 3.14+):
+
+```bash
 nix build .#seaweedfs-manifests
 ```
 
@@ -64,6 +75,8 @@ nix build .#seaweedfs-helmfile
 ```
 
 This generates the helmfile.yaml that will deploy SeaweedFS to both namespaces.
+
+**Note:** The SeaweedFS Helm chart requires Helm 3.14+ (for `fromToml` support). If your nixpkgs version has an older Helm, the manifest build (`nix build .#seaweedfs-manifests`) may fail. This is fine - we use helmfile for deployment which will use the Helm version available at runtime. You can skip the manifest build and proceed directly to deployment.
 
 ## Step 3: Create the k3d Cluster
 

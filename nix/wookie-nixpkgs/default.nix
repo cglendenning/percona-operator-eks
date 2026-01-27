@@ -41,7 +41,30 @@ let
   clusterAConfig = system: mkConfig system (import ./modules/profiles/multi-primary.nix);
   clusterBConfig = system: mkConfig system (import ./modules/profiles/multi-dr.nix);
   pmmConfig = system: mkConfig system (import ./modules/profiles/local-pmm.nix);
-  seaweedfsTutorialConfig = system: mkConfig system (import ./modules/profiles/seaweedfs-tutorial.nix);
+  seaweedfsTutorialConfig = system:
+    let
+      pkgs = import nixpkgs {
+        inherit system;
+        overlays = [
+          (final: prev: 
+            let
+              kubelibModule = import ./lib/kubelib.nix {
+                pkgs = final;
+                lib = nixpkgs.lib;
+              };
+            in
+            {
+              kubelib = kubelibModule;
+            }
+          )
+        ];
+      };
+      profileModule = import ./modules/profiles/seaweedfs-tutorial.nix {
+        inherit pkgs;
+        lib = nixpkgs.lib;
+      };
+    in
+    mkConfig system profileModule;
 
 in
 rec {
