@@ -543,7 +543,7 @@ rec {
           
           echo ""
           echo "Step 3: Deploying SeaweedFS via Helmfile..."
-          CLUSTER_CONTEXT=${seaweedfsContext} ${_internal.seaweedfs-deploy}
+          CLUSTER_CONTEXT=${seaweedfsContext} ${_internal.seaweedfs-deploy}/bin/deploy-${seaweedfsClusterConfig.platform.kubernetes.cluster.uniqueIdentifier}-helmfile
           
           echo ""
           echo "=== SeaweedFS Stack Ready ==="
