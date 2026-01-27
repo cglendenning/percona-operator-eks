@@ -41,11 +41,12 @@ let
   clusterAConfig = system: mkConfig system (import ./modules/profiles/multi-primary.nix);
   clusterBConfig = system: mkConfig system (import ./modules/profiles/multi-dr.nix);
   pmmConfig = system: mkConfig system (import ./modules/profiles/local-pmm.nix);
+  seaweedfsTutorialConfig = system: mkConfig system (import ./modules/profiles/seaweedfs-tutorial.nix);
 
 in
 rec {
   # Export configurations for external use
-  inherit mkConfig wookieLocalConfig clusterAConfig clusterBConfig pmmConfig;
+  inherit mkConfig wookieLocalConfig clusterAConfig clusterBConfig pmmConfig seaweedfsTutorialConfig;
   
   # Export test assertions for each system
   testAssertions = forAllSystems (system:
@@ -97,6 +98,12 @@ rec {
       pmmManifests = kubelib.renderAllBundles pmmClusterConfig;
       pmmContext = pmmClusterConfig.targets.local-k3d.context or "k3d-pmm";
       
+      # SeaweedFS Tutorial configuration
+      seaweedfsCfg = seaweedfsTutorialConfig system;
+      seaweedfsClusterConfig = seaweedfsCfg.config;
+      seaweedfsManifests = kubelib.renderAllBundles seaweedfsClusterConfig;
+      seaweedfsContext = seaweedfsClusterConfig.targets.local-k3d.context or "k3d-seaweedfs-tutorial";
+      
       # Internal scripts (not exposed in packages)
       _internal = {
         create-cluster = clusterConfig.build.scripts.create-cluster;
@@ -109,6 +116,9 @@ rec {
         pmm-create-cluster = pmmClusterConfig.build.scripts.create-cluster;
         pmm-delete-cluster = pmmClusterConfig.build.scripts.delete-cluster;
         pmm-deploy = pmmClusterConfig.build.scripts.deploy-helmfile;
+        seaweedfs-create-cluster = seaweedfsClusterConfig.build.scripts.create-cluster;
+        seaweedfs-delete-cluster = seaweedfsClusterConfig.build.scripts.delete-cluster;
+        seaweedfs-deploy = seaweedfsClusterConfig.build.scripts.deploy-helmfile;
       };
     in
     {
@@ -490,6 +500,51 @@ rec {
           kubectl get externalsecret -n pmm 2>/dev/null || echo "No ExternalSecret found"
         '';
       };
+      
+      seaweedfs-up = pkgs.writeShellApplication {
+        name = "seaweedfs-up";
+        runtimeInputs = [ pkgs.k3d pkgs.helmfile pkgs.kubernetes-helm pkgs.kubectl ];
+        text = ''
+          set -euo pipefail
+          
+          echo "=== Standing up SeaweedFS Tutorial Stack ==="
+          echo ""
+          
+          echo "Step 1: Creating k3d cluster..."
+          ${_internal.seaweedfs-create-cluster}
+          
+          echo ""
+          echo "Step 2: Waiting for cluster to be ready..."
+          sleep 5
+          kubectl wait --for=condition=Ready nodes --all --timeout=120s --context=${seaweedfsContext} || true
+          
+          echo ""
+          echo "Step 3: Deploying SeaweedFS via Helmfile..."
+          CLUSTER_CONTEXT=${seaweedfsContext} ${_internal.seaweedfs-deploy}
+          
+          echo ""
+          echo "=== SeaweedFS Stack Ready ==="
+          echo ""
+          echo "Primary namespace: seaweedfs-primary"
+          echo "Secondary namespace: seaweedfs-secondary"
+          echo ""
+          echo "To check status:"
+          echo "  kubectl get all -n seaweedfs-primary"
+          echo "  kubectl get all -n seaweedfs-secondary"
+        '';
+      };
+      
+      seaweedfs-down = pkgs.writeShellApplication {
+        name = "seaweedfs-down";
+        runtimeInputs = [ pkgs.k3d ];
+        text = ''
+          set -euo pipefail
+          
+          echo "=== Tearing down SeaweedFS Tutorial stack ==="
+          ${_internal.seaweedfs-delete-cluster}
+          echo "=== SeaweedFS stack is down! ==="
+        '';
+      };
 
       # Build outputs
       manifests = manifests;
@@ -500,6 +555,8 @@ rec {
       helmfile-cluster-b = clusterConfigB.build.helmfile;
       pmm-manifests = pmmManifests;
       pmm-helmfile = pmmClusterConfig.build.helmfile;
+      seaweedfs-manifests = seaweedfsManifests;
+      seaweedfs-helmfile = seaweedfsClusterConfig.build.helmfile;
       
       default = manifests;
     }
@@ -569,6 +626,17 @@ rec {
       pmm-status = {
         type = "app";
         program = "${pkgs.lib.getExe self.pmm-status}";
+      };
+
+      # SeaweedFS Tutorial apps
+      seaweedfs-up = {
+        type = "app";
+        program = "${pkgs.lib.getExe self.seaweedfs-up}";
+      };
+      
+      seaweedfs-down = {
+        type = "app";
+        program = "${pkgs.lib.getExe self.seaweedfs-down}";
       };
 
       default = apps.${system}.up;

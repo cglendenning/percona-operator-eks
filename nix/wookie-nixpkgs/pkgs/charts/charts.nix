@@ -5,6 +5,7 @@
 
 let
   istio-repo = "https://istio-release.storage.googleapis.com/charts";
+  seaweedfs-repo = "https://seaweedfs.github.io/seaweedfs/helm";
 
   # To get chart hashes:
   # 1. Use a fake hash (lib.fakeHash or any invalid hash)
@@ -39,6 +40,15 @@ in
       chart = "gateway";
       version = "1.28.2";
       chartHash = "sha256-2wfu4sg+rHtoApBGLXa3MwWoGCzj0TRW8p37ObbHsEs=";
+    };
+  };
+
+  seaweedfs = {
+    "4_0_406" = kubelib.downloadHelmChart {
+      repo = seaweedfs-repo;
+      chart = "seaweedfs";
+      version = "4.0.406";
+      chartHash = lib.fakeHash;
     };
   };
 }
