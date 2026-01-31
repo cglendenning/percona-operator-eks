@@ -1,20 +1,15 @@
-[200~{ lib, ... }:
+{ lib, ... }:
+
+{ namespace ? "observability"
+, pmmBaseUrl ? null
+, pmmServiceAccountName ? "svc-observability"
+, k8sSecretName ? "pmm-service-account-token"
+, adminCredsSecretName ? "pmm-admin-creds"
+}:
 
 let
-  ns = "wookie-observability";
-
-  # Where PMM/Grafana is reachable from inside the cluster.
-  # Adjust service/port/path if your PMM ingress differs.
-  #
-  # In many PMM installs, Grafana API is reachable at the same host
-  # and the API base is /api/...
-  pmmBaseUrl = "http://pmm.${ns}.svc.cluster.local";
-
-  pmmServiceAccountName = "pmm-operator-admin";
-  k8sSecretName = "pmm-service-account-token"; # this is where we'll store glsa_... token
-
-  # Secret that contains PMM admin username/password (or mount from ESO/Vault instead)
-  adminCredsSecretName = "pmm-admin-creds";
+  ns = namespace;
+  baseUrl = if pmmBaseUrl != null then pmmBaseUrl else "http://pmm.${ns}.svc.cluster.local";
 in
 {
   resources = [
@@ -57,11 +52,16 @@ in
       metadata = {
         name = "pmm-create-serviceaccount-token";
         namespace = ns;
+        labels = { app = "pmm-token-bootstrap"; };
       };
       spec = {
         backoffLimit = 2;
+        ttlSecondsAfterFinished = 300;
         template = {
-          metadata = { name = "pmm-create-serviceaccount-token"; };
+          metadata = {
+            name = "pmm-create-serviceaccount-token";
+            labels = { app = "pmm-token-bootstrap"; };
+          };
           spec = {
             serviceAccountName = "pmm-token-bootstrap";
             restartPolicy = "Never";
@@ -69,11 +69,11 @@ in
             containers = [
               {
                 name = "bootstrap";
-                # bitnami/kubectl image has kubectl + curl + jq according to its Dockerfile. :contentReference[oaicite:4]{index=4}
                 image = "bitnami/kubectl:latest";
+                imagePullPolicy = "IfNotPresent";
 
                 env = [
-                  { name = "PMM_BASE_URL"; value = pmmBaseUrl; }
+                  { name = "PMM_BASE_URL"; value = baseUrl; }
                   { name = "PMM_SA_NAME"; value = pmmServiceAccountName; }
                   { name = "OUT_SECRET"; value = k8sSecretName; }
                   { name = "NAMESPACE"; value = ns; }
@@ -92,32 +92,31 @@ in
                 args = [ ''
                   set -euo pipefail
 
-                  echo "Waiting for PMM to respond..."
+                  echo "Waiting for Grafana API at ${PMM_BASE_URL}..."
                   for i in $(seq 1 120); do
                     if curl -fsS "${PMM_BASE_URL}/api/health" >/dev/null 2>&1; then
+                      echo "Grafana API ready."
                       break
+                    fi
+                    if [ "$i" -eq 120 ]; then
+                      echo "ERROR: Grafana API did not become ready in time." >&2
+                      exit 1
                     fi
                     sleep 2
                   done
 
                   # 1) Find existing service account id (Grafana API)
-                  # GET /api/serviceaccounts/search?perpage=...&page=...&query=...
-                  # :contentReference[oaicite:5]{index=5}
+                  query="$(jq -nr --arg n "${PMM_SA_NAME}" '$n | @uri')"
                   sa_id="$(
                     curl -fsS -u "${PMM_ADMIN_USER}:${PMM_ADMIN_PASS}" \
-                      "${PMM_BASE_URL}/api/serviceaccounts/search?perpage=1000&page=1&query=$(python - <<'PY'
-import os, urllib.parse
-print(urllib.parse.quote(os.environ["PMM_SA_NAME"]))
-PY
-)" | jq -r --arg n "${PMM_SA_NAME}" '
+                      "${PMM_BASE_URL}/api/serviceaccounts/search?perpage=1000&page=1&query=${query}" \
+                    | jq -r --arg n "${PMM_SA_NAME}" '
                       .serviceAccounts[]? | select(.name==$n) | .id
                     ' | head -n1
                   )"
 
                   if [ -z "${sa_id}" ] || [ "${sa_id}" = "null" ]; then
                     echo "Creating service account ${PMM_SA_NAME}..."
-                    # POST /api/serviceaccounts {name, role, isDisabled}
-                    # :contentReference[oaicite:6]{index=6}
                     sa_id="$(
                       curl -fsS -u "${PMM_ADMIN_USER}:${PMM_ADMIN_PASS}" \
                         -H 'Content-Type: application/json' \
@@ -128,9 +127,8 @@ PY
 
                   echo "Service account id: ${sa_id}"
 
-                  # 2) Create a token for that service account
-                  # POST /api/serviceaccounts/:id/tokens {name, secondsToLive}
-                  # secondsToLive=0 => never expires. :contentReference[oaicite:7]{index=7}
+                  # 2) Create a token for that service account (POST /api/serviceaccounts/:id/tokens)
+                  # secondsToLive=0 => never expires
                   token_name="bootstrap-$(date +%Y%m%d%H%M%S)"
                   token="$(
                     curl -fsS -u "${PMM_ADMIN_USER}:${PMM_ADMIN_PASS}" \
