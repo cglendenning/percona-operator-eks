@@ -15,7 +15,7 @@ Copy and paste the following block to configure your environment. You will be pr
 read -p "Enter Kubernetes namespace [percona]: " NAMESPACE; NAMESPACE=${NAMESPACE:-percona}
 read -p "Enter pod name (e.g., cluster1-pxc-0): " POD_NAME
 read -sp "Enter MySQL root password: " MYSQL_ROOT_PASSWORD; echo
-read -p "Enter MinIO pod name: " MINIO_POD
+read -p "Enter SeaweedFS S3 endpoint URL (e.g. http://seaweedfs-filer.seaweedfs-primary.svc:8333): " SEAWEEDFS_ENDPOINT
 ```
 
 
@@ -39,11 +39,11 @@ read -p "Enter MinIO pod name: " MINIO_POD
 
 2. **Restore audit logs from backup**
    ```bash
-   # Find audit log backups in MinIO
-   kubectl exec -n minio-operator ${MINIO_POD} -- mc ls local/<backup-bucket>/audit-logs/ --recursive
+   # Find audit log backups in SeaweedFS (export AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY from backup secret first)
+   aws s3 ls s3://<backup-bucket>/audit-logs/ --endpoint-url ${SEAWEEDFS_ENDPOINT} --recursive
    
    # Download audit log backup
-   kubectl exec -n minio-operator ${MINIO_POD} -- mc cp local/<backup-bucket>/audit-logs/<audit-log-backup> /tmp/audit-log-restore/
+   aws s3 cp s3://<backup-bucket>/audit-logs/<audit-log-backup> /tmp/audit-log-restore/ --recursive --endpoint-url ${SEAWEEDFS_ENDPOINT}
    
    # Restore audit log file
    kubectl cp ${NAMESPACE}/${POD_NAME}:/tmp/audit-log-restore/audit.log /tmp/audit.log

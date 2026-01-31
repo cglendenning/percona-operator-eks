@@ -15,7 +15,7 @@ Copy and paste the following block to configure your environment. You will be pr
 read -p "Enter Kubernetes namespace [percona]: " NAMESPACE; NAMESPACE=${NAMESPACE:-percona}
 read -p "Enter pod name (e.g., cluster1-pxc-0): " POD_NAME
 read -sp "Enter MySQL root password: " MYSQL_ROOT_PASSWORD; echo
-read -p "Enter MinIO pod name: " MINIO_POD
+read -p "Enter SeaweedFS S3 endpoint URL (e.g. http://seaweedfs-filer.seaweedfs-primary.svc:8333): " SEAWEEDFS_ENDPOINT
 ```
 
 
@@ -50,11 +50,11 @@ PITR to pre-change timestamp on clean environment; validate; cutover
 
 4. **Restore backup to pre-corruption time**
    ```bash
-   # Find backup before the bad change from MinIO
-   kubectl exec -n minio-operator ${MINIO_POD} -- mc ls local/<backup-bucket>/backups/ --recursive | grep "<date-before-corruption>"
+   # Find backup before the bad change from SeaweedFS (export AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY from backup secret first)
+   aws s3 ls s3://<backup-bucket>/backups/ --endpoint-url ${SEAWEEDFS_ENDPOINT} --recursive | grep "<date-before-corruption>"
    
    # Download backup
-   kubectl exec -n minio-operator ${MINIO_POD} -- mc cp local/<backup-bucket>/backups/<backup-name>/ /tmp/restore/ --recursive
+   aws s3 cp s3://<backup-bucket>/backups/<backup-name>/ /tmp/restore/ --recursive --endpoint-url ${SEAWEEDFS_ENDPOINT}
    
    # Restore to clean environment
    xtrabackup --prepare --target-dir=/tmp/restore
@@ -63,8 +63,8 @@ PITR to pre-change timestamp on clean environment; validate; cutover
 
 5. **Apply PITR using binlogs**
    ```bash
-   # Download binlogs from MinIO
-   kubectl exec -n minio-operator ${MINIO_POD} -- mc cp local/<backup-bucket>/binlogs/ /tmp/binlogs/ --recursive
+   # Download binlogs from SeaweedFS
+   aws s3 cp s3://<backup-bucket>/binlogs/ /tmp/binlogs/ --recursive --endpoint-url ${SEAWEEDFS_ENDPOINT}
    
    # Apply binlogs up to BEFORE corruption
    mysqlbinlog --stop-datetime="<timestamp-before-corruption>" /tmp/binlogs/mysql-bin.* | mysql -uroot -p${MYSQL_ROOT_PASSWORD} -h<restore-host>

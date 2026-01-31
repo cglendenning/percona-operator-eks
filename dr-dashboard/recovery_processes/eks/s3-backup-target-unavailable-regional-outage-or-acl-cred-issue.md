@@ -18,7 +18,7 @@ read -p "Enter secondary/fallback bucket name: " SECONDARY_BUCKET_NAME
 read -p "Enter backup pod name: " BACKUP_POD
 read -p "Enter S3 credentials secret name: " SECRET_NAME
 read -p "Enter secondary AWS region: " SECONDARY_REGION
-read -p "Enter MinIO endpoint URL: " MINIO_ENDPOINT
+read -p "Enter SeaweedFS S3 endpoint URL (e.g. http://seaweedfs-filer.seaweedfs-primary.svc:8333): " SEAWEEDFS_ENDPOINT
 read -p "Enter backup IAM user name: " BACKUP_USER
 read -p "Enter backup deployment name: " BACKUP_DEPLOYMENT
 read -p "Enter new AWS access key ID: " NEW_ACCESS_KEY
@@ -125,7 +125,7 @@ Temporarily write backups to secondary DC object store/NAS
 ### Steps
 
 1. **Set up alternative storage**
-   - MinIO in secondary DC
+   - SeaweedFS in secondary DC
    - NFS/NAS storage
    - On-premises object storage
 
@@ -137,7 +137,7 @@ Temporarily write backups to secondary DC object store/NAS
        storages:
          s3-compatible:
            bucket: ${SECONDARY_BUCKET_NAME}
-           endpointUrl: https://${MINIO_ENDPOINT}
+           endpointUrl: ${SEAWEEDFS_ENDPOINT}
            region: us-east-1
    '
    ```

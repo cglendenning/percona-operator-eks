@@ -1,4 +1,4 @@
-# Credential Compromise (DB or MinIO Keys) Recovery Process
+# Credential Compromise (DB or SeaweedFS/S3 Keys) Recovery Process
 
 > **<span style="color:red">WARNING: PLACEHOLDER DOCUMENT</span>**
 >
@@ -14,10 +14,10 @@ Copy and paste the following block to configure your environment. You will be pr
 # Interactive variable setup - paste this block and answer each prompt
 read -p "Enter pod name (e.g., cluster1-pxc-0): " POD_NAME
 read -sp "Enter MySQL root password: " MYSQL_ROOT_PASSWORD; echo
-read -p "Enter MinIO pod name: " MINIO_POD
+read -p "Enter SeaweedFS S3 endpoint URL (e.g. http://seaweedfs-filer.seaweedfs-primary.svc:8333): " SEAWEEDFS_ENDPOINT
 read -p "Enter backup deployment name: " BACKUP_DEPLOYMENT
-read -p "Enter new MinIO username: " NEW_MINIO_USER
-read -sp "Enter new MinIO password: " NEW_MINIO_PASSWORD; echo
+read -p "Enter new S3 access key: " NEW_ACCESS_KEY
+read -sp "Enter new S3 secret key: " NEW_SECRET_KEY; echo
 read -sp "Enter new password: " NEW_PASS; echo
 ```
 
@@ -26,7 +26,7 @@ read -sp "Enter new password: " NEW_PASS; echo
 
 
 ## Primary Recovery Method
-Rotate credentials; revoke sessions; rotate MinIO credentials; audit access
+Rotate credentials; revoke sessions; rotate SeaweedFS S3 credentials; audit access
 
 ### Steps
 
@@ -66,19 +66,12 @@ Rotate credentials; revoke sessions; rotate MinIO credentials; audit access
    " | tail -1 | kubectl exec -n percona ${POD_NAME} -- mysql -uroot -p<new-pass>
    ```
 
-3. **Rotate MinIO credentials**
+3. **Rotate SeaweedFS S3 credentials**
    ```bash
-   # Create new MinIO user
-   kubectl exec -n minio-operator ${MINIO_POD} -- mc admin user add local ${NEW_MINIO_USER} ${NEW_MINIO_PASSWORD}
-   kubectl exec -n minio-operator ${MINIO_POD} -- mc admin policy attach local readwrite --user ${NEW_MINIO_USER}
-   
-   # Remove old user or deactivate
-   kubectl exec -n minio-operator ${MINIO_POD} -- mc admin user remove local <old-user>
-   
-   # Update Kubernetes secret
-   kubectl create secret generic minio-credentials \
-     --from-literal=AWS_ACCESS_KEY_ID=${NEW_MINIO_USER} \
-     --from-literal=AWS_SECRET_ACCESS_KEY=${NEW_MINIO_PASSWORD} \
+   # Update credentials in SeaweedFS (s3.config or weed shell s3.configure). Then update Kubernetes secret:
+   kubectl create secret generic seaweedfs-credentials \
+     --from-literal=AWS_ACCESS_KEY_ID=${NEW_ACCESS_KEY} \
+     --from-literal=AWS_SECRET_ACCESS_KEY=${NEW_SECRET_KEY} \
      -n percona \
      --dry-run=client -o yaml | kubectl apply -f -
    

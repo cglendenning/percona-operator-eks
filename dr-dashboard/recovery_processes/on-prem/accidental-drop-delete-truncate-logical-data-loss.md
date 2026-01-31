@@ -16,7 +16,7 @@ read -p "Enter Kubernetes namespace [percona]: " NAMESPACE; NAMESPACE=${NAMESPAC
 read -p "Enter pod name (e.g., cluster1-pxc-0): " POD_NAME
 read -sp "Enter MySQL root password: " MYSQL_ROOT_PASSWORD; echo
 read -p "Enter backup pod name: " BACKUP_POD
-read -p "Enter MinIO pod name: " MINIO_POD
+read -p "Enter SeaweedFS S3 endpoint URL (e.g. http://seaweedfs-filer.seaweedfs-primary.svc:8333): " SEAWEEDFS_ENDPOINT
 ```
 
 
@@ -24,7 +24,7 @@ read -p "Enter MinIO pod name: " MINIO_POD
 
 
 ## Primary Recovery Method
-Point-in-time restore from MinIO backup + binlogs to side instance; recover affected tables via mysqlpump/mydumper
+Point-in-time restore from SeaweedFS backup + binlogs to side instance; recover affected tables via mysqlpump/mydumper
 
 ### Steps
 
@@ -57,15 +57,15 @@ Point-in-time restore from MinIO backup + binlogs to side instance; recover affe
 
 3. **Locate the most recent backup before the incident**
    ```bash
-   # List available backups from MinIO
-   kubectl exec -n minio-operator ${MINIO_POD} -- mc ls local/<backup-bucket>/backups/ --recursive
+   # List available backups from SeaweedFS (export AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY from backup secret first)
+   aws s3 ls s3://<backup-bucket>/backups/ --endpoint-url ${SEAWEEDFS_ENDPOINT} --recursive
    ```
 
 4. **Restore backup to a SIDE INSTANCE (not production!)**
    ```bash
    # Create a temporary restore environment
-   # Download backup from MinIO
-   kubectl exec -n minio-operator ${MINIO_POD} -- mc cp local/<backup-bucket>/backups/<backup-name>/ /tmp/restore/ --recursive
+   # Download backup from SeaweedFS
+   aws s3 cp s3://<backup-bucket>/backups/<backup-name>/ /tmp/restore/ --recursive --endpoint-url ${SEAWEEDFS_ENDPOINT}
    
    # Prepare backup
    xtrabackup --prepare --target-dir=/tmp/restore
@@ -76,8 +76,8 @@ Point-in-time restore from MinIO backup + binlogs to side instance; recover affe
 
 5. **Apply point-in-time recovery using binlogs**
    ```bash
-   # Download binlogs from MinIO
-   kubectl exec -n minio-operator ${MINIO_POD} -- mc cp local/<backup-bucket>/binlogs/ /tmp/binlogs/ --recursive
+   # Download binlogs from SeaweedFS
+   aws s3 cp s3://<backup-bucket>/binlogs/ /tmp/binlogs/ --recursive --endpoint-url ${SEAWEEDFS_ENDPOINT}
    
    # Apply binlogs up to BEFORE the destructive operation
    mysqlbinlog --stop-datetime="<timestamp-before-loss>" /tmp/binlogs/mysql-bin.* | mysql -uroot -p${MYSQL_ROOT_PASSWORD} -h<restore-host>

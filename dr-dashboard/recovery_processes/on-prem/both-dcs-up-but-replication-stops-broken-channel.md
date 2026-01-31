@@ -14,7 +14,7 @@ Copy and paste the following block to configure your environment. You will be pr
 # Interactive variable setup - paste this block and answer each prompt
 read -p "Enter pod name (e.g., cluster1-pxc-0): " POD_NAME
 read -sp "Enter MySQL root password: " MYSQL_ROOT_PASSWORD; echo
-read -p "Enter MinIO pod name: " MINIO_POD
+read -p "Enter SeaweedFS S3 endpoint URL (e.g. http://seaweedfs-filer.seaweedfs-primary.svc:8333): " SEAWEEDFS_ENDPOINT
 ```
 
 
@@ -105,7 +105,7 @@ Fix replication (purge relay logs; CHANGE MASTER to correct coordinates; GTID re
    ```
 
 ## Alternate/Fallback Method
-If diverged, rebuild replica from MinIO backup + binlogs
+If diverged, rebuild replica from SeaweedFS backup + binlogs
 
 ### Steps
 
@@ -116,11 +116,11 @@ If diverged, rebuild replica from MinIO backup + binlogs
 
 2. **Restore from backup**
    ```bash
-   # Get latest backup from MinIO
-   kubectl exec -n minio-operator ${MINIO_POD} -- mc ls local/<backup-bucket>/backups/ --recursive | sort | tail -1
+   # Get latest backup from SeaweedFS (export AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY from backup secret first)
+   aws s3 ls s3://<backup-bucket>/backups/ --endpoint-url ${SEAWEEDFS_ENDPOINT} --recursive | sort | tail -1
    
    # Download and restore
-   kubectl exec -n minio-operator ${MINIO_POD} -- mc cp local/<backup-bucket>/backups/<backup-name>/ /tmp/restore/ --recursive
+   aws s3 cp s3://<backup-bucket>/backups/<backup-name>/ /tmp/restore/ --recursive --endpoint-url ${SEAWEEDFS_ENDPOINT}
    xtrabackup --prepare --target-dir=/tmp/restore
    xtrabackup --copy-back --target-dir=/tmp/restore --datadir=/var/lib/mysql
    ```

@@ -14,7 +14,7 @@ Copy and paste the following block to configure your environment. You will be pr
 # Interactive variable setup - paste this block and answer each prompt
 read -p "Enter Kubernetes namespace [percona]: " NAMESPACE; NAMESPACE=${NAMESPACE:-percona}
 read -p "Enter PXC cluster name: " CLUSTER_NAME
-read -p "Enter MinIO pod name: " MINIO_POD
+read -p "Enter SeaweedFS S3 endpoint URL (e.g. http://seaweedfs-filer.seaweedfs-primary.svc:8333): " SEAWEEDFS_ENDPOINT
 ```
 
 
@@ -28,8 +28,8 @@ read -p "Enter MinIO pod name: " MINIO_POD
    # Check backup count
    kubectl get perconaxtradbclusterbackup -n ${NAMESPACE} --sort-by=.metadata.creationTimestamp
    
-   # List backups in MinIO
-   kubectl exec -n minio-operator ${MINIO_POD} -- mc ls local/<backup-bucket>/backups/ --recursive
+   # List backups in SeaweedFS (export AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY from backup secret first)
+   aws s3 ls s3://<backup-bucket>/backups/ --endpoint-url ${SEAWEEDFS_ENDPOINT} --recursive
    
    # Check backup retention policy configuration
    kubectl get perconaxtradbcluster -n ${NAMESPACE} ${CLUSTER_NAME} -o yaml | grep -A 10 retention
@@ -83,7 +83,7 @@ read -p "Enter MinIO pod name: " MINIO_POD
 1. **Recover from secondary DC backups**
    ```bash
    # Check secondary DC for available backups
-   # Access secondary DC MinIO or backup storage
+   # Access secondary DC SeaweedFS or backup storage
    # List available backups
    
    # Restore from secondary DC backup if available

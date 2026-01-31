@@ -94,7 +94,7 @@ Restore latest backup to Secondary if replica is stale/unhealthy
 
 ### Steps
 1. If secondary replica is too far behind or corrupted
-2. Restore latest backup to secondary DC from MinIO
+2. Restore latest backup to secondary DC from SeaweedFS
 3. Apply point-in-time recovery from binlogs
 4. Verify data integrity
 5. Promote to primary

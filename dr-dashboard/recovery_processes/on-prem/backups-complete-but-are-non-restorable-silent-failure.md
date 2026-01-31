@@ -15,7 +15,7 @@ Copy and paste the following block to configure your environment. You will be pr
 read -sp "Enter MySQL root password: " MYSQL_ROOT_PASSWORD; echo
 read -p "Enter backup bucket name: " BUCKET_NAME
 read -p "Enter backup pod name: " BACKUP_POD
-read -p "Enter MinIO pod name: " MINIO_POD
+read -p "Enter SeaweedFS S3 endpoint URL (e.g. http://seaweedfs-filer.seaweedfs-primary.svc:8333): " SEAWEEDFS_ENDPOINT
 read -p "Enter backup deployment name: " BACKUP_DEPLOYMENT
 ```
 
@@ -32,8 +32,8 @@ Detect via scheduled restore drills; fix pipeline; re-run full backup
 
 1. **Validate current backups immediately**
    ```bash
-   # Download latest backup from MinIO
-   kubectl exec -n minio-operator ${MINIO_POD} -- mc cp local/${BUCKET_NAME}/backups/<latest>/ /tmp/verify-backup/ --recursive
+   # Download latest backup from SeaweedFS (export AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY from backup secret first)
+   aws s3 cp s3://${BUCKET_NAME}/backups/<latest>/ /tmp/verify-backup/ --recursive --endpoint-url ${SEAWEEDFS_ENDPOINT}
    
    # Attempt to prepare backup
    xtrabackup --prepare --target-dir=/tmp/verify-backup
@@ -45,12 +45,12 @@ Detect via scheduled restore drills; fix pipeline; re-run full backup
 2. **Find last known good backup**
    ```bash
    # List all recent backups
-   kubectl exec -n minio-operator ${MINIO_POD} -- mc ls local/${BUCKET_NAME}/backups/ --recursive | grep xtrabackup_checkpoints
+   aws s3 ls s3://${BUCKET_NAME}/backups/ --endpoint-url ${SEAWEEDFS_ENDPOINT} --recursive | grep xtrabackup_checkpoints
    
    # Test each backup going backwards in time
-   for backup in $(kubectl exec -n minio-operator ${MINIO_POD} -- mc ls local/${BUCKET_NAME}/backups/ | awk '{print $5}' | tail -10); do
+   for backup in $(aws s3 ls s3://${BUCKET_NAME}/backups/ --endpoint-url ${SEAWEEDFS_ENDPOINT} | awk '{print $2}' | tr -d '/' | tail -10); do
      echo "Testing backup: $backup"
-     kubectl exec -n minio-operator ${MINIO_POD} -- mc cp local/${BUCKET_NAME}/backups/${backup}/ /tmp/test-${backup}/ --recursive
+     aws s3 cp s3://${BUCKET_NAME}/backups/${backup}/ /tmp/test-${backup}/ --recursive --endpoint-url ${SEAWEEDFS_ENDPOINT}
      xtrabackup --prepare --target-dir=/tmp/test-${backup}
      if [ $? -eq 0 ]; then
        echo "Valid backup found: $backup"
@@ -68,7 +68,7 @@ Detect via scheduled restore drills; fix pipeline; re-run full backup
    
    **Common issues:**
    - Insufficient disk space during backup
-   - Network interruption during MinIO upload
+   - Network interruption during SeaweedFS upload
    - Wrong xtrabackup version
    - Corrupted source database
    - Clock skew causing issues
@@ -86,8 +86,8 @@ Detect via scheduled restore drills; fix pipeline; re-run full backup
    # Check network policies
    kubectl get networkpolicies -n percona
    
-   # Verify MinIO connectivity
-   kubectl exec -n percona ${BACKUP_POD} -- mc ls local/${BUCKET_NAME}/
+   # Verify SeaweedFS S3 connectivity (from host with AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY set)
+   aws s3 ls s3://${BUCKET_NAME}/ --endpoint-url ${SEAWEEDFS_ENDPOINT}
    ```
    
    **If version mismatch:**
@@ -111,7 +111,7 @@ Detect via scheduled restore drills; fix pipeline; re-run full backup
 6. **Verify service is restored**
    ```bash
    # Download new backup
-   kubectl exec -n minio-operator ${MINIO_POD} -- mc sync local/${BUCKET_NAME}/backups/<new-backup>/ /tmp/verify-new/ --delete
+   aws s3 sync s3://${BUCKET_NAME}/backups/<new-backup>/ /tmp/verify-new/ --delete --endpoint-url ${SEAWEEDFS_ENDPOINT}
    
    # Prepare and verify
    xtrabackup --prepare --target-dir=/tmp/verify-new
@@ -132,8 +132,8 @@ Use previous verified backup then roll forward via binlogs
 
 2. **Restore from last verified backup**
    ```bash
-   # Download verified backup from MinIO
-   kubectl exec -n minio-operator ${MINIO_POD} -- mc sync local/${BUCKET_NAME}/backups/<verified-backup>/ /tmp/restore/ --delete
+   # Download verified backup from SeaweedFS
+   aws s3 sync s3://${BUCKET_NAME}/backups/<verified-backup>/ /tmp/restore/ --delete --endpoint-url ${SEAWEEDFS_ENDPOINT}
    
    # Prepare backup
    xtrabackup --prepare --target-dir=/tmp/restore
@@ -142,7 +142,7 @@ Use previous verified backup then roll forward via binlogs
 3. **Apply binlogs for point-in-time recovery**
    ```bash
    # Download binlogs from verified backup time to now
-   kubectl exec -n minio-operator ${MINIO_POD} -- mc sync local/${BUCKET_NAME}/binlogs/ /tmp/binlogs/ --exclude "*" --include "mysql-bin.*"
+   aws s3 sync s3://${BUCKET_NAME}/binlogs/ /tmp/binlogs/ --exclude "*" --include "mysql-bin.*" --endpoint-url ${SEAWEEDFS_ENDPOINT}
    
    # Apply binlogs
    mysqlbinlog --start-datetime="<backup-time>" /tmp/binlogs/mysql-bin.* | mysql -uroot -p${MYSQL_ROOT_PASSWORD}

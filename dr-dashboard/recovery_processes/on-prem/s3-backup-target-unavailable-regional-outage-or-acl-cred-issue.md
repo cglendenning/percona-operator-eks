@@ -1,4 +1,4 @@
-# MinIO Backup Target Unavailable Recovery Process
+# S3 Backup Target Unavailable (Regional Outage or ACL/Credential Issue) Recovery Process
 
 > **<span style="color:red">WARNING: PLACEHOLDER DOCUMENT</span>**
 >
@@ -16,13 +16,13 @@ read -p "Enter PXC cluster name: " CLUSTER_NAME
 read -p "Enter backup bucket name: " BUCKET_NAME
 read -p "Enter secondary/fallback bucket name: " SECONDARY_BUCKET_NAME
 read -p "Enter backup pod name: " BACKUP_POD
-read -p "Enter MinIO pod name: " MINIO_POD
+read -p "Enter SeaweedFS S3 endpoint URL (e.g. http://seaweedfs-filer.seaweedfs-primary.svc:8333): " SEAWEEDFS_ENDPOINT
 read -p "Enter credentials secret name: " SECRET_NAME
-read -p "Enter MinIO endpoint URL: " MINIO_ENDPOINT
-read -p "Enter secondary MinIO endpoint URL: " SECONDARY_MINIO_ENDPOINT
+read -p "Enter secondary SeaweedFS endpoint URL: " SECONDARY_SEAWEEDFS_ENDPOINT
 read -p "Enter backup deployment name: " BACKUP_DEPLOYMENT
-read -p "Enter new MinIO username: " NEW_MINIO_USER
-read -sp "Enter new MinIO password: " NEW_MINIO_PASSWORD; echo
+read -p "Enter new S3 access key (for credential rotation): " NEW_ACCESS_KEY
+read -sp "Enter new S3 secret key: " NEW_SECRET_KEY; echo
+# Export credentials from secret for aws s3: export AWS_ACCESS_KEY_ID=... AWS_SECRET_ACCESS_KEY=...
 ```
 
 
@@ -30,7 +30,7 @@ read -sp "Enter new MinIO password: " NEW_MINIO_PASSWORD; echo
 
 
 ## Primary Recovery Method
-Buffer locally; failover to secondary MinIO instance; rotate credentials
+Buffer locally; failover to secondary SeaweedFS instance; rotate credentials
 
 ### Steps
 
@@ -39,10 +39,10 @@ Buffer locally; failover to secondary MinIO instance; rotate credentials
    # Check backup pod logs
    kubectl logs -n percona ${BACKUP_POD} --tail=100
    
-   # Test MinIO connectivity
-   kubectl exec -n minio-operator ${MINIO_POD} -- mc ls local/${BUCKET_NAME}/ 2>&1
+   # Test SeaweedFS S3 connectivity
+   aws s3 ls s3://${BUCKET_NAME}/ --endpoint-url ${SEAWEEDFS_ENDPOINT} 2>&1
    
-   # Check MinIO credentials
+   # Check backup credentials secret
    kubectl get secret -n percona ${SECRET_NAME} -o yaml
    ```
 
@@ -67,16 +67,12 @@ Buffer locally; failover to secondary MinIO instance; rotate credentials
    kubectl edit perconaxtradbcluster -n percona ${CLUSTER_NAME}
    ```
 
-3. **If credential issue: Rotate MinIO credentials**
+3. **If credential issue: Rotate SeaweedFS S3 credentials**
    ```bash
-   # Create new MinIO access keys
-   kubectl exec -n minio-operator ${MINIO_POD} -- mc admin user add local ${NEW_MINIO_USER} ${NEW_MINIO_PASSWORD}
-   kubectl exec -n minio-operator ${MINIO_POD} -- mc admin policy attach local readwrite --user ${NEW_MINIO_USER}
-   
-   # Update Kubernetes secret
-   kubectl create secret generic minio-credentials \
-     --from-literal=AWS_ACCESS_KEY_ID=${NEW_MINIO_USER} \
-     --from-literal=AWS_SECRET_ACCESS_KEY=${NEW_MINIO_PASSWORD} \
+   # Update credentials in SeaweedFS (s3.config or weed shell s3.configure). Then update Kubernetes secret:
+   kubectl create secret generic seaweedfs-credentials \
+     --from-literal=AWS_ACCESS_KEY_ID=${NEW_ACCESS_KEY} \
+     --from-literal=AWS_SECRET_ACCESS_KEY=${NEW_SECRET_KEY} \
      -n percona \
      --dry-run=client -o yaml | kubectl apply -f -
    
@@ -84,46 +80,38 @@ Buffer locally; failover to secondary MinIO instance; rotate credentials
    kubectl rollout restart deployment ${BACKUP_DEPLOYMENT} -n percona
    ```
 
-4. **If MinIO service issue: Restart or failover**
+4. **If SeaweedFS service issue: Restart or failover**
    ```bash
-   # Check MinIO pod status
-   kubectl get pods -n minio-operator
+   # Check SeaweedFS filer pod status
+   kubectl get pods -n seaweedfs-primary -l app=seaweedfs,component=filer
    
-   # Restart MinIO if needed
-   kubectl rollout restart statefulset <minio-sts> -n minio-operator
+   # Restart SeaweedFS filer if needed
+   kubectl rollout restart deployment -n seaweedfs-primary -l app=seaweedfs,component=filer
    
-   # Or failover to secondary MinIO instance if available
-   # Update backup configuration to point to secondary MinIO
+   # Or failover to secondary SeaweedFS instance if available
    kubectl patch perconaxtradbcluster ${CLUSTER_NAME} -n percona --type=merge -p '
    spec:
      backup:
        storages:
-         minio:
+         seaweedfs-backup:
            s3:
-             endpointUrl: https://${SECONDARY_MINIO_ENDPOINT}:9000
+             endpointUrl: ${SECONDARY_SEAWEEDFS_ENDPOINT}
    '
    ```
 
-5. **If bucket issue: Fix bucket permissions**
+5. **If bucket issue: Fix bucket**
    ```bash
-   # Check bucket exists
-   kubectl exec -n minio-operator ${MINIO_POD} -- mc ls local/${BUCKET_NAME}
+   # List buckets to verify connectivity
+   aws s3 ls --endpoint-url ${SEAWEEDFS_ENDPOINT}
    
    # Create bucket if missing
-   kubectl exec -n minio-operator ${MINIO_POD} -- mc mb local/${BUCKET_NAME}
-   
-   # Set bucket policy
-   kubectl exec -n minio-operator ${MINIO_POD} -- mc anonymous set download local/${BUCKET_NAME}
+   aws s3 mb s3://${BUCKET_NAME} --endpoint-url ${SEAWEEDFS_ENDPOINT}
    ```
 
 6. **Verify service is restored**
    ```bash
    # Trigger test backup
-   kubectl exec -n percona ${BACKUP_POD} -- xtrabackup --backup --target-dir=/tmp/test-backup
-   
-   # Monitor backup job
    kubectl get jobs -n percona -w
-   
    # Verify backup completes successfully
    ```
 
@@ -133,7 +121,7 @@ Temporarily write backups to secondary DC object store/NAS
 ### Steps
 
 1. **Set up alternative storage**
-   - MinIO in secondary DC
+   - SeaweedFS in secondary DC
    - NFS/NAS storage
    - On-premises object storage
 
@@ -143,19 +131,16 @@ Temporarily write backups to secondary DC object store/NAS
    spec:
      backup:
        storages:
-         minio-secondary:
+         seaweedfs-secondary:
            type: s3
            s3:
              bucket: ${SECONDARY_BUCKET_NAME}
-             endpointUrl: https://${SECONDARY_MINIO_ENDPOINT}:9000
+             endpointUrl: ${SECONDARY_SEAWEEDFS_ENDPOINT}
              region: us-east-1
    '
    ```
 
 3. **Verify service is restored**
    ```bash
-   # Trigger test backup
-   kubectl exec -n percona ${BACKUP_POD} -- xtrabackup --backup --target-dir=/tmp/test-backup
-   
-   # Verify backup completes successfully
+   # Trigger test backup and verify completion
    ```

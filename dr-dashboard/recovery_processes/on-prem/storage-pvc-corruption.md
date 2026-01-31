@@ -16,7 +16,7 @@ read -p "Enter Kubernetes namespace [percona]: " NAMESPACE; NAMESPACE=${NAMESPAC
 read -p "Enter pod name (e.g., cluster1-pxc-0): " POD_NAME
 read -p "Enter StatefulSet name: " STS_NAME
 read -sp "Enter MySQL root password: " MYSQL_ROOT_PASSWORD; echo
-read -p "Enter MinIO pod name: " MINIO_POD
+read -p "Enter SeaweedFS S3 endpoint URL (e.g. http://seaweedfs-filer.seaweedfs-primary.svc:8333): " SEAWEEDFS_ENDPOINT
 read -p "Enter PVC name: " PVC_NAME
 ```
 
@@ -74,14 +74,14 @@ Remove failed node; recreate pod; let PXC SST/IST re-seed from peers
    ```
 
 ## Alternate/Fallback Method
-Restore individual table/DB from MinIO physical backup to side instance and logical import
+Restore individual table/DB from SeaweedFS physical backup to side instance and logical import
 
 ### Steps
 
 1. **Restore latest backup to a temporary instance**
    ```bash
-   # Download backup from MinIO
-   kubectl exec -n minio-operator ${MINIO_POD} -- mc cp local/<backup-bucket>/backups/<backup-name>/ /tmp/restore/ --recursive
+   # Download backup from SeaweedFS (export AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY from backup secret first)
+   aws s3 cp s3://<backup-bucket>/backups/<backup-name>/ /tmp/restore/ --recursive --endpoint-url ${SEAWEEDFS_ENDPOINT}
    
    # Use Percona XtraBackup
    xtrabackup --prepare --target-dir=/tmp/restore
