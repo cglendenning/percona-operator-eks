@@ -26,6 +26,7 @@ This directory contains two complementary scripts:
 - `jq` - for JSON parsing
 - Percona XtraDB Cluster operator installed in the cluster
 - At least one completed backup with PITR enabled
+- Backups in SeaweedFS; the script uses the SeaweedFS Filer HTTP API (via a filer pod in the cluster) to verify bucket access and list binlogs
 
 ## Usage
 
@@ -149,10 +150,10 @@ After selecting backup, time, and target namespace, dry-run validates:
 
 Validating secrets to copy:
 [DRY-RUN]   Will copy cluster secret: pxc-cluster-secrets
-[DRY-RUN]   Will copy backup credentials: minio-credentials
+[DRY-RUN]   Will copy backup credentials: seaweedfs-credentials
 
 Validating backup configuration:
-[DRY-RUN]   Backup storage 'minio-backup' exists in cluster config
+[DRY-RUN]   Backup storage 'seaweedfs-backup' exists in cluster config
 [DRY-RUN]   Backup 'daily-backup-20250115' is in Succeeded state
 [DRY-RUN]   Backup location: s3://percona-backups/daily-backup-20250115
 
@@ -170,7 +171,7 @@ Cluster configuration to create:
 
 [DRY-RUN] 1. Copy secrets from percona to percona-restored
 [DRY-RUN]    - pxc-cluster-secrets (cluster secrets)
-[DRY-RUN]    - minio-credentials (backup credentials)
+[DRY-RUN]    - seaweedfs-credentials (backup credentials)
 [DRY-RUN] 2. Create PXC cluster pxc-cluster-restored in percona-restored
 [DRY-RUN]    - 3 PXC nodes, 3 ProxySQL nodes
 [DRY-RUN] 3. Create PerconaXtraDBClusterRestore resource
