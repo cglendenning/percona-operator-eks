@@ -9,6 +9,7 @@ with lib;
 let
   cfg = config.projects.pmm;
   yaml = pkgs.formats.yaml {};
+  pmmHelpers = import ../../pkgs/pmm.nix { inherit lib; };
   
   helpers = {
     # Script to setup PMM service account and store token in Vault
@@ -221,6 +222,14 @@ in
         namespace = cfg.pmm.namespace;
         manifests = [(
           let
+            sidecar = pmmHelpers.mkPMMServiceAccountSidecar {
+              saName = "wookie-pmm-sa";
+              saRole = "Admin";
+              tokenName = "wookie-pmm-token";
+              adminUser = "admin";
+              adminPassword = cfg.pmm.adminPassword;
+            };
+            
             deployment = {
               apiVersion = "apps/v1";
               kind = "Deployment";
@@ -233,30 +242,36 @@ in
                 selector.matchLabels.app = "pmm-server";
                 template = {
                   metadata.labels.app = "pmm-server";
-                  spec.containers = [{
-                    name = "pmm-server";
-                    image = "percona/pmm-server:${cfg.pmm.version}";
-                    ports = [
-                      { containerPort = 80; name = "http"; }
-                      { containerPort = 443; name = "https"; }
+                  spec = {
+                    containers = [
+                      {
+                        name = "pmm-server";
+                        image = "percona/pmm-server:${cfg.pmm.version}";
+                        ports = [
+                          { containerPort = 80; name = "http"; }
+                          { containerPort = 443; name = "https"; }
+                        ];
+                        env = [
+                          { name = "DISABLE_UPDATES"; value = "true"; }
+                          { name = "PMM_DEBUG"; value = "1"; }
+                        ];
+                        livenessProbe = {
+                          httpGet = { path = "/v1/readyz"; port = 80; };
+                          initialDelaySeconds = 60;
+                          periodSeconds = 10;
+                          timeoutSeconds = 5;
+                        };
+                        readinessProbe = {
+                          httpGet = { path = "/v1/readyz"; port = 80; };
+                          initialDelaySeconds = 30;
+                          periodSeconds = 5;
+                          timeoutSeconds = 3;
+                        };
+                      }
+                      sidecar.container
                     ];
-                    env = [
-                      { name = "DISABLE_UPDATES"; value = "true"; }
-                      { name = "PMM_DEBUG"; value = "1"; }
-                    ];
-                    livenessProbe = {
-                      httpGet = { path = "/v1/readyz"; port = 80; };
-                      initialDelaySeconds = 60;
-                      periodSeconds = 10;
-                      timeoutSeconds = 5;
-                    };
-                    readinessProbe = {
-                      httpGet = { path = "/v1/readyz"; port = 80; };
-                      initialDelaySeconds = 30;
-                      periodSeconds = 5;
-                      timeoutSeconds = 3;
-                    };
-                  }];
+                    volumes = [ sidecar.volume ];
+                  };
                 };
               };
             };
