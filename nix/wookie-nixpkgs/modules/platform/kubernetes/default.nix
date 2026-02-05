@@ -131,6 +131,7 @@ in
 {
   imports = [
     ../backends/helmfile.nix
+    ../seaweedfs/filer-sync.nix
   ];
 
   options = {

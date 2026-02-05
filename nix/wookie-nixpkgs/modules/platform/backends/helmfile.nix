@@ -18,13 +18,18 @@ let
   
   # Resolve a bundle dependency to its full release name across all batches
   # Returns null if the dependency is in a skipped batch
-  resolveBundleDependency = depName:
+  # Returns namespace/releaseName format for cross-namespace dependencies
+  resolveBundleDependency = currentNamespace: depName:
     let
       batches = config.platform.kubernetes.cluster.batches;
       # Search all batches for a bundle with this name
       findInBatch = batchName: batchConfig:
         if builtins.hasAttr depName batchConfig.bundles
-        then { inherit batchName; releaseName = "${cfg.cluster.uniqueIdentifier}-${batchName}-${depName}"; }
+        then { 
+          inherit batchName; 
+          releaseName = "${cfg.cluster.uniqueIdentifier}-${batchName}-${depName}";
+          namespace = batchConfig.bundles.${depName}.namespace;
+        }
         else null;
       
       # Try each batch
@@ -32,9 +37,11 @@ let
       validResults = lib.filter (r: r != null) results;
       result = if (builtins.length validResults) > 0 then builtins.head validResults else null;
     in
-    # Return null if dependency is in a skipped batch, otherwise return the release name
+    # Return null if dependency is in a skipped batch
     if result == null then null
     else if shouldSkipBatch result.batchName then null
+    # If dependency is in a different namespace, use namespace/releaseName format
+    else if result.namespace != currentNamespace then "${result.namespace}/${result.releaseName}"
     else result.releaseName;
   
   # Generate a helmfile release for a bundle
@@ -42,7 +49,7 @@ let
     let
       releaseName = "${cfg.cluster.uniqueIdentifier}-${batchName}-${bundleName}";
       # Resolve dependencies and filter out null values (skipped batches)
-      resolvedDeps = lib.filter (d: d != null) (map resolveBundleDependency bundle.dependsOn);
+      resolvedDeps = lib.filter (d: d != null) (map (resolveBundleDependency bundle.namespace) bundle.dependsOn);
       
       # For Helm charts, reference the chart directly
       chartRelease = if bundle.chart != null then {
