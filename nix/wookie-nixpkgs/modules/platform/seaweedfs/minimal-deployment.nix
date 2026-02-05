@@ -169,6 +169,53 @@ let
     };
   };
   
+  s3Manifest = {
+    apiVersion = "apps/v1";
+    kind = "Deployment";
+    metadata = {
+      name = "${name}-s3";
+      inherit namespace;
+    };
+    spec = {
+      replicas = 1;
+      selector.matchLabels = {
+        app = "${name}-s3";
+      };
+      template = {
+        metadata.labels = {
+          app = "${name}-s3";
+        };
+        spec = {
+          containers = [{
+            name = "s3";
+            image = image;
+            command = [ "weed" "s3" "-filer=${name}-filer:8888" ];
+            ports = [
+              { containerPort = 8333; name = "http"; }
+            ];
+          }];
+        };
+      };
+    };
+  };
+  
+  s3Service = {
+    apiVersion = "v1";
+    kind = "Service";
+    metadata = {
+      name = "${name}-s3";
+      inherit namespace;
+    };
+    spec = {
+      selector = {
+        app = "${name}-s3";
+      };
+      ports = [
+        { port = 8333; name = "http"; }
+      ];
+    };
+  };
+  
   allManifests = [
     masterManifest
     masterService
@@ -176,6 +223,8 @@ let
     volumeService
     filerManifest
     filerService
+    s3Manifest
+    s3Service
   ];
   
 in
