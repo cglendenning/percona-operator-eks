@@ -66,6 +66,31 @@ let
     in
     mkConfig system profileModule;
   
+  seaweedfsReplicationSimpleConfig = system:
+    let
+      pkgs = import nixpkgs {
+        inherit system;
+        overlays = [
+          (final: prev: 
+            let
+              kubelibModule = import ./lib/kubelib.nix {
+                pkgs = final;
+                lib = nixpkgs.lib;
+              };
+            in
+            {
+              kubelib = kubelibModule;
+            }
+          )
+        ];
+      };
+      profileModule = import ./modules/profiles/seaweedfs-replication-simple.nix {
+        inherit pkgs;
+        lib = nixpkgs.lib;
+      };
+    in
+    mkConfig system profileModule;
+
   seaweedfsReplicationConfig = system:
     let
       pkgs = import nixpkgs {
@@ -94,7 +119,7 @@ let
 in
 rec {
   # Export configurations for external use
-  inherit mkConfig wookieLocalConfig clusterAConfig clusterBConfig pmmConfig seaweedfsTutorialConfig seaweedfsReplicationConfig;
+  inherit mkConfig wookieLocalConfig clusterAConfig clusterBConfig pmmConfig seaweedfsTutorialConfig seaweedfsReplicationSimpleConfig seaweedfsReplicationConfig;
   
   # Export test assertions for each system
   testAssertions = forAllSystems (system:
@@ -152,6 +177,12 @@ rec {
       seaweedfsManifests = kubelib.renderAllBundles seaweedfsClusterConfig;
       seaweedfsContext = seaweedfsClusterConfig.targets.local-k3d.context or "k3d-seaweedfs-tutorial";
       
+      # SeaweedFS Replication Simple configuration
+      seaweedfsReplSimpleCfg = seaweedfsReplicationSimpleConfig system;
+      seaweedfsReplSimpleClusterConfig = seaweedfsReplSimpleCfg.config;
+      seaweedfsReplSimpleManifests = kubelib.renderAllBundles seaweedfsReplSimpleClusterConfig;
+      seaweedfsReplSimpleContext = seaweedfsReplSimpleClusterConfig.targets.local-k3d.context or "k3d-swfs-repl";
+      
       # SeaweedFS Replication configuration
       seaweedfsReplCfg = seaweedfsReplicationConfig system;
       seaweedfsReplClusterConfig = seaweedfsReplCfg.config;
@@ -173,6 +204,9 @@ rec {
         seaweedfs-create-cluster = seaweedfsClusterConfig.build.scripts.create-cluster;
         seaweedfs-delete-cluster = seaweedfsClusterConfig.build.scripts.delete-cluster;
         seaweedfs-deploy = seaweedfsClusterConfig.build.scripts.deploy-helmfile;
+        seaweedfs-repl-simple-create-cluster = seaweedfsReplSimpleClusterConfig.build.scripts.create-cluster;
+        seaweedfs-repl-simple-delete-cluster = seaweedfsReplSimpleClusterConfig.build.scripts.delete-cluster;
+        seaweedfs-repl-simple-deploy = seaweedfsReplSimpleClusterConfig.build.scripts.deploy-helmfile;
         seaweedfs-repl-create-cluster = seaweedfsReplClusterConfig.build.scripts.create-cluster;
         seaweedfs-repl-delete-cluster = seaweedfsReplClusterConfig.build.scripts.delete-cluster;
         seaweedfs-repl-deploy = seaweedfsReplClusterConfig.build.scripts.deploy-helmfile;
@@ -603,6 +637,47 @@ rec {
         '';
       };
       
+      seaweedfs-repl-simple-up = pkgs.writeShellApplication {
+        name = "seaweedfs-repl-simple-up";
+        runtimeInputs = [ pkgs.k3d pkgs.helmfile pkgs.kubernetes-helm pkgs.kubectl ];
+        text = ''
+          set -euo pipefail
+          
+          echo "=== Standing up SeaweedFS with Replication (Simple) ==="
+          echo ""
+          
+          echo "Step 1: Creating k3d cluster..."
+          ${_internal.seaweedfs-repl-simple-create-cluster}
+          
+          echo ""
+          echo "Step 2: Waiting for cluster to be ready..."
+          sleep 5
+          kubectl wait --for=condition=Ready nodes --all --timeout=120s --context=${seaweedfsReplSimpleContext} || true
+          
+          echo ""
+          echo "Step 3: Deploying SeaweedFS with active-passive replication..."
+          CLUSTER_CONTEXT=${seaweedfsReplSimpleContext} ${_internal.seaweedfs-repl-simple-deploy}/bin/deploy-${seaweedfsReplSimpleClusterConfig.platform.kubernetes.cluster.uniqueIdentifier}-helmfile
+          
+          echo ""
+          echo "=== SeaweedFS Replication Stack Ready ==="
+          echo ""
+          echo "Check sync status:"
+          echo "  kubectl logs -n seaweedfs-primary -l sync-pair=p2s --context=${seaweedfsReplSimpleContext}"
+        '';
+      };
+      
+      seaweedfs-repl-simple-down = pkgs.writeShellApplication {
+        name = "seaweedfs-repl-simple-down";
+        runtimeInputs = [ pkgs.k3d ];
+        text = ''
+          set -euo pipefail
+          
+          echo "=== Tearing down SeaweedFS Replication stack ==="
+          ${_internal.seaweedfs-repl-simple-delete-cluster}
+          echo "=== SeaweedFS Replication stack is down! ==="
+        '';
+      };
+      
       seaweedfs-repl-up = pkgs.writeShellApplication {
         name = "seaweedfs-repl-up";
         runtimeInputs = [ pkgs.k3d pkgs.helmfile pkgs.kubernetes-helm pkgs.kubectl ];
@@ -671,6 +746,8 @@ rec {
       pmm-helmfile = pmmClusterConfig.build.helmfile;
       seaweedfs-manifests = seaweedfsManifests;
       seaweedfs-helmfile = seaweedfsClusterConfig.build.helmfile;
+      seaweedfs-repl-simple-manifests = seaweedfsReplSimpleManifests;
+      seaweedfs-repl-simple-helmfile = seaweedfsReplSimpleClusterConfig.build.helmfile;
       seaweedfs-repl-manifests = seaweedfsReplManifests;
       seaweedfs-repl-helmfile = seaweedfsReplClusterConfig.build.helmfile;
       
@@ -753,6 +830,17 @@ rec {
       seaweedfs-down = {
         type = "app";
         program = "${pkgs.lib.getExe self.seaweedfs-down}";
+      };
+      
+      # SeaweedFS Replication Simple apps
+      seaweedfs-repl-simple-up = {
+        type = "app";
+        program = "${pkgs.lib.getExe self.seaweedfs-repl-simple-up}";
+      };
+      
+      seaweedfs-repl-simple-down = {
+        type = "app";
+        program = "${pkgs.lib.getExe self.seaweedfs-repl-simple-down}";
       };
       
       # SeaweedFS Replication apps

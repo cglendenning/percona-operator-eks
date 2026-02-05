@@ -1,5 +1,5 @@
-# Profile: SeaweedFS Active-Passive Replication
-# Demonstrates configuring active-passive filer sync between two SeaweedFS namespaces
+# Profile: SeaweedFS Tutorial - Two namespace replication setup
+# This profile configures SeaweedFS in two namespaces for replication testing
 
 { pkgs, lib, ... }:
 
@@ -8,13 +8,14 @@
   {
     targets.local-k3d = {
       enable = true;
-      clusterName = "swfs-repl";  # Short name to keep Helm release names under 53 chars
-      apiPort = 6444;  # Use different port to avoid conflicts
+      clusterName = "swfs-repl";
+      apiPort = 6444;
     };
 
     platform.kubernetes.cluster = let
       mkSeaweedFS = import ../../modules/platform/seaweedfs/minimal-deployment.nix { inherit pkgs lib; };
     in {
+      # uniqueIdentifier is set by local-k3d target module
       defaults = {
         ingress = null;
         clusterIssuer = null;
@@ -94,43 +95,24 @@
     # Configure active-passive replication from primary to secondary
     platform.seaweedfs.filerSync = {
       enable = true;
-      syncPairs = [
-        {
-          name = "p2s";  # Short name: primary-to-secondary
-          namespace = "seaweedfs-primary";
-          activePassive = true;
-          dependsOn = [ "seaweedfs-primary" "seaweedfs-secondary" ];
-          
-          filerA = {
-            host = "seaweedfs-filer.seaweedfs-primary.svc.cluster.local";
-            port = 8888;
-            path = null;  # Sync all paths
-            useFilerProxy = false;
-            debug = false;
-          };
-          
-          filerB = {
-            host = "seaweedfs-filer.seaweedfs-secondary.svc.cluster.local";
-            port = 8888;
-            path = null;  # Sync all paths
-            useFilerProxy = false;
-            debug = false;
-          };
-          
-          image = "chrislusf/seaweedfs:latest";
-          
-          resources = {
-            requests = {
-              cpu = "100m";
-              memory = "128Mi";
-            };
-            limits = {
-              cpu = "500m";
-              memory = "512Mi";
-            };
-          };
-        }
-      ];
+      syncPairs = [{
+        name = "p2s";
+        namespace = "seaweedfs-primary";
+        activePassive = true;
+        dependsOn = [ "seaweedfs-primary" "seaweedfs-secondary" ];
+        
+        filerA = {
+          host = "seaweedfs-filer.seaweedfs-primary.svc.cluster.local";
+          port = 8888;
+        };
+        
+        filerB = {
+          host = "seaweedfs-filer.seaweedfs-secondary.svc.cluster.local";
+          port = 8888;
+        };
+        
+        image = "chrislusf/seaweedfs:latest";
+      }];
     };
   }
 ]
