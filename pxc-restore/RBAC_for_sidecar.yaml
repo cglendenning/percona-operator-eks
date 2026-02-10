@@ -1,0 +1,59 @@
+# --- SOURCE_NS: allow DEST_NS/DEST_SA to read pxc-backup objects ---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: pxc-auto-restore-read-backups
+  namespace: SOURCE_NS
+rules:
+  - apiGroups: ["pxc.percona.com"]
+    resources: ["perconaxtradbclusterbackups"]
+    verbs: ["get", "list", "watch"]
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: pxc-auto-restore-read-backups
+  namespace: SOURCE_NS
+subjects:
+  - kind: ServiceAccount
+    name: DEST_SA
+    namespace: DEST_NS
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: pxc-auto-restore-read-backups
+
+# --- DEST_NS: allow creating/restoring + tracking ConfigMap ---
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: pxc-auto-restore-run-restore
+  namespace: DEST_NS
+rules:
+  # create/list/get/watch restores, and allow kubectl apply (patch/update)
+  - apiGroups: ["pxc.percona.com"]
+    resources: ["perconaxtradbclusterrestores"]
+    verbs: ["get", "list", "watch", "create", "patch", "update"]
+
+  # tracking ConfigMap that records last restored backup
+  - apiGroups: [""]
+    resources: ["configmaps"]
+    verbs: ["get", "create", "patch", "update"]
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: pxc-auto-restore-run-restore
+  namespace: DEST_NS
+subjects:
+  - kind: ServiceAccount
+    name: DEST_SA
+    namespace: DEST_NS
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: pxc-auto-restore-run-restore
+

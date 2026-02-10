@@ -1,5 +1,4 @@
-# Profile: SeaweedFS Tutorial - Two namespace replication setup
-# This profile configures SeaweedFS in two namespaces for replication testing
+# Profile: SeaweedFS Active-Passive Replication
 
 { pkgs, lib, ... }:
 
