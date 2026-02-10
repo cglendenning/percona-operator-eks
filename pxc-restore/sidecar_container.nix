@@ -90,13 +90,27 @@
                   '
             }
 
-            # Safety: don’t start a new restore if one is already in progress in DEST_NS
             restore_in_progress() {
+              # Always produce an integer. Anything weird -> treat as 0 (not in progress).
               local n
-              n="$(kubectl -n "$DEST_NS" get pxc-restore -o json 2>/dev/null \
-                    | jq '[.items[] | select((.status.state // "") | test("^(Starting|Running)$"))] | length' \
-                    || echo "0")"
-              [[ "$n" != "0" ]]
+
+              n="$(
+                kubectl -n "$DEST_NS" get perconaxtradbclusterrestores.pxc.percona.com -o json 2>/dev/null \
+                  | jq -r '
+                      ([.items[]? 
+                          | select((.status.state // "") | test("^(Starting|Running)$"))
+                      ] | length) // 0
+                    ' 2>/dev/null \
+                  | tr -d ' \n\r\t'
+              )"
+
+                # If jq produced nothing (common when kubectl didn’t output JSON), default to 0.
+              if [[ -z "${n:-}" ]]; then
+                n="0"
+              fi
+
+              # Numeric compare (safe even if someone hands us "00")
+              [[ "$n" -gt 0 ]]
             }
 
             create_restore_cr() {
