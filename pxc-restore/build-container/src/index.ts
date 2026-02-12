@@ -83,7 +83,8 @@ async function main() {
   }
 
   async function setLastRestoreRecord(completed: string, destination: string): Promise<void> {
-    const body: k8s.V1ConfigMap = {
+    // 1) try create (fast path if it doesn't exist)
+    const cm: k8s.V1ConfigMap = {
       apiVersion: "v1",
       kind: "ConfigMap",
       metadata: { name: TRACKING_CM, namespace: DEST_NS },
@@ -94,29 +95,35 @@ async function main() {
     };
 
     try {
-      // Try replace if exists
-      await core.replaceNamespacedConfigMap(TRACKING_CM, DEST_NS, body);
+      await core.createNamespacedConfigMap(DEST_NS, cm);
+      return;
     } catch (e: any) {
-      if (e?.response?.statusCode === 404) {
-        await core.createNamespacedConfigMap(DEST_NS, body);
-        return;
+      if (e?.response?.statusCode !== 409) {
+        // 409 = already exists
+        throw e;
       }
-      // If replace fails due to conflict, retry with patch
-      const patch = [
-        { op: "add", path: "/data", value: body.data },
-      ];
-      await core.patchNamespacedConfigMap(
-        TRACKING_CM,
-        DEST_NS,
-        patch as any,
-        undefined,
-        undefined,
-        undefined,
-        undefined,
-        { headers: { "Content-Type": "application/json-patch+json" } }
-      );
     }
+
+    // 2) patch existing (JSON merge patch is simplest)
+    const patchBody = {
+      data: {
+        last_completed: completed,
+        last_destination: destination,
+      },
+    };
+
+  await core.patchNamespacedConfigMap(
+    TRACKING_CM,
+    DEST_NS,
+    patchBody as any,
+    undefined, // pretty
+    undefined, // dryRun
+    undefined, // fieldManager
+    undefined, // fieldValidation
+    { headers: { "Content-Type": "application/merge-patch+json" } }
+  );
   }
+
 
   async function newestSucceededBackup(): Promise<{ completed: string; destination: string } | null> {
     const resp: any = await custom.listNamespacedCustomObject(
