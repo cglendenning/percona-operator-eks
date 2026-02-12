@@ -112,16 +112,17 @@ async function main() {
       },
     };
 
-  await core.patchNamespacedConfigMap(
-    TRACKING_CM,
-    DEST_NS,
-    patchBody as any,
-    undefined, // pretty
-    undefined, // dryRun
-    undefined, // fieldManager
-    undefined, // fieldValidation
-    { headers: { "Content-Type": "application/merge-patch+json" } }
-  );
+    await core.patchNamespacedConfigMap(
+      TRACKING_CM,
+      DEST_NS,
+      patchBody as any,
+      undefined, // pretty
+      undefined, // dryRun
+      undefined, // fieldManager
+      undefined, // fieldValidation
+      undefined, // force  <-- THIS is the missing slot in your version
+      { headers: { "Content-Type": "application/merge-patch+json" } }
+    );
   }
 
 
