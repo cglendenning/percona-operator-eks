@@ -350,6 +350,13 @@ async function main() {
       const restoreName = `auto-restore-${new Date().toISOString().replace(/[-:.TZ]/g, "").slice(0, 14)}`;
       log(`Triggering restore ${restoreName} from destination=${newestDestination} (completed=${newestCompleted})`);
 
+      // Double-check no restore is in progress before creating (safety against race conditions)
+      if (await restoreInProgress()) {
+        log(`Restore started by another process; skipping creation`);
+        await sleep(SLEEP_SECONDS * 1000);
+        continue;
+      }
+
       await createRestoreCR(restoreName, newestDestination);
 
       const result = await waitRestoreSucceeded(restoreName, 7200);
