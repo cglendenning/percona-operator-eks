@@ -288,6 +288,22 @@ async function main() {
     }
   }
 
+  async function getPXCClusterReady(): Promise<boolean> {
+    try {
+      const resp: any = await custom.getNamespacedCustomObject(
+        "pxc.percona.com",
+        PXC_API_VERSION,
+        DEST_NS,
+        "perconaxtradbclusters",
+        DEST_PXC_CLUSTER
+      );
+      const status = asString(resp.body?.status?.status);
+      return status === "ready";
+    } catch {
+      return false;
+    }
+  }
+
   async function waitRestoreSucceeded(
     restoreName: string,
     timeoutSeconds: number
@@ -296,11 +312,25 @@ async function main() {
     const start = Date.now();
     const timeoutMs = timeoutSeconds * 1000;
 
+    let restoreSucceeded = false;
+
     while (!shuttingDown) {
       const state = await getRestoreState(restoreName);
 
-      if (state === "Succeeded") return "succeeded";
       if (state === "Failed" || state === "Error") return "failed";
+
+      if (state === "Succeeded") {
+        if (!restoreSucceeded) {
+          log(`Restore ${restoreName} reports Succeeded; now waiting for PXC cluster ${DEST_PXC_CLUSTER} to be Ready`);
+          restoreSucceeded = true;
+        }
+
+        // Restore CR shows succeeded, now check if PXC cluster is actually Ready
+        if (await getPXCClusterReady()) {
+          log(`PXC cluster ${DEST_PXC_CLUSTER} is Ready`);
+          return "succeeded";
+        }
+      }
 
       if (Date.now() - start > timeoutMs) return "timeout";
       await sleep(10_000);
