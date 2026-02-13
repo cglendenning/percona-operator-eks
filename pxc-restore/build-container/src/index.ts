@@ -1,12 +1,11 @@
+// src/index.ts
 import * as k8s from "@kubernetes/client-node";
 
 type Obj = Record<string, any>;
 
 function env(name: string): string {
   const v = process.env[name];
-  if (!v) {
-    throw new Error(`Missing required env var: ${name}`);
-  }
+  if (!v) throw new Error(`Missing required env var: ${name}`);
   return v;
 }
 
@@ -19,23 +18,71 @@ function isoNow(): string {
 }
 
 function log(msg: string): void {
-  // Match your prior log format closely
   process.stdout.write(`[${isoNow()}] ${msg}\n`);
-}
-
-function matchesRunningState(state: string | undefined): boolean {
-  return state === "Starting" || state === "Running";
 }
 
 function asString(x: any): string {
   return typeof x === "string" ? x : "";
 }
 
+function matchesRunningState(state: string | undefined): boolean {
+  return state === "Starting" || state === "Running";
+}
+
 function parseCompletedAsMillis(completed: string, creationTimestamp: string): number {
-  // Use completed when available; fall back to creationTimestamp
   const t = completed || creationTimestamp;
   const ms = Date.parse(t);
   return Number.isFinite(ms) ? ms : 0;
+}
+
+function truncate(s: string, n: number): string {
+  return s.length > n ? s.slice(0, n) + `…(truncated ${s.length - n} chars)` : s;
+}
+
+function formatK8sError(err: any): string {
+  const status = err?.statusCode ?? err?.response?.statusCode;
+  const method = err?.response?.request?.method ?? err?.response?.req?.method ?? err?.method;
+  const url = err?.response?.request?.url ?? err?.response?.req?.url ?? err?.url;
+
+  const body = err?.body ?? err?.response?.body ?? err?.response?.data;
+
+  const k8sMessage = body?.message ?? body?.status?.message;
+  const reason = body?.reason ?? body?.status?.reason;
+  const details = body?.details ?? body?.status?.details;
+
+  const parts: string[] = [];
+  parts.push("HTTP request failed");
+
+  if (status) parts.push(`status=${status}`);
+  if (method) parts.push(`method=${method}`);
+  if (url) parts.push(`url=${url}`);
+
+  if (reason) parts.push(`reason=${JSON.stringify(reason)}`);
+  if (k8sMessage) parts.push(`k8sMessage=${JSON.stringify(k8sMessage)}`);
+  if (details) parts.push(`details=${JSON.stringify(details)}`);
+
+  if (body) {
+    let bodyStr: string;
+    try {
+      bodyStr = typeof body === "string" ? body : JSON.stringify(body);
+    } catch {
+      bodyStr = String(body);
+    }
+    parts.push(`body=${JSON.stringify(truncate(bodyStr, 2000))}`);
+  }
+
+  const msg = String(err?.message ?? err);
+  if (/ENOTFOUND|EAI_AGAIN/.test(msg)) parts.push(`hint="DNS resolution issue inside pod"`);
+  if (/ETIMEDOUT|timed out|Timeout/i.test(msg)) parts.push(`hint="network timeout to apiserver"`);
+  if (/certificate|x509|TLS/i.test(msg)) parts.push(`hint="TLS/cert issue to apiserver"`);
+  if (status === 403 || /Forbidden/i.test(String(k8sMessage || msg))) {
+    parts.push(`hint="RBAC Forbidden (check ClusterRole/Binding + ServiceAccount)"`);
+  }
+
+  // Preserve original message too (often contains low-level socket info)
+  if (msg && msg !== "HTTP request failed") parts.push(`error=${JSON.stringify(msg)}`);
+
+  return parts.join(" ");
 }
 
 async function main() {
@@ -46,11 +93,11 @@ async function main() {
   const TRACKING_CM = env("TRACKING_CM");
   const SLEEP_SECONDS = Number(env("SLEEP_SECONDS"));
 
-  // Optional override if your CRD version differs
+  // If your CRD version differs, override with env var
   const PXC_API_VERSION = process.env.PXC_API_VERSION || "v1";
 
   const kc = new k8s.KubeConfig();
-  kc.loadFromDefault(); // In-cluster: reads serviceaccount token; local: uses kubeconfig
+  kc.loadFromDefault();
 
   const core = kc.makeApiClient(k8s.CoreV1Api);
   const custom = kc.makeApiClient(k8s.CustomObjectsApi);
@@ -67,6 +114,7 @@ async function main() {
 
   async function getLastRestoreRecord(): Promise<{ lastCompleted: string; lastDestination: string }> {
     try {
+      log(`Reading tracking ConfigMap ${TRACKING_CM} in ns=${DEST_NS}`);
       const resp = await core.readNamespacedConfigMap(TRACKING_CM, DEST_NS);
       const data = resp.body.data || {};
       return {
@@ -74,8 +122,8 @@ async function main() {
         lastDestination: asString(data["last_destination"]),
       };
     } catch (e: any) {
-      // Not found is fine
       if (e?.response?.statusCode === 404) {
+        log(`Tracking ConfigMap ${TRACKING_CM} not found (first run); proceeding`);
         return { lastCompleted: "", lastDestination: "" };
       }
       throw e;
@@ -83,7 +131,6 @@ async function main() {
   }
 
   async function setLastRestoreRecord(completed: string, destination: string): Promise<void> {
-    // 1) try create (fast path if it doesn't exist)
     const cm: k8s.V1ConfigMap = {
       apiVersion: "v1",
       kind: "ConfigMap",
@@ -95,6 +142,7 @@ async function main() {
     };
 
     try {
+      log(`Creating tracking ConfigMap ${TRACKING_CM} in ns=${DEST_NS}`);
       await core.createNamespacedConfigMap(DEST_NS, cm);
       return;
     } catch (e: any) {
@@ -104,7 +152,7 @@ async function main() {
       }
     }
 
-    // 2) patch existing (JSON merge patch is simplest)
+    log(`Patching tracking ConfigMap ${TRACKING_CM} in ns=${DEST_NS}`);
     const patchBody = {
       data: {
         last_completed: completed,
@@ -112,6 +160,8 @@ async function main() {
       },
     };
 
+    // NOTE: Some @kubernetes/client-node versions include a 'force?: boolean' arg.
+    // We pass an extra undefined so our options object lands in the correct slot.
     await core.patchNamespacedConfigMap(
       TRACKING_CM,
       DEST_NS,
@@ -120,13 +170,13 @@ async function main() {
       undefined, // dryRun
       undefined, // fieldManager
       undefined, // fieldValidation
-      undefined, // force  <-- THIS is the missing slot in your version
+      undefined, // force (exists in some versions)
       { headers: { "Content-Type": "application/merge-patch+json" } }
     );
   }
 
-
   async function newestSucceededBackup(): Promise<{ completed: string; destination: string } | null> {
+    log(`Listing backups in ns=${SOURCE_NS}`);
     const resp: any = await custom.listNamespacedCustomObject(
       "pxc.percona.com",
       PXC_API_VERSION,
@@ -136,10 +186,8 @@ async function main() {
 
     const items: Obj[] = (resp.body?.items || []) as Obj[];
     const succeeded = items.filter((it) => asString(it?.status?.state) === "Succeeded");
-
     if (succeeded.length === 0) return null;
 
-    // Sort by status.completed then creationTimestamp
     succeeded.sort((a, b) => {
       const aMs = parseCompletedAsMillis(asString(a?.status?.completed), asString(a?.metadata?.creationTimestamp));
       const bMs = parseCompletedAsMillis(asString(b?.status?.completed), asString(b?.metadata?.creationTimestamp));
@@ -154,6 +202,7 @@ async function main() {
   }
 
   async function restoreInProgress(): Promise<boolean> {
+    log(`Listing restores in ns=${DEST_NS} to check in-progress`);
     const resp: any = await custom.listNamespacedCustomObject(
       "pxc.percona.com",
       PXC_API_VERSION,
@@ -183,6 +232,7 @@ async function main() {
       },
     };
 
+    log(`Creating restore CR ${restoreName} in ns=${DEST_NS}`);
     await custom.createNamespacedCustomObject(
       "pxc.percona.com",
       PXC_API_VERSION,
@@ -207,7 +257,11 @@ async function main() {
     }
   }
 
-  async function waitRestoreSucceeded(restoreName: string, timeoutSeconds: number): Promise<"succeeded" | "failed" | "timeout"> {
+  async function waitRestoreSucceeded(
+    restoreName: string,
+    timeoutSeconds: number
+  ): Promise<"succeeded" | "failed" | "timeout"> {
+    log(`Waiting for restore ${restoreName} to reach Succeeded (timeout=${timeoutSeconds}s)`);
     const start = Date.now();
     const timeoutMs = timeoutSeconds * 1000;
 
@@ -228,14 +282,14 @@ async function main() {
   while (!shuttingDown) {
     try {
       if (await restoreInProgress()) {
-        log(`Restore already in progress in ${DEST_NS}; sleeping ${SLEEP_SECONDS}`);
+        log(`Restore already in progress in ${DEST_NS}; sleeping ${SLEEP_SECONDS}s`);
         await sleep(SLEEP_SECONDS * 1000);
         continue;
       }
 
       const newest = await newestSucceededBackup();
       if (!newest) {
-        log(`No Succeeded backup found in ${SOURCE_NS}; sleeping ${SLEEP_SECONDS}`);
+        log(`No Succeeded backup found in ${SOURCE_NS}; sleeping ${SLEEP_SECONDS}s`);
         await sleep(SLEEP_SECONDS * 1000);
         continue;
       }
@@ -244,7 +298,7 @@ async function main() {
       const newestDestination = newest.destination;
 
       if (!newestDestination) {
-        log(`Newest backup has empty .status.destination; cannot restore-to-new-cluster; sleeping ${SLEEP_SECONDS}`);
+        log(`Newest backup has empty .status.destination; cannot restore-to-new-cluster; sleeping ${SLEEP_SECONDS}s`);
         await sleep(SLEEP_SECONDS * 1000);
         continue;
       }
@@ -252,12 +306,12 @@ async function main() {
       const { lastCompleted, lastDestination } = await getLastRestoreRecord();
 
       const alreadyRestored =
-        lastCompleted &&
+        !!lastCompleted &&
         lastCompleted === newestCompleted &&
         lastDestination === newestDestination;
 
       if (alreadyRestored) {
-        log(`Already restored latest backup (completed=${newestCompleted}); sleeping ${SLEEP_SECONDS}`);
+        log(`Already restored latest backup (completed=${newestCompleted}); sleeping ${SLEEP_SECONDS}s`);
         await sleep(SLEEP_SECONDS * 1000);
         continue;
       }
@@ -275,8 +329,7 @@ async function main() {
         log(`Restore did not succeed (name=${restoreName}, result=${result}). Will retry on next loop.`);
       }
     } catch (e: any) {
-      // Don’t crash the controller; log and keep going
-      log(`ERROR: ${e?.message || e}`);
+      log(`ERROR: ${formatK8sError(e)}`);
     }
 
     await sleep(SLEEP_SECONDS * 1000);
@@ -286,7 +339,7 @@ async function main() {
 }
 
 main().catch((e) => {
-  log(`FATAL: ${e?.message || e}`);
+  log(`FATAL: ${formatK8sError(e)}`);
   process.exit(1);
 });
 
