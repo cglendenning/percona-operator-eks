@@ -39,6 +39,15 @@ function truncate(s: string, n: number): string {
   return s.length > n ? s.slice(0, n) + `…(truncated ${s.length - n} chars)` : s;
 }
 
+function parseS3Bucket(destination: string): string {
+  // destination format: s3://bucket-name/path/to/backup
+  const match = destination.match(/^s3:\/\/([^\/]+)/);
+  if (!match) {
+    throw new Error(`Cannot parse S3 bucket from destination: ${destination}`);
+  }
+  return match[1];
+}
+
 function formatK8sError(err: any): string {
   const status = err?.statusCode ?? err?.response?.statusCode;
   const method = err?.response?.request?.method ?? err?.response?.req?.method ?? err?.method;
@@ -92,6 +101,9 @@ async function main() {
   const DEST_STORAGE_NAME = env("DEST_STORAGE_NAME");
   const TRACKING_CM = env("TRACKING_CM");
   const SLEEP_SECONDS = Number(env("SLEEP_SECONDS"));
+  const S3_CREDENTIALS_SECRET = env("S3_CREDENTIALS_SECRET");
+  const S3_REGION = env("S3_REGION");
+  const S3_ENDPOINT_URL = env("S3_ENDPOINT_URL");
 
   // If your CRD version differs, override with env var
   const PXC_API_VERSION = process.env.PXC_API_VERSION || "v1";
@@ -219,6 +231,8 @@ async function main() {
   }
 
   async function createRestoreCR(restoreName: string, destination: string): Promise<void> {
+    const bucket = parseS3Bucket(destination);
+    
     const body: Obj = {
       apiVersion: "pxc.percona.com/v1",
       kind: "PerconaXtraDBClusterRestore",
@@ -227,7 +241,24 @@ async function main() {
         pxcCluster: DEST_PXC_CLUSTER,
         backupSource: {
           destination,
-          storageName: DEST_STORAGE_NAME,
+          s3: {
+            bucket,
+            credentialsSecret: S3_CREDENTIALS_SECRET,
+            region: S3_REGION,
+            endpointUrl: S3_ENDPOINT_URL,
+          },
+        },
+        pitr: {
+          type: "latest",
+          backupSource: {
+            storageName: DEST_STORAGE_NAME,
+            s3: {
+              bucket,
+              credentialsSecret: S3_CREDENTIALS_SECRET,
+              region: S3_REGION,
+              endpointUrl: S3_ENDPOINT_URL,
+            },
+          },
         },
       },
     };

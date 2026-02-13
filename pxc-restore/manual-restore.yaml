@@ -1,0 +1,23 @@
+apiVersion: pxc.percona.com/v1
+kind; PerconaXtraDBClusterRestore
+metadata:
+  name: (TODO: Enter pxc-auto-restore-<date/time> here)
+  namespace: DEST_NS
+spec:
+  pxcCluster: db
+  backupSource:
+    destination: <location of backup from the found backup>
+    s3:
+      bucket: <parsed from the bucket noted in the backup after s3://...>
+      credentialsSecret: (passed in from container) 
+      region: "us-east-1"
+      endpointUrl: <passed in as a var from the running container>
+  pitr:
+    type: latest
+    backupSource:
+      storageName: <passed in as a var from the running container>
+      s3:
+        bucket: <parsed from the bucket noted in the backup after s3://...>
+        credentialsSecret: (passed in from container)
+        region: "us-east-1"
+        endpointUrl: <passed in as a var from the running container>

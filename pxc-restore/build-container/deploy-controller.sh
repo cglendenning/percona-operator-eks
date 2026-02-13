@@ -25,6 +25,12 @@ spec:
           value: pxc-restore-tracker
         - name: SLEEP_SECONDS
           value: "60"
+        - name: S3_CREDENTIALS_SECRET
+          value: s3-credentials
+        - name: S3_REGION
+          value: us-east-1
+        - name: S3_ENDPOINT_URL
+          value: https://s3.us-east-1.amazonaws.com
         # Optional if your CRD version is not v1:
         # - name: PXC_API_VERSION
         #   value: "v1"
