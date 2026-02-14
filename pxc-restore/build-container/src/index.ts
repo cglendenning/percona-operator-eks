@@ -248,18 +248,6 @@ async function main() {
             endpointUrl: S3_ENDPOINT_URL,
           },
         },
-        pitr: {
-          type: "latest",
-          backupSource: {
-            storageName: DEST_STORAGE_NAME,
-            s3: {
-              bucket,
-              credentialsSecret: S3_CREDENTIALS_SECRET,
-              region: S3_REGION,
-              endpointUrl: S3_ENDPOINT_URL,
-            },
-          },
-        },
       },
     };
 
