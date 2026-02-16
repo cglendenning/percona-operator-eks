@@ -286,8 +286,11 @@ async function main() {
         DEST_PXC_CLUSTER
       );
       const state = asString(resp.body?.status?.state);
+      const status = asString(resp.body?.status?.status);
+      log(`PXC cluster ${DEST_PXC_CLUSTER} status check: state="${state}", status="${status}"`);
       return state === "ready";
-    } catch {
+    } catch (e: any) {
+      log(`ERROR checking PXC cluster ${DEST_PXC_CLUSTER} readiness: ${formatK8sError(e)}`);
       return false;
     }
   }
@@ -302,31 +305,44 @@ async function main() {
     let restoreSucceeded = false;
 
     while (!shuttingDown) {
-      const remainingSeconds = Math.floor((timeoutMs - (Date.now() - start)) / 1000);
-      const state = await getRestoreState(restoreName);
-
-      if (state === "Failed" || state === "Error") return "failed";
-
-      if (state === "Succeeded") {
-        if (!restoreSucceeded) {
-          log(`Restore ${restoreName} reports Succeeded; now waiting for PXC cluster ${DEST_PXC_CLUSTER} to be Ready (will timeout in ${remainingSeconds}s)`);
-          restoreSucceeded = true;
+      try {
+        const remainingSeconds = Math.floor((timeoutMs - (Date.now() - start)) / 1000);
+        
+        if (Date.now() - start > timeoutMs) {
+          log(`Timeout reached after ${timeoutSeconds}s`);
+          return "timeout";
         }
 
-        // Restore CR shows succeeded, now check if PXC cluster is actually Ready
-        if (await getPXCClusterReady()) {
-          log(`PXC cluster ${DEST_PXC_CLUSTER} is Ready`);
-          return "succeeded";
-        } else {
-          log(`Waiting for PXC cluster ${DEST_PXC_CLUSTER} to be Ready (state=${state}, will timeout in ${remainingSeconds}s)`);
+        const state = await getRestoreState(restoreName);
+        log(`Restore ${restoreName} state check: "${state}" (will timeout in ${remainingSeconds}s)`);
+
+        if (state === "Failed" || state === "Error") {
+          log(`Restore ${restoreName} failed with state: ${state}`);
+          return "failed";
         }
-      } else {
-        log(`Waiting for restore ${restoreName} to reach Succeeded (state=${state}, will timeout in ${remainingSeconds}s)`);
+
+        if (state === "Succeeded") {
+          if (!restoreSucceeded) {
+            log(`Restore ${restoreName} reports Succeeded; now waiting for PXC cluster ${DEST_PXC_CLUSTER} to be Ready`);
+            restoreSucceeded = true;
+          }
+
+          // Restore CR shows succeeded, now check if PXC cluster is actually Ready
+          const clusterReady = await getPXCClusterReady();
+          if (clusterReady) {
+            log(`PXC cluster ${DEST_PXC_CLUSTER} is Ready - restore complete`);
+            return "succeeded";
+          }
+        }
+
+        await sleep(10_000);
+      } catch (e: any) {
+        log(`ERROR in waitRestoreSucceeded loop: ${formatK8sError(e)}`);
+        await sleep(10_000);
       }
-
-      if (Date.now() - start > timeoutMs) return "timeout";
-      await sleep(10_000);
     }
+    
+    log(`Shutdown signal received`);
     return "timeout";
   }
 
