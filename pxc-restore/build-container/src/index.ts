@@ -296,9 +296,10 @@ async function main() {
     restoreName: string,
     timeoutSeconds: number
   ): Promise<"succeeded" | "failed" | "timeout"> {
-    log(`Waiting for restore ${restoreName} to reach Succeeded (timeout=${timeoutSeconds}s)`);
     const start = Date.now();
     const timeoutMs = timeoutSeconds * 1000;
+    const remainingSeconds = Math.floor((timeoutMs - (Date.now() - start)) / 1000);
+    log(`Waiting for restore ${restoreName} to reach Succeeded (will timeout in ${remainingSeconds}s)`);
 
     let restoreSucceeded = false;
 
@@ -309,7 +310,8 @@ async function main() {
 
       if (state === "Succeeded") {
         if (!restoreSucceeded) {
-          log(`Restore ${restoreName} reports Succeeded; now waiting for PXC cluster ${DEST_PXC_CLUSTER} to be Ready`);
+          const remainingSeconds = Math.floor((timeoutMs - (Date.now() - start)) / 1000);
+          log(`Restore ${restoreName} reports Succeeded; now waiting for PXC cluster ${DEST_PXC_CLUSTER} to be Ready (will timeout in ${remainingSeconds}s)`);
           restoreSucceeded = true;
         }
 
