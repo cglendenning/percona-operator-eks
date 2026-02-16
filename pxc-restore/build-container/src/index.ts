@@ -298,19 +298,17 @@ async function main() {
   ): Promise<"succeeded" | "failed" | "timeout"> {
     const start = Date.now();
     const timeoutMs = timeoutSeconds * 1000;
-    const remainingSeconds = Math.floor((timeoutMs - (Date.now() - start)) / 1000);
-    log(`Waiting for restore ${restoreName} to reach Succeeded (will timeout in ${remainingSeconds}s)`);
 
     let restoreSucceeded = false;
 
     while (!shuttingDown) {
+      const remainingSeconds = Math.floor((timeoutMs - (Date.now() - start)) / 1000);
       const state = await getRestoreState(restoreName);
 
       if (state === "Failed" || state === "Error") return "failed";
 
       if (state === "Succeeded") {
         if (!restoreSucceeded) {
-          const remainingSeconds = Math.floor((timeoutMs - (Date.now() - start)) / 1000);
           log(`Restore ${restoreName} reports Succeeded; now waiting for PXC cluster ${DEST_PXC_CLUSTER} to be Ready (will timeout in ${remainingSeconds}s)`);
           restoreSucceeded = true;
         }
@@ -319,7 +317,11 @@ async function main() {
         if (await getPXCClusterReady()) {
           log(`PXC cluster ${DEST_PXC_CLUSTER} is Ready`);
           return "succeeded";
+        } else {
+          log(`Waiting for PXC cluster ${DEST_PXC_CLUSTER} to be Ready (state=${state}, will timeout in ${remainingSeconds}s)`);
         }
+      } else {
+        log(`Waiting for restore ${restoreName} to reach Succeeded (state=${state}, will timeout in ${remainingSeconds}s)`);
       }
 
       if (Date.now() - start > timeoutMs) return "timeout";
