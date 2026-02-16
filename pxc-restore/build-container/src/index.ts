@@ -285,8 +285,8 @@ async function main() {
         "perconaxtradbclusters",
         DEST_PXC_CLUSTER
       );
-      const status = asString(resp.body?.status?.status);
-      return status === "ready";
+      const state = asString(resp.body?.status?.state);
+      return state === "ready";
     } catch {
       return false;
     }
