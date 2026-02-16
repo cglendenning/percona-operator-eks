@@ -37,6 +37,11 @@ rules:
     resources: ["perconaxtradbclusterrestores"]
     verbs: ["get", "list", "watch", "create", "patch", "update"]
 
+  # read PXC cluster status to verify restore completion
+  - apiGroups: ["pxc.percona.com"]
+    resources: ["perconaxtradbclusters"]
+    verbs: ["get"]
+
   # tracking ConfigMap that records last restored backup
   - apiGroups: [""]
     resources: ["configmaps"]
