@@ -1,0 +1,21 @@
+kubectl get pods -A -o json \
+| jq -r '
+  .items[]
+  | select(.status.phase != "Succeeded")
+  | [
+      .metadata.namespace,
+      .metadata.name,
+      (
+        [ .spec.containers[].resources.requests.cpu // "0" ]
+        | map(
+            if test("m$") then sub("m$";"")|tonumber
+            elif .=="0" then 0
+            else (tonumber*1000)
+            end
+          )
+        | add
+      )
+    ]
+  | @tsv
+' | sort -k3,3nr | head -30
+
