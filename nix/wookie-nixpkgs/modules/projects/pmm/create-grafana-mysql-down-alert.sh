@@ -91,28 +91,27 @@ resolve_context() {
     return
   fi
 
-  local all_contexts k3d_contexts count
-  all_contexts=$(kubectl config get-contexts -o name 2>/dev/null || true)
-  k3d_contexts=$(printf '%s\n' "$all_contexts" | grep '^k3d-' || true)
-  count=$(printf '%s\n' "$k3d_contexts" | grep -c '[^[:space:]]' 2>/dev/null || echo 0)
+  local -a all_contexts=() k3d_contexts=()
+  mapfile -t all_contexts < <(kubectl config get-contexts -o name 2>/dev/null || true)
+  mapfile -t k3d_contexts < <(printf '%s\n' "${all_contexts[@]+"${all_contexts[@]}"}" | grep '^k3d-' || true)
 
-  if [[ "$count" -eq 0 ]]; then
+  local count=${#k3d_contexts[@]}
+
+  if [[ $count -eq 0 ]]; then
     warn "No k3d contexts found. Available contexts:"
-    printf '%s\n' "$all_contexts" | sed 's/^/  /' >&2
+    printf '  %s\n' "${all_contexts[@]+"${all_contexts[@]}"}" >&2
     prompt_var KUBE_CONTEXT "Kube context to use"
-  elif [[ "$count" -eq 1 ]]; then
-    KUBE_CONTEXT="$k3d_contexts"
+  elif [[ $count -eq 1 ]]; then
+    KUBE_CONTEXT="${k3d_contexts[0]}"
     log "Auto-detected k3d context: $KUBE_CONTEXT"
   else
     log "Multiple k3d contexts found:"
-    local i=1
-    while IFS= read -r ctx; do
-      printf '  %d) %s\n' "$i" "$ctx"
+    local i=0
+    while [[ $i -lt $count ]]; do
+      printf '  %d) %s\n' "$((i + 1))" "${k3d_contexts[$i]}"
       i=$((i + 1))
-    done <<< "$k3d_contexts"
-    local default_ctx
-    default_ctx=$(printf '%s\n' "$k3d_contexts" | head -1)
-    prompt_var KUBE_CONTEXT "Kube context to use" "$default_ctx"
+    done
+    prompt_var KUBE_CONTEXT "Kube context to use" "${k3d_contexts[0]}"
   fi
 }
 
