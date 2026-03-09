@@ -184,16 +184,18 @@ resolve_context() {
 }
 
 # ---------------------------------------------------------------------------
-# PMM pod discovery
-#
-# Tries label selectors in priority order, then falls back to matching any
-# pod whose name contains "pmm". Returns "<namespace> <podname>" or empty.
-# Pass a namespace to scope the search, or omit for --all-namespaces.
+# PMM namespace resolution
 # ---------------------------------------------------------------------------
-PMM_POD=""  # set by find_pmm_pod, reused by verify_pmm_running
+PMM_POD=""
 
-find_pmm_pod() {
-  local ns="${1:-}"
+resolve_namespace() {
+  if [[ -n "$PMM_NAMESPACE" ]]; then
+    log "PMM_NAMESPACE=$PMM_NAMESPACE"
+    return
+  fi
+
+  log "Searching for PMM pod across all namespaces..."
+
   local -a selectors=(
     "app=pmm-server"
     "app.kubernetes.io/name=pmm-server"
@@ -202,84 +204,79 @@ find_pmm_pod() {
     "app=pmm"
   )
 
-  local ns_flags=("--all-namespaces")
-  [[ -n "$ns" ]] && ns_flags=("-n" "$ns")
-
-  local sel result
+  local sel result ns pod
   for sel in "${selectors[@]}"; do
-    result=$(kubectl get pods "${ns_flags[@]}" --context "${KUBE_CONTEXT}" \
+    result=$(kubectl get pods --all-namespaces --context "${KUBE_CONTEXT}" \
       -l "$sel" \
-      -o jsonpath='{.items[0].metadata.namespace} {.items[0].metadata.name}' \
+      -o jsonpath='{.items[0].metadata.namespace}{" "}{.items[0].metadata.name}' \
       2>/dev/null || true)
-    # jsonpath returns " " (two spaces from empty fields) when no match
-    result="${result//  /}"
+    # strip result that is just whitespace (no match)
+    result="${result//  / }"
     result="${result# }"
-    [[ -n "$result" ]] && { echo "$result"; return 0; }
+    ns="${result%% *}"
+    pod="${result##* }"
+    if [[ -n "$ns" && -n "$pod" && "$ns" != "$pod" ]]; then
+      PMM_NAMESPACE="$ns"
+      PMM_POD="$pod"
+      log "Auto-detected: namespace='${PMM_NAMESPACE}' pod='${PMM_POD}'"
+      return
+    fi
   done
 
-  # Fall back: match any pod whose name contains "pmm"
-  result=$(kubectl get pods "${ns_flags[@]}" --context "${KUBE_CONTEXT}" \
+  # Fall back: scan all pods for any whose name contains "pmm"
+  result=$(kubectl get pods --all-namespaces --context "${KUBE_CONTEXT}" \
     -o jsonpath='{range .items[*]}{.metadata.namespace}{" "}{.metadata.name}{"\n"}{end}' \
-    2>/dev/null | grep -i '\bpmm\b' | head -1 || true)
-  [[ -n "$result" ]] && { echo "$result"; return 0; }
-
-  return 1
-}
-
-# ---------------------------------------------------------------------------
-# PMM namespace resolution
-# ---------------------------------------------------------------------------
-resolve_namespace() {
-  if [[ -n "$PMM_NAMESPACE" ]]; then
-    log "PMM_NAMESPACE=$PMM_NAMESPACE"
+    2>/dev/null | grep -i 'pmm' | head -1 || true)
+  ns="${result%% *}"
+  pod="${result##* }"
+  if [[ -n "$ns" && -n "$pod" && "$ns" != "$pod" ]]; then
+    PMM_NAMESPACE="$ns"
+    PMM_POD="$pod"
+    log "Auto-detected via name match: namespace='${PMM_NAMESPACE}' pod='${PMM_POD}'"
     return
   fi
 
-  log "Searching for PMM pod across all namespaces..."
-  local result
-  if result=$(find_pmm_pod) && [[ -n "$result" ]]; then
-    PMM_NAMESPACE="${result%% *}"
-    PMM_POD="${result##* }"
-    log "Auto-detected: namespace='${PMM_NAMESPACE}' pod='${PMM_POD}'"
-  else
-    warn "Could not auto-detect PMM namespace"
-    prompt_var PMM_NAMESPACE "PMM namespace" "pmm"
-  fi
+  warn "Could not auto-detect PMM namespace"
+  prompt_var PMM_NAMESPACE "PMM namespace" "pmm"
 }
 
 # ---------------------------------------------------------------------------
 # Verify PMM pod is running
 # ---------------------------------------------------------------------------
 verify_pmm_running() {
-  log "Checking PMM pod status in namespace '${PMM_NAMESPACE}'..."
+  log "Checking for a running PMM pod in namespace '${PMM_NAMESPACE}'..."
 
-  # Re-use cached pod name if we found it during namespace resolution
-  if [[ -z "$PMM_POD" ]]; then
-    local result
-    result=$(find_pmm_pod "${PMM_NAMESPACE}") || true
-    PMM_POD="${result##* }"
+  # If we already have a pod name (from auto-detection), verify it
+  if [[ -n "$PMM_POD" ]]; then
+    local phase
+    phase=$(kubectl get pod "${PMM_POD}" -n "${PMM_NAMESPACE}" --context "${KUBE_CONTEXT}" \
+      -o jsonpath='{.status.phase}' 2>/dev/null || true)
+    if [[ "$phase" == "Running" ]]; then
+      log "Pod '${PMM_POD}' is Running"
+      return
+    fi
+    warn "Cached pod '${PMM_POD}' returned phase='${phase}' - re-scanning..."
+    PMM_POD=""
   fi
 
-  if [[ -z "$PMM_POD" ]]; then
-    # Last resort: list pods so the user can see what's actually there
-    warn "Could not locate a PMM pod with any known label or name pattern."
-    warn "Pods currently in namespace '${PMM_NAMESPACE}':"
-    kubectl get pods -n "${PMM_NAMESPACE}" --context "${KUBE_CONTEXT}" \
-      -o wide 2>/dev/null >&2 || true
-    die "Aborting - set PMM_NAMESPACE and ensure the PMM pod is Running"
+  # Find any Running pod with "pmm" in its name using field-selector
+  local pod
+  pod=$(kubectl get pods -n "${PMM_NAMESPACE}" --context "${KUBE_CONTEXT}" \
+    --field-selector=status.phase=Running \
+    -o jsonpath='{range .items[*]}{.metadata.name}{"\n"}{end}' \
+    2>/dev/null | grep -i 'pmm' | head -1 || true)
+
+  if [[ -n "$pod" ]]; then
+    PMM_POD="$pod"
+    log "Found running PMM pod: '${PMM_POD}'"
+    return
   fi
 
-  local phase
-  phase=$(kubectl get pod "${PMM_POD}" -n "${PMM_NAMESPACE}" --context "${KUBE_CONTEXT}" \
-    -o jsonpath='{.status.phase}' 2>/dev/null || true)
-
-  if [[ -z "$phase" ]]; then
-    die "Pod '${PMM_POD}' not found in namespace '${PMM_NAMESPACE}'"
-  fi
-  if [[ "$phase" != "Running" ]]; then
-    die "Pod '${PMM_POD}' is in phase '${phase}' - expected Running"
-  fi
-  log "Pod '${PMM_POD}' is Running"
+  # Nothing matched - show the user what is actually there and die
+  warn "No running pod with 'pmm' in its name found in namespace '${PMM_NAMESPACE}'."
+  warn "Pods in that namespace:"
+  kubectl get pods -n "${PMM_NAMESPACE}" --context "${KUBE_CONTEXT}" 2>/dev/null >&2 || true
+  die "Check the namespace and pod status above, then re-run"
 }
 
 # ---------------------------------------------------------------------------
