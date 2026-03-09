@@ -84,35 +84,131 @@ check_deps() {
 
 # ---------------------------------------------------------------------------
 # Kube context resolution
+#
+# Priority:
+#   1. k3d contexts already in kubeconfig
+#   2. k3d clusters found via `k3d cluster list` -> merge kubeconfig on the fly
+#   3. Any context in kubeconfig (prompted)
+#   4. Bare prompt
 # ---------------------------------------------------------------------------
+pick_context_from_list() {
+  local -n _contexts=$1  # nameref to array
+  local count=${#_contexts[@]}
+  if [[ $count -eq 1 ]]; then
+    KUBE_CONTEXT="${_contexts[0]}"
+    log "Auto-selected context: $KUBE_CONTEXT"
+  else
+    log "Available contexts:"
+    local i=0
+    while [[ $i -lt $count ]]; do
+      printf '  %d) %s\n' "$((i + 1))" "${_contexts[$i]}"
+      i=$((i + 1))
+    done
+    prompt_var KUBE_CONTEXT "Kube context to use" "${_contexts[0]}"
+  fi
+}
+
 resolve_context() {
   if [[ -n "$KUBE_CONTEXT" ]]; then
     log "KUBE_CONTEXT=$KUBE_CONTEXT"
     return
   fi
 
+  # --- 1. k3d contexts already in kubeconfig ---
   local -a all_contexts=() k3d_contexts=()
   mapfile -t all_contexts < <(kubectl config get-contexts -o name 2>/dev/null || true)
-  mapfile -t k3d_contexts < <(printf '%s\n' "${all_contexts[@]+"${all_contexts[@]}"}" | grep '^k3d-' || true)
+  mapfile -t k3d_contexts < <(
+    printf '%s\n' "${all_contexts[@]+"${all_contexts[@]}"}" | grep '^k3d-' || true)
 
-  local count=${#k3d_contexts[@]}
-
-  if [[ $count -eq 0 ]]; then
-    warn "No k3d contexts found. Available contexts:"
-    printf '  %s\n' "${all_contexts[@]+"${all_contexts[@]}"}" >&2
-    prompt_var KUBE_CONTEXT "Kube context to use"
-  elif [[ $count -eq 1 ]]; then
-    KUBE_CONTEXT="${k3d_contexts[0]}"
-    log "Auto-detected k3d context: $KUBE_CONTEXT"
-  else
-    log "Multiple k3d contexts found:"
-    local i=0
-    while [[ $i -lt $count ]]; do
-      printf '  %d) %s\n' "$((i + 1))" "${k3d_contexts[$i]}"
-      i=$((i + 1))
-    done
-    prompt_var KUBE_CONTEXT "Kube context to use" "${k3d_contexts[0]}"
+  if [[ ${#k3d_contexts[@]} -gt 0 ]]; then
+    pick_context_from_list k3d_contexts
+    return
   fi
+
+  # --- 2. k3d clusters not yet merged into kubeconfig ---
+  if command -v k3d >/dev/null 2>&1; then
+    local -a k3d_clusters=()
+    mapfile -t k3d_clusters < <(
+      k3d cluster list 2>/dev/null | awk 'NR>1 && $1!="" {print $1}' || true)
+
+    if [[ ${#k3d_clusters[@]} -gt 0 ]]; then
+      log "k3d clusters found but not in kubeconfig: ${k3d_clusters[*]}"
+      log "Merging k3d kubeconfig(s) into ~/.kube/config ..."
+
+      local cl
+      for cl in "${k3d_clusters[@]}"; do
+        k3d kubeconfig merge "$cl" --kubeconfig-merge-default >/dev/null 2>&1 \
+          && log "  merged: $cl" \
+          || warn "  failed to merge kubeconfig for cluster: $cl"
+      done
+
+      # Retry now that contexts should exist
+      mapfile -t all_contexts < <(kubectl config get-contexts -o name 2>/dev/null || true)
+      mapfile -t k3d_contexts < <(
+        printf '%s\n' "${all_contexts[@]+"${all_contexts[@]}"}" | grep '^k3d-' || true)
+
+      if [[ ${#k3d_contexts[@]} -gt 0 ]]; then
+        pick_context_from_list k3d_contexts
+        return
+      fi
+
+      warn "Kubeconfig merge completed but still no k3d contexts visible - is KUBECONFIG set?"
+    fi
+  fi
+
+  # --- 3. Fall back to any available context ---
+  if [[ ${#all_contexts[@]} -gt 0 ]]; then
+    warn "No k3d contexts found. Showing all available contexts:"
+    pick_context_from_list all_contexts
+    return
+  fi
+
+  # --- 4. Nothing found - bare prompt ---
+  warn "No kubectl contexts found at all. Is KUBECONFIG set correctly?"
+  prompt_var KUBE_CONTEXT "Kube context to use"
+}
+
+# ---------------------------------------------------------------------------
+# PMM pod discovery
+#
+# Tries label selectors in priority order, then falls back to matching any
+# pod whose name contains "pmm". Returns "<namespace> <podname>" or empty.
+# Pass a namespace to scope the search, or omit for --all-namespaces.
+# ---------------------------------------------------------------------------
+PMM_POD=""  # set by find_pmm_pod, reused by verify_pmm_running
+
+find_pmm_pod() {
+  local ns="${1:-}"
+  local -a selectors=(
+    "app=pmm-server"
+    "app.kubernetes.io/name=pmm-server"
+    "app.kubernetes.io/name=pmm"
+    "app.kubernetes.io/instance=pmm"
+    "app=pmm"
+  )
+
+  local ns_flags=("--all-namespaces")
+  [[ -n "$ns" ]] && ns_flags=("-n" "$ns")
+
+  local sel result
+  for sel in "${selectors[@]}"; do
+    result=$(kubectl get pods "${ns_flags[@]}" --context "${KUBE_CONTEXT}" \
+      -l "$sel" \
+      -o jsonpath='{.items[0].metadata.namespace} {.items[0].metadata.name}' \
+      2>/dev/null || true)
+    # jsonpath returns " " (two spaces from empty fields) when no match
+    result="${result//  /}"
+    result="${result# }"
+    [[ -n "$result" ]] && { echo "$result"; return 0; }
+  done
+
+  # Fall back: match any pod whose name contains "pmm"
+  result=$(kubectl get pods "${ns_flags[@]}" --context "${KUBE_CONTEXT}" \
+    -o jsonpath='{range .items[*]}{.metadata.namespace}{" "}{.metadata.name}{"\n"}{end}' \
+    2>/dev/null | grep -i '\bpmm\b' | head -1 || true)
+  [[ -n "$result" ]] && { echo "$result"; return 0; }
+
+  return 1
 }
 
 # ---------------------------------------------------------------------------
@@ -124,15 +220,12 @@ resolve_namespace() {
     return
   fi
 
-  log "Searching for pmm-server pod across all namespaces..."
-  local ns
-  ns=$(kubectl get pods --all-namespaces --context "${KUBE_CONTEXT}" \
-    -l app=pmm-server \
-    -o jsonpath='{.items[0].metadata.namespace}' 2>/dev/null || true)
-
-  if [[ -n "$ns" ]]; then
-    PMM_NAMESPACE="$ns"
-    log "Auto-detected PMM namespace: $PMM_NAMESPACE"
+  log "Searching for PMM pod across all namespaces..."
+  local result
+  if result=$(find_pmm_pod) && [[ -n "$result" ]]; then
+    PMM_NAMESPACE="${result%% *}"
+    PMM_POD="${result##* }"
+    log "Auto-detected: namespace='${PMM_NAMESPACE}' pod='${PMM_POD}'"
   else
     warn "Could not auto-detect PMM namespace"
     prompt_var PMM_NAMESPACE "PMM namespace" "pmm"
@@ -143,19 +236,35 @@ resolve_namespace() {
 # Verify PMM pod is running
 # ---------------------------------------------------------------------------
 verify_pmm_running() {
-  log "Checking pmm-server pod status..."
+  log "Checking PMM pod status in namespace '${PMM_NAMESPACE}'..."
+
+  # Re-use cached pod name if we found it during namespace resolution
+  if [[ -z "$PMM_POD" ]]; then
+    local result
+    result=$(find_pmm_pod "${PMM_NAMESPACE}") || true
+    PMM_POD="${result##* }"
+  fi
+
+  if [[ -z "$PMM_POD" ]]; then
+    # Last resort: list pods so the user can see what's actually there
+    warn "Could not locate a PMM pod with any known label or name pattern."
+    warn "Pods currently in namespace '${PMM_NAMESPACE}':"
+    kubectl get pods -n "${PMM_NAMESPACE}" --context "${KUBE_CONTEXT}" \
+      -o wide 2>/dev/null >&2 || true
+    die "Aborting - set PMM_NAMESPACE and ensure the PMM pod is Running"
+  fi
+
   local phase
-  phase=$(kubectl get pods -n "${PMM_NAMESPACE}" --context "${KUBE_CONTEXT}" \
-    -l app=pmm-server \
-    -o jsonpath='{.items[0].status.phase}' 2>/dev/null || true)
+  phase=$(kubectl get pod "${PMM_POD}" -n "${PMM_NAMESPACE}" --context "${KUBE_CONTEXT}" \
+    -o jsonpath='{.status.phase}' 2>/dev/null || true)
 
   if [[ -z "$phase" ]]; then
-    die "No pmm-server pod found in namespace '${PMM_NAMESPACE}' (context '${KUBE_CONTEXT}')"
+    die "Pod '${PMM_POD}' not found in namespace '${PMM_NAMESPACE}'"
   fi
   if [[ "$phase" != "Running" ]]; then
-    die "pmm-server pod is in phase '${phase}' - expected Running"
+    die "Pod '${PMM_POD}' is in phase '${phase}' - expected Running"
   fi
-  log "pmm-server pod is Running"
+  log "Pod '${PMM_POD}' is Running"
 }
 
 # ---------------------------------------------------------------------------
