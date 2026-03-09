@@ -262,39 +262,57 @@ find_free_port() {
 }
 
 resolve_pmm_service() {
-  log "Looking for PMM service in namespace '${PMM_NAMESPACE}'..."
+  log "Services in namespace '${PMM_NAMESPACE}':"
 
-  # List all services with "pmm" in the name, pick the first one that has port 80 or 443
   local svc_list
   svc_list=$(kubectl get svc -n "${PMM_NAMESPACE}" --context "${KUBE_CONTEXT}" \
     -o jsonpath='{range .items[*]}{.metadata.name}{" "}{range .spec.ports[*]}{.port}{","}{end}{"\n"}{end}' \
     2>/dev/null || true)
 
+  if [[ -z "$svc_list" ]]; then
+    warn "No services found in namespace '${PMM_NAMESPACE}' (context '${KUBE_CONTEXT}')"
+    warn "Check that the namespace and context are correct."
+    prompt_var PMM_SERVICE "Service name to port-forward" "pmm-server"
+    prompt_var PMM_SVC_PORT "Service port" "80"
+    return
+  fi
+
+  # Print everything we found so the user can see it
   local line svc ports
   while IFS= read -r line; do
+    [[ -z "$line" ]] && continue
     svc="${line%% *}"
     ports="${line##* }"
-    # Only consider services whose name contains "pmm"
-    [[ "$svc" != *pmm* ]] && continue
-    if [[ "$ports" == *,80,* || "$ports" == 80,* ]]; then
-      PMM_SERVICE="$svc"; PMM_SVC_PORT=80; return
-    fi
-    if [[ "$ports" == *,443,* || "$ports" == 443,* ]]; then
-      PMM_SERVICE="$svc"; PMM_SVC_PORT=443; return
-    fi
+    log "  svc/${svc}  ports: ${ports%,}"
   done <<< "$svc_list"
 
-  # Nothing matched by name - show what services exist and prompt
-  warn "Could not auto-detect PMM service. Services in namespace '${PMM_NAMESPACE}':"
-  kubectl get svc -n "${PMM_NAMESPACE}" --context "${KUBE_CONTEXT}" \
-    --no-headers 2>/dev/null | sed 's/^/  /' >&2 || true
-  prompt_var PMM_SERVICE "Service name to port-forward" "pmm-server"
+  # Pick first service that has port 80 (prefer HTTP); fall back to 443
+  local candidate_80="" candidate_443=""
+  while IFS= read -r line; do
+    [[ -z "$line" ]] && continue
+    svc="${line%% *}"
+    ports="${line##* }"
+    [[ -z "$candidate_80"  && ("$ports" == *,80,*  || "$ports" == 80,*)  ]] && candidate_80="$svc"
+    [[ -z "$candidate_443" && ("$ports" == *,443,* || "$ports" == 443,*) ]] && candidate_443="$svc"
+  done <<< "$svc_list"
+
+  if [[ -n "$candidate_80" ]]; then
+    PMM_SERVICE="$candidate_80"; PMM_SVC_PORT=80
+    log "Auto-selected: svc/${PMM_SERVICE}:${PMM_SVC_PORT}"
+    return
+  fi
+  if [[ -n "$candidate_443" ]]; then
+    PMM_SERVICE="$candidate_443"; PMM_SVC_PORT=443
+    log "Auto-selected: svc/${PMM_SERVICE}:${PMM_SVC_PORT}"
+    return
+  fi
+
+  warn "No service with port 80 or 443 found. Showing all services above - pick one."
+  prompt_var PMM_SERVICE "Service name to port-forward"
   prompt_var PMM_SVC_PORT "Service port" "80"
 }
 
 start_port_forward() {
-  PMM_SERVICE="${PMM_SERVICE:-}"
-  PMM_SVC_PORT="${PMM_SVC_PORT:-}"
   if [[ -z "$PMM_SERVICE" ]]; then
     resolve_pmm_service
   fi
@@ -303,29 +321,50 @@ start_port_forward() {
   [[ "$PMM_SVC_PORT" == "443" ]] && scheme="https"
 
   PF_PORT=$(find_free_port)
-  log "Starting port-forward: svc/${PMM_SERVICE}:${PMM_SVC_PORT} -> localhost:${PF_PORT}"
+
+  # Capture port-forward stderr to a temp file so we can show it on failure
+  local pf_log
+  pf_log=$(mktemp /tmp/pf-log-XXXXXX.txt)
+
+  log "Running: kubectl port-forward svc/${PMM_SERVICE} ${PF_PORT}:${PMM_SVC_PORT} -n ${PMM_NAMESPACE} --context ${KUBE_CONTEXT}"
   kubectl port-forward "svc/${PMM_SERVICE}" "${PF_PORT}:${PMM_SVC_PORT}" \
     -n "${PMM_NAMESPACE}" \
     --context "${KUBE_CONTEXT}" \
-    >/dev/null 2>&1 &
+    >"$pf_log" 2>&1 &
   PF_PID=$!
 
   local i=0
   while [[ "$i" -lt 20 ]]; do
     if ! kill -0 "$PF_PID" 2>/dev/null; then
-      die "Port-forward exited unexpectedly - svc/${PMM_SERVICE}:${PMM_SVC_PORT} may not exist"
+      err "Port-forward process exited. Output was:"
+      sed 's/^/  /' "$pf_log" >&2 || true
+      rm -f "$pf_log"
+      err "Namespace : ${PMM_NAMESPACE}"
+      err "Context   : ${KUBE_CONTEXT}"
+      err "Service   : ${PMM_SERVICE}"
+      err "Port      : ${PMM_SVC_PORT}"
+      err "Services currently in namespace:"
+      kubectl get svc -n "${PMM_NAMESPACE}" --context "${KUBE_CONTEXT}" \
+        --no-headers 2>/dev/null | sed 's/^/  /' >&2 || true
+      die "Port-forward failed - see output above"
     fi
     local readyz_opts=(-sf --max-time 2)
     [[ "$scheme" == "https" ]] && readyz_opts+=(-k)
     if curl "${readyz_opts[@]}" "${scheme}://localhost:${PF_PORT}/v1/readyz" >/dev/null 2>&1; then
       log "PMM reachable on localhost:${PF_PORT} (${scheme})"
       PMM_SCHEME="$scheme"
+      rm -f "$pf_log"
       return 0
     fi
     sleep 1
     i=$((i + 1))
   done
-  die "PMM did not become reachable on localhost:${PF_PORT} after 20s"
+
+  err "Port-forward is running but PMM did not respond on ${scheme}://localhost:${PF_PORT}/v1/readyz after 20s"
+  err "Port-forward output so far:"
+  sed 's/^/  /' "$pf_log" >&2 || true
+  rm -f "$pf_log"
+  die "PMM unreachable - check that the PMM pod is healthy"
 }
 
 # ---------------------------------------------------------------------------
