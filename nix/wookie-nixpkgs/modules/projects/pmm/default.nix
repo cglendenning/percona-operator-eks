@@ -84,6 +84,115 @@ let
       echo "Service Account: $SERVICE_ACCOUNT_NAME"
       echo "Token stored in Vault at: secret/pmm/wookie"
     '';
+
+    # Script to create a Grafana-managed alert rule for MySQL being down,
+    # without using the built-in PMM alert templates.
+    setupGrafanaMysqlDownAlert = pkgs.writeShellScript "setup-grafana-mysql-down-alert" ''
+      set -euo pipefail
+      
+      KUBE_CONTEXT="''${KUBE_CONTEXT:-k3d-pmm}"
+      PMM_NAMESPACE="${cfg.pmm.namespace}"
+      
+      echo "=== Grafana MySQL Down alert rule setup ==="
+      
+      # Get PMM pod
+      PMM_POD=$(${pkgs.kubectl}/bin/kubectl get pod -n "$PMM_NAMESPACE" --context="$KUBE_CONTEXT" \
+        -l app=pmm-server -o jsonpath='{.items[0].metadata.name}')
+      
+      if [ -z "$PMM_POD" ]; then
+        echo "ERROR: PMM pod not found, cannot create Grafana alert rule"
+        exit 1
+      fi
+      
+      echo "PMM pod: $PMM_POD"
+      
+      # Wait for PMM API (and embedded Grafana) to be ready
+      echo "Waiting for PMM API before creating Grafana alert rule..."
+      for i in {1..30}; do
+        if ${pkgs.kubectl}/bin/kubectl exec -n "$PMM_NAMESPACE" --context="$KUBE_CONTEXT" "$PMM_POD" -- \
+          curl -s -o /dev/null -w "%{http_code}" http://localhost/v1/readyz | grep -q "200"; then
+          echo "PMM API ready"
+          break
+        fi
+        if [ "$i" -eq 30 ]; then
+          echo "ERROR: PMM API timeout while waiting to create Grafana alert rule"
+          exit 1
+        fi
+        sleep 2
+      done
+      
+      # Use Grafana's unified alerting provisioning API directly.
+      # We connect to Grafana on its internal port.
+      GRAFANA_URL="http://127.0.0.1:3000"
+      AUTH="-u admin:${cfg.pmm.adminPassword}"
+      
+      echo "Resolving Prometheus/VictoriaMetrics datasource UID for Grafana..."
+      DS_JSON=$(${pkgs.kubectl}/bin/kubectl exec -n "$PMM_NAMESPACE" --context="$KUBE_CONTEXT" "$PMM_POD" -- \
+        curl -sS $AUTH "$GRAFANA_URL/api/datasources" || echo "")
+      
+      # Extract the first datasource with type \"prometheus\" and read its uid.
+      DS_UID=$(printf "%s\n" "$DS_JSON" \
+        | sed -n 's/.*"type":"prometheus"[^}]*"uid":"\([^"]*\)".*/\1/p' \
+        | head -n1)
+      
+      if [ -z "$DS_UID" ]; then
+        echo "ERROR: Could not determine Prometheus datasource UID for Grafana alert rule"
+        exit 1
+      fi
+      
+      echo "Using datasource UID: $DS_UID"
+      
+      echo "Creating Grafana alert rule for MySQL down (Grafana-managed)..."
+      CREATE_RESP=$(${pkgs.kubectl}/bin/kubectl exec -n "$PMM_NAMESPACE" --context="$KUBE_CONTEXT" "$PMM_POD" -- \
+        curl -sS -X POST $AUTH \
+          -H "Content-Type: application/json" \
+          -H "X-Disable-Provenance: true" \
+          -d '{
+            "title": "MySQL down (Grafana)",
+            "ruleGroup": "wookie-pmm",
+            "folderUID": "general",
+            "orgID": 1,
+            "noDataState": "NoData",
+            "execErrState": "Error",
+            "for": "1m",
+            "condition": "A",
+            "labels": {
+              "severity": "critical",
+              "source": "wookie-nix-grafana"
+            },
+            "annotations": {
+              "summary": "MySQL service is down"
+            },
+            "data": [
+              {
+                "refId": "A",
+                "queryType": "",
+                "relativeTimeRange": {
+                  "from": 300,
+                  "to": 0
+                },
+                "datasourceUid": "'"$DS_UID"'",
+                "model": {
+                  "refId": "A",
+                  "expr": "mysql_up == 0",
+                  "intervalMs": 1000,
+                  "maxDataPoints": 43200
+                }
+              }
+            ]
+          }' \
+          "$GRAFANA_URL/api/v1/provisioning/alert-rules" || echo "")
+      
+      if echo "$CREATE_RESP" | grep -qi "error"; then
+        echo "WARNING: Grafana alert rule creation response indicates an error:"
+        echo "$CREATE_RESP"
+      else
+        echo "Grafana alert rule creation response:"
+        echo "$CREATE_RESP"
+      fi
+      
+      echo "=== Grafana MySQL Down alert rule setup complete ==="
+    '';
   };
 
 in
@@ -151,6 +260,7 @@ in
     {
       build.scripts = {
         setup-pmm-token = helpers.setupPmmToken;
+        setup-grafana-mysql-down-alert = helpers.setupGrafanaMysqlDownAlert;
       };
     }
     

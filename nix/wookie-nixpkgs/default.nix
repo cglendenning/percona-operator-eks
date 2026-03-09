@@ -495,6 +495,12 @@ rec {
           echo "Setting up PMM service account token..."
           export KUBE_CONTEXT="${pmmContext}"
           ${pmmClusterConfig.build.scripts.setup-pmm-token}
+          #
+          # Create a Grafana-managed alert rule for MySQL down, not based
+          # on PMM alert templates.
+          echo ""
+          echo "Creating Grafana alert rule: MySQL down (Grafana)..."
+          ${pmmClusterConfig.build.scripts.setup-grafana-mysql-down-alert}
           
           echo ""
           echo "=== PMM Stack Ready ==="
