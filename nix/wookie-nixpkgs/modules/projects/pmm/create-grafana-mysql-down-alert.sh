@@ -223,7 +223,8 @@ extract_ds_uid() {
   local json="$1" uid=""
   case "$JSON_TOOL" in
     jq)
-      uid=$(printf '%s' "$json" | jq -r '[.[] | select(.type == "prometheus")] | first | .uid // empty')
+      # .[0] instead of first - first/0 is not reliably defined before jq 1.6
+      uid=$(printf '%s' "$json" | jq -r '[.[] | select(.type == "prometheus")] | .[0].uid // empty' 2>/dev/null || true)
       ;;
     python3)
       uid=$(printf '%s' "$json" | python3 -c '
@@ -254,7 +255,7 @@ extract_alert_uid() {
   case "$JSON_TOOL" in
     jq)
       uid=$(printf '%s' "$json" \
-        | jq -r --arg t "$title" '[.[] | select(.title == $t)] | first | .uid // empty')
+        | jq -r --arg t "$title" '[.[] | select(.title == $t)] | .[0].uid // empty' 2>/dev/null || true)
       ;;
     python3)
       uid=$(printf '%s' "$json" | python3 -c "
