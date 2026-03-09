@@ -194,36 +194,9 @@ resolve_namespace() {
     return
   fi
 
-  log "Searching for PMM pod across all namespaces..."
+  log "Searching for PMM pod across all namespaces (by name)..."
 
-  local -a selectors=(
-    "app=pmm-server"
-    "app.kubernetes.io/name=pmm-server"
-    "app.kubernetes.io/name=pmm"
-    "app.kubernetes.io/instance=pmm"
-    "app=pmm"
-  )
-
-  local sel result ns pod
-  for sel in "${selectors[@]}"; do
-    result=$(kubectl get pods --all-namespaces --context "${KUBE_CONTEXT}" \
-      -l "$sel" \
-      -o jsonpath='{.items[0].metadata.namespace}{" "}{.items[0].metadata.name}' \
-      2>/dev/null || true)
-    # strip result that is just whitespace (no match)
-    result="${result//  / }"
-    result="${result# }"
-    ns="${result%% *}"
-    pod="${result##* }"
-    if [[ -n "$ns" && -n "$pod" && "$ns" != "$pod" ]]; then
-      PMM_NAMESPACE="$ns"
-      PMM_POD="$pod"
-      log "Auto-detected: namespace='${PMM_NAMESPACE}' pod='${PMM_POD}'"
-      return
-    fi
-  done
-
-  # Fall back: scan all pods for any whose name contains "pmm"
+  local result ns pod
   result=$(kubectl get pods --all-namespaces --context "${KUBE_CONTEXT}" \
     -o jsonpath='{range .items[*]}{.metadata.namespace}{" "}{.metadata.name}{"\n"}{end}' \
     2>/dev/null | grep -i 'pmm' | head -1 || true)
@@ -232,11 +205,11 @@ resolve_namespace() {
   if [[ -n "$ns" && -n "$pod" && "$ns" != "$pod" ]]; then
     PMM_NAMESPACE="$ns"
     PMM_POD="$pod"
-    log "Auto-detected via name match: namespace='${PMM_NAMESPACE}' pod='${PMM_POD}'"
+    log "Auto-detected: namespace='${PMM_NAMESPACE}' pod='${PMM_POD}'"
     return
   fi
 
-  warn "Could not auto-detect PMM namespace"
+  warn "Could not find a pod with 'pmm' in its name across any namespace"
   prompt_var PMM_NAMESPACE "PMM namespace" "pmm"
 }
 
@@ -259,10 +232,9 @@ verify_pmm_running() {
     PMM_POD=""
   fi
 
-  # Find any Running pod with "pmm" in its name using field-selector
+  # Find any pod with "pmm" in its name (field-selector on phase is unreliable in k3d)
   local pod
   pod=$(kubectl get pods -n "${PMM_NAMESPACE}" --context "${KUBE_CONTEXT}" \
-    --field-selector=status.phase=Running \
     -o jsonpath='{range .items[*]}{.metadata.name}{"\n"}{end}' \
     2>/dev/null | grep -i 'pmm' | head -1 || true)
 
