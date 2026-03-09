@@ -214,41 +214,13 @@ resolve_namespace() {
 }
 
 # ---------------------------------------------------------------------------
-# Verify PMM pod is running
+# Verify PMM is reachable - informational only, never fatal
+# The port-forward in start_port_forward() is the real gate.
 # ---------------------------------------------------------------------------
 verify_pmm_running() {
-  log "Checking for a running PMM pod in namespace '${PMM_NAMESPACE}'..."
-
-  # If we already have a pod name (from auto-detection), verify it
-  if [[ -n "$PMM_POD" ]]; then
-    local phase
-    phase=$(kubectl get pod "${PMM_POD}" -n "${PMM_NAMESPACE}" --context "${KUBE_CONTEXT}" \
-      -o jsonpath='{.status.phase}' 2>/dev/null || true)
-    if [[ "$phase" == "Running" ]]; then
-      log "Pod '${PMM_POD}' is Running"
-      return
-    fi
-    warn "Cached pod '${PMM_POD}' returned phase='${phase}' - re-scanning..."
-    PMM_POD=""
-  fi
-
-  # Find any pod with "pmm" in its name (field-selector on phase is unreliable in k3d)
-  local pod
-  pod=$(kubectl get pods -n "${PMM_NAMESPACE}" --context "${KUBE_CONTEXT}" \
-    -o jsonpath='{range .items[*]}{.metadata.name}{"\n"}{end}' \
-    2>/dev/null | grep -i 'pmm' | head -1 || true)
-
-  if [[ -n "$pod" ]]; then
-    PMM_POD="$pod"
-    log "Found running PMM pod: '${PMM_POD}'"
-    return
-  fi
-
-  # Nothing matched - show the user what is actually there and die
-  warn "No running pod with 'pmm' in its name found in namespace '${PMM_NAMESPACE}'."
-  warn "Pods in that namespace:"
-  kubectl get pods -n "${PMM_NAMESPACE}" --context "${KUBE_CONTEXT}" 2>/dev/null >&2 || true
-  die "Check the namespace and pod status above, then re-run"
+  log "Pods in namespace '${PMM_NAMESPACE}':"
+  kubectl get pods -n "${PMM_NAMESPACE}" --context "${KUBE_CONTEXT}" \
+    --no-headers 2>/dev/null | sed 's/^/  /' || true
 }
 
 # ---------------------------------------------------------------------------
@@ -256,6 +228,9 @@ verify_pmm_running() {
 # ---------------------------------------------------------------------------
 PF_PID=""
 PF_PORT=""
+PMM_SERVICE="${PMM_SERVICE:-}"
+PMM_SVC_PORT="${PMM_SVC_PORT:-}"
+PMM_SCHEME="http"
 K3D_TMPKUBE=""
 
 cleanup() {
@@ -286,10 +261,50 @@ find_free_port() {
   echo "$port"
 }
 
+resolve_pmm_service() {
+  log "Looking for PMM service in namespace '${PMM_NAMESPACE}'..."
+
+  # List all services with "pmm" in the name, pick the first one that has port 80 or 443
+  local svc_list
+  svc_list=$(kubectl get svc -n "${PMM_NAMESPACE}" --context "${KUBE_CONTEXT}" \
+    -o jsonpath='{range .items[*]}{.metadata.name}{" "}{range .spec.ports[*]}{.port}{","}{end}{"\n"}{end}' \
+    2>/dev/null || true)
+
+  local line svc ports
+  while IFS= read -r line; do
+    svc="${line%% *}"
+    ports="${line##* }"
+    # Only consider services whose name contains "pmm"
+    [[ "$svc" != *pmm* ]] && continue
+    if [[ "$ports" == *,80,* || "$ports" == 80,* ]]; then
+      PMM_SERVICE="$svc"; PMM_SVC_PORT=80; return
+    fi
+    if [[ "$ports" == *,443,* || "$ports" == 443,* ]]; then
+      PMM_SERVICE="$svc"; PMM_SVC_PORT=443; return
+    fi
+  done <<< "$svc_list"
+
+  # Nothing matched by name - show what services exist and prompt
+  warn "Could not auto-detect PMM service. Services in namespace '${PMM_NAMESPACE}':"
+  kubectl get svc -n "${PMM_NAMESPACE}" --context "${KUBE_CONTEXT}" \
+    --no-headers 2>/dev/null | sed 's/^/  /' >&2 || true
+  prompt_var PMM_SERVICE "Service name to port-forward" "pmm-server"
+  prompt_var PMM_SVC_PORT "Service port" "80"
+}
+
 start_port_forward() {
+  PMM_SERVICE="${PMM_SERVICE:-}"
+  PMM_SVC_PORT="${PMM_SVC_PORT:-}"
+  if [[ -z "$PMM_SERVICE" ]]; then
+    resolve_pmm_service
+  fi
+
+  local scheme="http"
+  [[ "$PMM_SVC_PORT" == "443" ]] && scheme="https"
+
   PF_PORT=$(find_free_port)
-  log "Starting port-forward: svc/pmm-server:80 -> localhost:${PF_PORT}"
-  kubectl port-forward svc/pmm-server "${PF_PORT}:80" \
+  log "Starting port-forward: svc/${PMM_SERVICE}:${PMM_SVC_PORT} -> localhost:${PF_PORT}"
+  kubectl port-forward "svc/${PMM_SERVICE}" "${PF_PORT}:${PMM_SVC_PORT}" \
     -n "${PMM_NAMESPACE}" \
     --context "${KUBE_CONTEXT}" \
     >/dev/null 2>&1 &
@@ -298,10 +313,13 @@ start_port_forward() {
   local i=0
   while [[ "$i" -lt 20 ]]; do
     if ! kill -0 "$PF_PID" 2>/dev/null; then
-      die "Port-forward process exited unexpectedly - ensure svc/pmm-server exists and port 80 is open"
+      die "Port-forward exited unexpectedly - svc/${PMM_SERVICE}:${PMM_SVC_PORT} may not exist"
     fi
-    if curl -sf --max-time 2 "http://localhost:${PF_PORT}/v1/readyz" >/dev/null 2>&1; then
-      log "PMM reachable on localhost:${PF_PORT}"
+    local readyz_opts=(-sf --max-time 2)
+    [[ "$scheme" == "https" ]] && readyz_opts+=(-k)
+    if curl "${readyz_opts[@]}" "${scheme}://localhost:${PF_PORT}/v1/readyz" >/dev/null 2>&1; then
+      log "PMM reachable on localhost:${PF_PORT} (${scheme})"
+      PMM_SCHEME="$scheme"
       return 0
     fi
     sleep 1
@@ -385,14 +403,17 @@ main() {
 
   start_port_forward
 
-  local base_url="http://localhost:${PF_PORT}/graph"
+  local curl_opts=(-s)
+  [[ "$PMM_SCHEME" == "https" ]] && curl_opts+=(-k)
+
+  local base_url="${PMM_SCHEME}://localhost:${PF_PORT}/graph"
   local auth="${PMM_ADMIN_PASSWORD:+admin:${PMM_ADMIN_PASSWORD}}"
   local alert_title="MySQL down (Grafana)"
 
   # --- Fetch datasource UID ---
   log "Fetching Grafana datasources..."
   local ds_json
-  if ! ds_json=$(curl -sf -u "$auth" "${base_url}/api/datasources" 2>&1); then
+  if ! ds_json=$(curl "${curl_opts[@]}" -f -u "$auth" "${base_url}/api/datasources" 2>&1); then
     die "Could not reach Grafana API at ${base_url} - check credentials and PMM health"
   fi
 
@@ -412,7 +433,7 @@ main() {
 
   log "Checking for existing alert rule '$alert_title'..."
   local existing_rules
-  if existing_rules=$(curl -sf -u "$auth" "$api_url" 2>/dev/null); then
+  if existing_rules=$(curl "${curl_opts[@]}" -f -u "$auth" "$api_url" 2>/dev/null); then
     existing_uid=$(extract_alert_uid "$existing_rules" "$alert_title")
   fi
 
@@ -452,7 +473,7 @@ print(json.dumps(d))
   # --- Submit ---
   log "${method}ing alert rule via provisioning API..."
   local resp http_code
-  resp=$(curl -s -w '\n%{http_code}' -X "$method" \
+  resp=$(curl "${curl_opts[@]}" -w '\n%{http_code}' -X "$method" \
     -u "$auth" \
     -H "Content-Type: application/json" \
     -H "X-Disable-Provenance: true" \
