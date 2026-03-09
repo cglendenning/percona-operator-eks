@@ -125,34 +125,49 @@ resolve_context() {
     return
   fi
 
-  # --- 2. k3d clusters not yet merged into kubeconfig ---
+  # --- 2. k3d clusters not yet in kubeconfig ---
+  # Rather than trying to merge into ~/.kube/config (which may not be what
+  # kubectl is actually reading in WSL), pull the kubeconfig directly from
+  # k3d, write it to a temp file, and prepend it to KUBECONFIG for this
+  # process only. Nothing is permanently modified.
   if command -v k3d >/dev/null 2>&1; then
     local -a k3d_clusters=()
     mapfile -t k3d_clusters < <(
       k3d cluster list 2>/dev/null | awk 'NR>1 && $1!="" {print $1}' || true)
 
     if [[ ${#k3d_clusters[@]} -gt 0 ]]; then
-      log "k3d clusters found but not in kubeconfig: ${k3d_clusters[*]}"
-      log "Merging k3d kubeconfig(s) into ~/.kube/config ..."
+      log "k3d clusters found (not yet in kubeconfig): ${k3d_clusters[*]}"
 
-      local cl
-      for cl in "${k3d_clusters[@]}"; do
-        k3d kubeconfig merge "$cl" --kubeconfig-merge-default >/dev/null 2>&1 \
-          && log "  merged: $cl" \
-          || warn "  failed to merge kubeconfig for cluster: $cl"
-      done
-
-      # Retry now that contexts should exist
-      mapfile -t all_contexts < <(kubectl config get-contexts -o name 2>/dev/null || true)
-      mapfile -t k3d_contexts < <(
-        printf '%s\n' "${all_contexts[@]+"${all_contexts[@]}"}" | grep '^k3d-' || true)
-
-      if [[ ${#k3d_contexts[@]} -gt 0 ]]; then
-        pick_context_from_list k3d_contexts
-        return
+      local cluster
+      if [[ ${#k3d_clusters[@]} -eq 1 ]]; then
+        cluster="${k3d_clusters[0]}"
+        log "Using k3d cluster: $cluster"
+      else
+        log "Multiple k3d clusters:"
+        local i=0
+        while [[ $i -lt ${#k3d_clusters[@]} ]]; do
+          printf '  %d) %s\n' "$((i+1))" "${k3d_clusters[$i]}"
+          i=$((i+1))
+        done
+        cluster="${k3d_clusters[0]}"
+        prompt_var cluster "k3d cluster to use" "${k3d_clusters[0]}"
       fi
 
-      warn "Kubeconfig merge completed but still no k3d contexts visible - is KUBECONFIG set?"
+      local tmpkube
+      tmpkube=$(mktemp /tmp/k3d-kubeconfig-XXXXXX.yaml)
+      K3D_TMPKUBE="$tmpkube"  # picked up by cleanup()
+
+      if k3d kubeconfig get "$cluster" > "$tmpkube" 2>/dev/null; then
+        export KUBECONFIG="${tmpkube}:${KUBECONFIG:-${HOME}/.kube/config}"
+        log "Injected k3d kubeconfig for cluster '$cluster'"
+        KUBE_CONTEXT="k3d-${cluster}"
+        log "Using context: $KUBE_CONTEXT"
+        return
+      else
+        warn "k3d kubeconfig get '$cluster' failed"
+        rm -f "$tmpkube"
+        K3D_TMPKUBE=""
+      fi
     fi
   fi
 
@@ -272,6 +287,7 @@ verify_pmm_running() {
 # ---------------------------------------------------------------------------
 PF_PID=""
 PF_PORT=""
+K3D_TMPKUBE=""
 
 cleanup() {
   if [[ -n "$PF_PID" ]] && kill -0 "$PF_PID" 2>/dev/null; then
@@ -279,6 +295,7 @@ cleanup() {
     kill "$PF_PID" 2>/dev/null || true
     wait "$PF_PID" 2>/dev/null || true
   fi
+  [[ -n "$K3D_TMPKUBE" ]] && rm -f "$K3D_TMPKUBE"
 }
 trap cleanup EXIT
 
