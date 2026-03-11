@@ -1,0 +1,113 @@
+Manual steps to create the "No MySQL Instances Monitored" alert rule via Grafana ruler API.
+Assumes port-forward is running: kubectl port-forward svc/<pmm-svc> 18080:443 -n <namespace>
+
+-----------------------------------------------------------------------
+STEP 1: Get the default datasource UID
+-----------------------------------------------------------------------
+
+curl -sk -u admin:admin https://localhost:18080/graph/api/datasources \
+  | jq -r 'map(select(.isDefault == true)) | .[0].uid'
+
+Save the output as DS_UID.
+
+-----------------------------------------------------------------------
+STEP 2: Get or create the wookie-pmm Grafana folder
+-----------------------------------------------------------------------
+
+# Check if it exists (returns UID if found, empty if not)
+curl -sk -u admin:admin https://localhost:18080/graph/api/folders \
+  | jq -r '.[] | select(.title == "wookie-pmm") | .uid'
+
+# If nothing returned, create it
+curl -sk -X POST \
+  -u admin:admin \
+  -H "Content-Type: application/json" \
+  -d '{"title":"wookie-pmm"}' \
+  https://localhost:18080/graph/api/folders | jq -r '.uid'
+
+Save the output as FOLDER_UID.
+
+-----------------------------------------------------------------------
+STEP 3: Write the payload to /tmp/no-mysql-alert.json
+-----------------------------------------------------------------------
+
+Replace <DS_UID> with the value from Step 1.
+
+{
+  "name": "No MySQL Instances Monitored",
+  "interval": "1m",
+  "rules": [{
+    "grafana_alert": {
+      "title": "No MySQL Instances Monitored",
+      "condition": "B",
+      "data": [
+        {
+          "refId": "A",
+          "queryType": "",
+          "relativeTimeRange": {"from": 600, "to": 0},
+          "datasourceUid": "<DS_UID>",
+          "model": {
+            "expr": "absent(mysql_global_status_uptime)",
+            "refId": "A",
+            "legendFormat": "",
+            "instant": false,
+            "range": true
+          }
+        },
+        {
+          "refId": "B",
+          "queryType": "",
+          "relativeTimeRange": {"from": 0, "to": 0},
+          "datasourceUid": "__expr__",
+          "model": {
+            "type": "threshold",
+            "refId": "B",
+            "conditions": [{
+              "evaluator": {"params": [0], "type": "gt"},
+              "operator": {"type": "and"},
+              "query": {"params": ["A"]},
+              "reducer": {"params": [], "type": "last"}
+            }]
+          }
+        }
+      ],
+      "no_data_state": "OK",
+      "exec_err_state": "Alerting",
+      "for": "120s",
+      "labels": {"source": "wookie", "severity": "critical"},
+      "annotations": {}
+    }
+  }]
+}
+
+Logic:
+  absent(mysql_global_status_uptime) returns 1 when no MySQL instances are reporting
+  to PMM, and nothing (empty vector) when instances are present.
+  Condition B (threshold gt 0) fires when A = 1 (absent = true).
+  no_data_state=OK means: empty result on B = MySQL is present = not alerting.
+
+-----------------------------------------------------------------------
+STEP 4: Submit
+-----------------------------------------------------------------------
+
+Replace <FOLDER_UID> with the value from Step 2.
+
+curl -sk -X POST \
+  -u admin:admin \
+  -H "Content-Type: application/json" \
+  -d @/tmp/no-mysql-alert.json \
+  "https://localhost:18080/graph/api/ruler/grafana/api/v1/rules/<FOLDER_UID>"
+
+Expected response: HTTP 202
+
+-----------------------------------------------------------------------
+STEP 5: Verify
+-----------------------------------------------------------------------
+
+curl -sk -u admin:admin \
+  "https://localhost:18080/graph/api/ruler/grafana/api/v1/rules/<FOLDER_UID>" | jq .
+
+-----------------------------------------------------------------------
+NOTE: If /graph/api/ returns 404, PMM 3 may use /api/ instead.
+      Swap the prefix in Steps 1, 2, 4, and 5.
+-----------------------------------------------------------------------
