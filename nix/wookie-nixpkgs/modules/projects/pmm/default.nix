@@ -51,10 +51,12 @@ let
           restartPolicy = "OnFailure";
           containers = [{
             name    = "provisioner";
-            image   = "curlimages/curl:8.11.0";
+            image   = "alpine:3.21";
             env     = [{ name = "PMM_ADMIN_PASSWORD"; value = cfg.adminPassword; }];
             command = [ "/bin/sh" "-c" ''
               set -eu
+              apk add --no-cache curl jq >/dev/null 2>&1
+
               RULES_DIR=/etc/pmm-alerts
               PMM_URL=https://${cfg.serviceName}.${cfg.namespace}.svc.cluster.local
 
@@ -69,31 +71,121 @@ let
                 i=$((i + 1))
               done
 
+              # Fetch the default datasource UID - needed for Grafana ruler API payloads.
+              DS_UID=$(curl -sfk -u "admin:$PMM_ADMIN_PASSWORD" "$PMM_URL/graph/api/datasources" \
+                | jq -r 'map(select(.isDefault == true)) | .[0].uid // .[0].uid // "default"')
+              echo "Datasource UID: $DS_UID"
+
+              # Ensure the wookie-pmm Grafana folder exists and get its UID.
+              FOLDER_UID=$(curl -sfk -u "admin:$PMM_ADMIN_PASSWORD" "$PMM_URL/graph/api/folders" \
+                | jq -r '.[] | select(.title == "wookie-pmm") | .uid' | head -1)
+              if [ -z "$FOLDER_UID" ]; then
+                echo "Creating 'wookie-pmm' Grafana folder..."
+                FOLDER_UID=$(curl -sfk -X POST \
+                  -u "admin:$PMM_ADMIN_PASSWORD" \
+                  -H "Content-Type: application/json" \
+                  -d '{"title":"wookie-pmm"}' \
+                  "$PMM_URL/graph/api/folders" | jq -r '.uid')
+              fi
+              echo "Folder UID: $FOLDER_UID"
+
               echo "Provisioning rules from $RULES_DIR ..."
               for f in "$RULES_DIR"/*.json; do
                 [ -f "$f" ] || { echo "No rule files found"; break; }
-                rule_name=$(sed -n 's/.*"name"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$f" | head -1)
-                echo "Processing: $rule_name"
+                RULE_JSON=$(cat "$f")
+                RULE_NAME=$(echo "$RULE_JSON" | jq -r '.name')
+                echo "Processing: $RULE_NAME"
 
-                if curl -sfk -u "admin:$PMM_ADMIN_PASSWORD" \
-                    "$PMM_URL/v1/alerting/rules" 2>/dev/null \
-                    | grep -qF "\"$rule_name\""; then
-                  echo "  already exists - skipping"
-                  continue
-                fi
+                if echo "$RULE_JSON" | jq -e 'has("template_name")' >/dev/null 2>&1; then
+                  # Template-based rule: POST to PMM /v1/alerting/rules.
+                  # Idempotency: skip if a rule with this name already exists.
+                  if curl -sfk -u "admin:$PMM_ADMIN_PASSWORD" \
+                      "$PMM_URL/v1/alerting/rules" 2>/dev/null \
+                      | grep -qF "\"$RULE_NAME\""; then
+                    echo "  already exists - skipping"
+                    continue
+                  fi
+                  result=$(echo "$RULE_JSON" | curl -sk -o /tmp/resp.txt -w "%{http_code}" \
+                    -X POST \
+                    -u "admin:$PMM_ADMIN_PASSWORD" \
+                    -H "Content-Type: application/json" \
+                    -d @- \
+                    "$PMM_URL/v1/alerting/rules")
+                  if [ "$result" = "200" ] || [ "$result" = "201" ]; then
+                    echo "  created (HTTP $result)"
+                  else
+                    echo "  ERROR: HTTP $result: $(cat /tmp/resp.txt)"
+                    exit 1
+                  fi
 
-                result=$(curl -sk -o /tmp/resp.txt -w "%{http_code}" \
-                  -X POST \
-                  -u "admin:$PMM_ADMIN_PASSWORD" \
-                  -H "Content-Type: application/json" \
-                  -d "@$f" \
-                  "$PMM_URL/v1/alerting/rules")
-
-                if [ "$result" = "200" ] || [ "$result" = "201" ]; then
-                  echo "  created (HTTP $result)"
                 else
-                  echo "  ERROR: HTTP $result: $(cat /tmp/resp.txt)"
-                  exit 1
+                  # Custom expr rule: POST to Grafana ruler API.
+                  # Each rule gets its own group (named after the rule) so POSTs are idempotent.
+                  RULE_EXPR=$(echo "$RULE_JSON" | jq -r '.expr')
+                  RULE_FOR=$(echo "$RULE_JSON" | jq -r '.for // "60s"')
+                  RULE_NO_DATA=$(echo "$RULE_JSON" | jq -r '.no_data_state // "OK"')
+                  RULE_LABELS=$(echo "$RULE_JSON" | jq '.custom_labels // {}')
+
+                  PAYLOAD=$(jq -n \
+                    --arg name    "$RULE_NAME" \
+                    --arg expr    "$RULE_EXPR" \
+                    --arg for_dur "$RULE_FOR" \
+                    --arg no_data "$RULE_NO_DATA" \
+                    --arg ds_uid  "$DS_UID" \
+                    --argjson labels "$RULE_LABELS" \
+                    '{
+                      name: $name,
+                      interval: "1m",
+                      rules: [{
+                        grafana_alert: {
+                          title: $name,
+                          condition: "B",
+                          data: [
+                            {
+                              refId: "A",
+                              queryType: "",
+                              relativeTimeRange: {from: 600, to: 0},
+                              datasourceUid: $ds_uid,
+                              model: {expr: $expr, refId: "A", legendFormat: "", instant: false, range: true}
+                            },
+                            {
+                              refId: "B",
+                              queryType: "",
+                              relativeTimeRange: {from: 0, to: 0},
+                              datasourceUid: "__expr__",
+                              model: {
+                                type: "threshold",
+                                refId: "B",
+                                conditions: [{
+                                  evaluator: {params: [0], type: "gt"},
+                                  operator: {type: "and"},
+                                  query: {params: ["A"]},
+                                  reducer: {params: [], type: "last"}
+                                }]
+                              }
+                            }
+                          ],
+                          no_data_state: $no_data,
+                          exec_err_state: "Alerting",
+                          for: $for_dur,
+                          labels: $labels,
+                          annotations: {}
+                        }
+                      }]
+                    }')
+
+                  result=$(echo "$PAYLOAD" | curl -sk -o /tmp/resp.txt -w "%{http_code}" \
+                    -X POST \
+                    -u "admin:$PMM_ADMIN_PASSWORD" \
+                    -H "Content-Type: application/json" \
+                    -d @- \
+                    "$PMM_URL/graph/api/ruler/grafana/api/v1/rules/$FOLDER_UID")
+                  if [ "$result" = "200" ] || [ "$result" = "202" ]; then
+                    echo "  created/updated (HTTP $result)"
+                  else
+                    echo "  ERROR: HTTP $result: $(cat /tmp/resp.txt)"
+                    exit 1
+                  fi
                 fi
               done
               echo "=== pmm-alert-provisioner: done ==="

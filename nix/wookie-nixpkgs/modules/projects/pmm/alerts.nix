@@ -14,22 +14,15 @@
     filters       = [];
   }
   {
-    # Fires when PMM is monitoring zero MySQL instances - indicates the
-    # monitoring pipeline itself has lost visibility of all MySQL services.
-    # Template name: verify against GET /v1/alerting/templates on your PMM instance.
-    template_name = "pmm_mysql_not_enough_instances";
+    # Custom expr rule (no PMM template) - provisioned via Grafana ruler API.
+    # absent() returns 1 when no mysql_global_status_uptime series exist (zero
+    # MySQL instances reporting to PMM), and nothing when instances are present.
+    # no_data_state=OK means: no data on the threshold check = MySQL is present = not alerting.
     name          = "No MySQL Instances Monitored";
     group         = "wookie-pmm";
-    params        = [
-      {
-        name  = "threshold";
-        type  = "PARAM_TYPE_FLOAT";
-        float = { value = 1; };
-      }
-    ];
+    expr          = "absent(mysql_global_status_uptime)";
     for           = "120s";
-    severity      = "SEVERITY_CRITICAL";
-    custom_labels = { source = "wookie"; };
-    filters       = [];
+    no_data_state = "OK";
+    custom_labels = { source = "wookie"; severity = "critical"; };
   }
 ]
