@@ -60,7 +60,7 @@ Replace <DS_UID> with the value from Step 1.
           "relativeTimeRange": {"from": 0, "to": 0},
           "datasourceUid": "__expr__",
           "model": {
-            "type": "threshold",
+            "type": "classic_conditions",
             "refId": "B",
             "conditions": [{
               "evaluator": {"params": [0], "type": "gt"},

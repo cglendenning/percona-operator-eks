@@ -154,7 +154,7 @@ let
                               relativeTimeRange: {from: 0, to: 0},
                               datasourceUid: "__expr__",
                               model: {
-                                type: "threshold",
+                                type: "classic_conditions",
                                 refId: "B",
                                 conditions: [{
                                   evaluator: {params: [0], type: "gt"},
