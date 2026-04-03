@@ -81,8 +81,24 @@ function buildDesiredChannels(
   ];
 }
 
+/** Recursively sort object keys so JSON comparison is order-insensitive. */
+function sortKeysDeep(val: unknown): unknown {
+  if (val === null || val === undefined) return val;
+  if (typeof val !== "object") return val;
+  if (Array.isArray(val)) return val.map(sortKeysDeep);
+  const obj = val as Record<string, unknown>;
+  const out: Record<string, unknown> = {};
+  for (const k of Object.keys(obj).sort()) {
+    const v = obj[k];
+    if (v !== undefined) {
+      out[k] = sortKeysDeep(v);
+    }
+  }
+  return out;
+}
+
 function normalizeChannels(ch: unknown): string {
-  if (!Array.isArray(ch)) return "[]";
+  if (!Array.isArray(ch)) return JSON.stringify(sortKeysDeep([]));
   const arr = ch as Obj[];
   const sorted: Obj[] = [...arr].map((c: Obj) => {
     const sources = Array.isArray(c.sourcesList) ? [...(c.sourcesList as Obj[])] : [];
@@ -92,7 +108,7 @@ function normalizeChannels(ch: unknown): string {
     return { ...c, sourcesList: sources } as Obj;
   });
   sorted.sort((a, b) => asString(a.name).localeCompare(asString(b.name)));
-  return JSON.stringify(sorted);
+  return JSON.stringify(sortKeysDeep(sorted));
 }
 
 function channelsMatchSpec(actual: unknown, expected: Obj[]): boolean {
