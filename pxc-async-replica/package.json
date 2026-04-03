@@ -1,0 +1,19 @@
+{
+  "name": "pxc-async-replica-controller",
+  "version": "1.0.0",
+  "private": true,
+  "main": "dist/index.js",
+  "type": "commonjs",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "start": "node dist/index.js"
+  },
+  "dependencies": {
+    "@kubernetes/client-node": "^0.22.3"
+  },
+  "devDependencies": {
+    "@types/node": "^20.11.30",
+    "esbuild": "^0.25.0",
+    "typescript": "^5.5.4"
+  }
+}
