@@ -1,7 +1,12 @@
 import * as fs from "fs";
 import * as k8s from "@kubernetes/client-node";
-
-type Obj = Record<string, unknown>;
+import {
+  type Obj,
+  type SourceEntry,
+  buildDesiredChannels,
+  channelsMatchSpec,
+  normalizeChannels,
+} from "./channel-normalize";
 
 function env(name: string): string {
   const v = process.env[name];
@@ -60,59 +65,6 @@ function parseIntEnv(name: string, defaultValue: number): number {
   if (!raw) return defaultValue;
   const n = parseInt(raw, 10);
   return Number.isFinite(n) ? n : defaultValue;
-}
-
-type SourceEntry = { host: string; port: number; weight: number };
-
-function buildDesiredChannels(
-  channelName: string,
-  sources: SourceEntry[]
-): Obj[] {
-  return [
-    {
-      name: channelName,
-      isSource: false,
-      sourcesList: sources.map((s) => ({
-        host: s.host,
-        port: s.port,
-        weight: s.weight,
-      })),
-    },
-  ];
-}
-
-/** Recursively sort object keys so JSON comparison is order-insensitive. */
-function sortKeysDeep(val: unknown): unknown {
-  if (val === null || val === undefined) return val;
-  if (typeof val !== "object") return val;
-  if (Array.isArray(val)) return val.map(sortKeysDeep);
-  const obj = val as Record<string, unknown>;
-  const out: Record<string, unknown> = {};
-  for (const k of Object.keys(obj).sort()) {
-    const v = obj[k];
-    if (v !== undefined) {
-      out[k] = sortKeysDeep(v);
-    }
-  }
-  return out;
-}
-
-function normalizeChannels(ch: unknown): string {
-  if (!Array.isArray(ch)) return JSON.stringify(sortKeysDeep([]));
-  const arr = ch as Obj[];
-  const sorted: Obj[] = [...arr].map((c: Obj) => {
-    const sources = Array.isArray(c.sourcesList) ? [...(c.sourcesList as Obj[])] : [];
-    sources.sort((a, b) =>
-      asString(a.host).localeCompare(asString(b.host))
-    );
-    return { ...c, sourcesList: sources } as Obj;
-  });
-  sorted.sort((a, b) => asString(a.name).localeCompare(asString(b.name)));
-  return JSON.stringify(sortKeysDeep(sorted));
-}
-
-function channelsMatchSpec(actual: unknown, expected: Obj[]): boolean {
-  return normalizeChannels(actual) === normalizeChannels(expected);
 }
 
 function formatK8sError(err: unknown): string {
