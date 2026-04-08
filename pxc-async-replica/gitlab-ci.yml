@@ -64,7 +64,8 @@ test:
           (
             cd "$dir"
             if [ -f package-lock.json ]; then npm ci; else npm install; fi
-            npm test
+            # Skip packages with no "test" script (npm exits 0)
+            npm run test --if-present
           )
           count=$((count + 1))
         fi
