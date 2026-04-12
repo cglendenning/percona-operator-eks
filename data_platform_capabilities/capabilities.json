@@ -2,7 +2,8 @@
   "jiraBaseUrl": "https://your-org.atlassian.net/browse/",
   "capabilities": [
     {
-      "description": "On-prem s3-compatible storage",
+      "name": "On-prem s3-compatible storage",
+      "description": "Object storage that exposes S3-compatible APIs on infrastructure you operate. Used for application data lakes, backup targets, and shared blobs without egress to public cloud object stores.",
       "design": {
         "status": "green",
         "tickets": [
@@ -14,7 +15,10 @@
         "status": "yellow",
         "tickets": [
           { "key": "INFRA-710", "url": "https://your-org.atlassian.net/browse/INFRA-710" },
-          { "key": "INFRA-711", "url": "https://your-org.atlassian.net/browse/INFRA-711" }
+          { "key": "INFRA-711", "url": "https://your-org.atlassian.net/browse/INFRA-711" },
+          { "key": "INFRA-712", "url": "https://your-org.atlassian.net/browse/INFRA-712" },
+          { "key": "INFRA-713", "url": "https://your-org.atlassian.net/browse/INFRA-713" },
+          { "key": "INFRA-714", "url": "https://your-org.atlassian.net/browse/INFRA-714" }
         ]
       },
       "operations": {
@@ -23,16 +27,25 @@
       }
     },
     {
-      "description": "Synchronous Percona db cluster",
+      "name": "Synchronous Percona db cluster",
+      "description": "Percona XtraDB Cluster (PXC) deployed with synchronous replication so committed writes are acknowledged across quorum before returning to clients. Provides strong consistency for transactional workloads.",
       "design": {
         "status": "yellow",
-        "tickets": [{ "key": "DB-1204", "url": "https://your-org.atlassian.net/browse/DB-1204" }]
+        "tickets": [
+          { "key": "DB-1204", "url": "https://your-org.atlassian.net/browse/DB-1204" },
+          { "key": "DB-1205", "url": "https://your-org.atlassian.net/browse/DB-1205" },
+          { "key": "DB-1206", "url": "https://your-org.atlassian.net/browse/DB-1206" },
+          { "key": "DB-1207", "url": "https://your-org.atlassian.net/browse/DB-1207" },
+          { "key": "DB-1208", "url": "https://your-org.atlassian.net/browse/DB-1208" }
+        ]
       },
       "develop": {
         "status": "red",
         "tickets": [
           { "key": "DB-1210", "url": "https://your-org.atlassian.net/browse/DB-1210" },
-          { "key": "DB-1211", "url": "https://your-org.atlassian.net/browse/DB-1211" }
+          { "key": "DB-1211", "url": "https://your-org.atlassian.net/browse/DB-1211" },
+          { "key": "DB-1212", "url": "https://your-org.atlassian.net/browse/DB-1212" },
+          { "key": "DB-1213", "url": "https://your-org.atlassian.net/browse/DB-1213" }
         ]
       },
       "operations": {
@@ -44,7 +57,8 @@
       }
     },
     {
-      "description": "HAproxy read only endpoint (Round-robin distribution) for all 4 clusters",
+      "name": "HAproxy read only endpoint (Round-robin distribution) for all 4 clusters",
+      "description": "A dedicated HAProxy front end for read-only traffic, load-balanced round-robin across replicas in four clusters. Spreads SELECT-style load while keeping writes on the separate write path.",
       "design": {
         "status": "red",
         "tickets": [{ "key": "NET-440", "url": "https://your-org.atlassian.net/browse/NET-440" }]
@@ -53,16 +67,24 @@
         "status": "green",
         "tickets": [
           { "key": "NET-451", "url": "https://your-org.atlassian.net/browse/NET-451" },
-          { "key": "NET-452", "url": "https://your-org.atlassian.net/browse/NET-452" }
+          { "key": "NET-452", "url": "https://your-org.atlassian.net/browse/NET-452" },
+          { "key": "NET-453", "url": "https://your-org.atlassian.net/browse/NET-453" },
+          { "key": "NET-454", "url": "https://your-org.atlassian.net/browse/NET-454" },
+          { "key": "NET-455", "url": "https://your-org.atlassian.net/browse/NET-455" }
         ]
       },
       "operations": {
         "status": "yellow",
-        "tickets": [{ "key": "OPS-915", "url": "https://your-org.atlassian.net/browse/OPS-915" }]
+        "tickets": [
+          { "key": "OPS-915", "url": "https://your-org.atlassian.net/browse/OPS-915" },
+          { "key": "OPS-916", "url": "https://your-org.atlassian.net/browse/OPS-916" },
+          { "key": "OPS-917", "url": "https://your-org.atlassian.net/browse/OPS-917" }
+        ]
       }
     },
     {
-      "description": "HAProxy db write endpoint (no distribution) for all 4 clusters",
+      "name": "HAProxy db write endpoint (no distribution) for all 4 clusters",
+      "description": "Single logical write entry point through HAProxy without splitting writes across nodes—traffic lands on the designated primary writer. Avoids multi-master conflicts for OLTP write paths.",
       "design": {
         "status": "green",
         "tickets": [{ "key": "NET-500", "url": "https://your-org.atlassian.net/browse/NET-500" }]
@@ -80,7 +102,8 @@
       }
     },
     {
-      "description": "dr-std pxc async replica (Active/Passive)",
+      "name": "dr-std pxc async replica (Active/Passive)",
+      "description": "Asynchronous PXC replica at the standard DR site in an active/passive pairing. Accepts delayed replication from primary for failover and read-after-disaster validation without impacting production latency.",
       "design": {
         "status": "yellow",
         "tickets": [
@@ -96,12 +119,16 @@
         "status": "green",
         "tickets": [
           { "key": "OPS-940", "url": "https://your-org.atlassian.net/browse/OPS-940" },
-          { "key": "OPS-941", "url": "https://your-org.atlassian.net/browse/OPS-941" }
+          { "key": "OPS-941", "url": "https://your-org.atlassian.net/browse/OPS-941" },
+          { "key": "OPS-942", "url": "https://your-org.atlassian.net/browse/OPS-942" },
+          { "key": "OPS-943", "url": "https://your-org.atlassian.net/browse/OPS-943" },
+          { "key": "OPS-944", "url": "https://your-org.atlassian.net/browse/OPS-944" }
         ]
       }
     },
     {
-      "description": "dr-sec pxc async replica (Active/Passive)",
+      "name": "dr-sec pxc async replica (Active/Passive)",
+      "description": "Secondary DR footprint with async PXC replica for regulatory or geographic separation. Cold or warm standby depending on RPO/RTO; cutover procedures align with the standard DR tier.",
       "design": {
         "status": "red",
         "tickets": [{ "key": "DR-310", "url": "https://your-org.atlassian.net/browse/DR-310" }]
@@ -119,7 +146,8 @@
       }
     },
     {
-      "description": "dr-std seaweed async replication controller pod (Active/Passive)",
+      "name": "dr-std seaweed async replication controller pod (Active/Passive)",
+      "description": "Kubernetes controller at the standard DR site orchestrating asynchronous SeaweedFS replication. Monitors volume lifecycle and failover hooks between active and passive object tiers.",
       "design": {
         "status": "green",
         "tickets": [
@@ -140,7 +168,8 @@
       }
     },
     {
-      "description": "dr-sec seaweed async replication controller pod (Active/Passive)",
+      "name": "dr-sec seaweed async replication controller pod (Active/Passive)",
+      "description": "Companion controller for the secondary DR environment, managing Seaweed async replication policies and health checks independent of the std DR stack.",
       "design": {
         "status": "yellow",
         "tickets": [{ "key": "SW-201", "url": "https://your-org.atlassian.net/browse/SW-201" }]
@@ -158,7 +187,8 @@
       }
     },
     {
-      "description": "pxc-backups s3 bucket controller pod",
+      "name": "pxc-backups s3 bucket controller pod",
+      "description": "Operator-managed workload that coordinates Percona backup streams into the designated S3 bucket. Handles schedules, retention alignment, and credentials rotation with the storage team.",
       "design": {
         "status": "red",
         "tickets": [
@@ -168,7 +198,13 @@
       },
       "develop": {
         "status": "green",
-        "tickets": [{ "key": "BKUP-60", "url": "https://your-org.atlassian.net/browse/BKUP-60" }]
+        "tickets": [
+          { "key": "BKUP-60", "url": "https://your-org.atlassian.net/browse/BKUP-60" },
+          { "key": "BKUP-61", "url": "https://your-org.atlassian.net/browse/BKUP-61" },
+          { "key": "BKUP-62", "url": "https://your-org.atlassian.net/browse/BKUP-62" },
+          { "key": "BKUP-63", "url": "https://your-org.atlassian.net/browse/BKUP-63" },
+          { "key": "BKUP-64", "url": "https://your-org.atlassian.net/browse/BKUP-64" }
+        ]
       },
       "operations": {
         "status": "yellow",
@@ -179,7 +215,8 @@
       }
     },
     {
-      "description": "Seaweed Filer on each k8s cluster",
+      "name": "Seaweed Filer on each k8s cluster",
+      "description": "SeaweedFS Filer service colocated per cluster to provide POSIX-like file semantics and metadata routing on top of volume servers. Keeps namespace consistent for apps that need file APIs beside raw object access.",
       "design": {
         "status": "green",
         "tickets": [{ "key": "SW-330", "url": "https://your-org.atlassian.net/browse/SW-330" }]
