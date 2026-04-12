@@ -17,6 +17,16 @@ type Pod = {
   };
 };
 
+function asDetailString(x: unknown, emptyLabel: string): string {
+  if (x == null || x === "") return emptyLabel;
+  if (typeof x === "string") return x;
+  try {
+    return JSON.stringify(x);
+  } catch {
+    return String(x);
+  }
+}
+
 type PXC = {
   metadata?: { name?: string; creationTimestamp?: string };
   spec?: {
@@ -27,7 +37,7 @@ type PXC = {
   };
   status?: {
     state?: string;
-    message?: string;
+    message?: unknown;
     ready?: string;
     size?: number;
     pxc?: { image?: string; ready?: number; size?: number; version?: string };
@@ -60,7 +70,7 @@ type NetworkPolicy = { metadata?: { name?: string } };
 type Event = {
   type?: string;
   reason?: string;
-  message?: string;
+  message?: unknown;
   involvedObject?: { kind?: string; name?: string };
   lastTimestamp?: string;
   count?: number;
@@ -127,7 +137,8 @@ export async function collectFindings(ns: string): Promise<Finding[]> {
   for (const cr of pxcItems) {
     const name = cr.metadata?.name ?? "?";
     const state = cr.status?.state ?? "";
-    const message = cr.status?.message ?? "";
+    const messageRaw = cr.status?.message;
+    const messageStr = asDetailString(messageRaw, "");
     const sev: Finding["severity"] =
       state === "ready"
         ? "ok"
@@ -138,7 +149,7 @@ export async function collectFindings(ns: string): Promise<Finding[]> {
       severity: sev,
       code: "PXC_STATUS",
       title: `PXC CR "${name}" status.state=${state || "(empty)"}`,
-      detail: message || "(no status.message)",
+      detail: messageStr || "(no status.message)",
     });
 
     const pxcReady = cr.status?.pxc?.ready;
@@ -218,7 +229,7 @@ export async function collectFindings(ns: string): Promise<Finding[]> {
           severity: "warn",
           code: "PXC_CONTAINER_WAITING",
           title: `${n} / ${c.name} waiting: ${waiting.reason}`,
-          detail: waiting.message ?? "",
+          detail: asDetailString(waiting.message, ""),
         });
       }
     }
@@ -357,7 +368,7 @@ export async function collectFindings(ns: string): Promise<Finding[]> {
         severity: "warn",
         code: "EVENT_WARNING",
         title: `Event ${e.reason} on ${e.involvedObject?.kind}/${e.involvedObject?.name}`,
-        detail: (e.message ?? "").slice(0, 500),
+        detail: asDetailString(e.message, "").slice(0, 500),
       });
     }
   } catch {

@@ -1,0 +1,649 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Data platform capabilities</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,400;0,9..40,500;0,9..40,600;0,9..40,700;1,9..40,400&family=Instrument+Serif:ital@0;1&display=swap" rel="stylesheet" />
+  <style>
+    :root {
+      --bg0: #0c0e14;
+      --bg1: #12151f;
+      --surface: rgba(255, 255, 255, 0.04);
+      --surface-strong: rgba(255, 255, 255, 0.08);
+      --border: rgba(255, 255, 255, 0.1);
+      --text: #e8eaef;
+      --muted: #9aa3b2;
+      --accent: #6ee7ff;
+      --accent-dim: rgba(110, 231, 255, 0.15);
+      --shadow: 0 24px 80px rgba(0, 0, 0, 0.45);
+      --radius-lg: 20px;
+      --radius: 12px;
+      --status-green: #4ade80;
+      --status-green-bg: rgba(74, 222, 128, 0.2);
+      --status-yellow: #fff59a;
+      --status-yellow-bg: rgba(255, 245, 154, 0.24);
+      --status-red: #ff8585;
+      --status-red-bg: rgba(255, 133, 133, 0.22);
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    body {
+      margin: 0;
+      min-height: 100vh;
+      font-family: "DM Sans", system-ui, sans-serif;
+      color: var(--text);
+      background: radial-gradient(1200px 600px at 10% -10%, rgba(110, 231, 255, 0.12), transparent 55%),
+        radial-gradient(900px 500px at 90% 0%, rgba(167, 139, 250, 0.1), transparent 50%),
+        linear-gradient(165deg, var(--bg0), var(--bg1) 40%, #0a0c12);
+      background-attachment: fixed;
+    }
+
+    .wrap {
+      max-width: 1200px;
+      margin: 0 auto;
+      padding: 2.5rem 1.25rem 4rem;
+    }
+
+    header {
+      margin-bottom: 2rem;
+      animation: rise 0.7s ease-out both;
+    }
+
+    @keyframes rise {
+      from {
+        opacity: 0;
+        transform: translateY(12px);
+      }
+      to {
+        opacity: 1;
+        transform: translateY(0);
+      }
+    }
+
+    .eyebrow {
+      font-size: 0.75rem;
+      letter-spacing: 0.14em;
+      text-transform: uppercase;
+      color: var(--accent);
+      font-weight: 600;
+    }
+
+    h1 {
+      font-family: "Instrument Serif", Georgia, serif;
+      font-weight: 400;
+      font-size: clamp(2rem, 4vw, 2.75rem);
+      line-height: 1.15;
+      margin: 0.5rem 0 0.75rem;
+      letter-spacing: -0.02em;
+    }
+
+    .sub {
+      color: var(--muted);
+      font-size: 1.05rem;
+      max-width: 52ch;
+      line-height: 1.55;
+    }
+
+    .legend {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0.75rem 1.25rem;
+      margin-top: 1.5rem;
+      padding: 1rem 1.25rem;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      backdrop-filter: blur(12px);
+    }
+
+    .legend span {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.5rem;
+      font-size: 0.875rem;
+      color: var(--muted);
+    }
+
+    .dot {
+      width: 10px;
+      height: 10px;
+      border-radius: 999px;
+      box-shadow: 0 0 12px currentColor;
+    }
+
+    .dot.green { color: var(--status-green); background: var(--status-green); }
+    .dot.yellow { color: var(--status-yellow); background: var(--status-yellow); }
+    .dot.red { color: var(--status-red); background: var(--status-red); }
+
+    .card {
+      background: linear-gradient(145deg, var(--surface-strong), var(--surface));
+      border: 1px solid var(--border);
+      border-radius: var(--radius-lg);
+      box-shadow: var(--shadow);
+      overflow: hidden;
+      animation: rise 0.75s ease-out 0.08s both;
+    }
+
+    .table-scroll {
+      overflow-x: auto;
+      -webkit-overflow-scrolling: touch;
+    }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 0.9375rem;
+    }
+
+    thead th {
+      text-align: left;
+      padding: 1rem 1.25rem;
+      font-size: 0.7rem;
+      letter-spacing: 0.12em;
+      text-transform: uppercase;
+      color: var(--muted);
+      font-weight: 600;
+      background: rgba(0, 0, 0, 0.25);
+      border-bottom: 1px solid var(--border);
+    }
+
+    thead th:first-child {
+      min-width: 280px;
+    }
+
+    tbody tr {
+      border-bottom: 1px solid var(--border);
+      transition: background 0.2s ease;
+    }
+
+    tbody tr:hover {
+      background: rgba(255, 255, 255, 0.03);
+    }
+
+    tbody tr:last-child {
+      border-bottom: none;
+    }
+
+    td {
+      padding: 1.1rem 1.25rem;
+      vertical-align: top;
+    }
+
+    .cap-desc {
+      line-height: 1.5;
+      color: var(--text);
+    }
+
+    .cell {
+      border-radius: var(--radius);
+      min-height: 3.5rem;
+      padding: 0.75rem 0.85rem;
+      border: 1px solid transparent;
+      transition: transform 0.2s ease, box-shadow 0.2s ease;
+    }
+
+    .cell:hover {
+      transform: translateY(-1px);
+    }
+
+    .cell.green {
+      background: var(--status-green-bg);
+      border-color: rgba(74, 222, 128, 0.55);
+      box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.1), 0 0 20px rgba(74, 222, 128, 0.12);
+    }
+
+    .cell.yellow {
+      background: var(--status-yellow-bg);
+      border-color: rgba(255, 245, 154, 0.58);
+      box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.12), 0 0 22px rgba(255, 245, 154, 0.18);
+    }
+
+    .cell.red {
+      background: var(--status-red-bg);
+      border-color: rgba(255, 133, 133, 0.58);
+      box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.1), 0 0 22px rgba(255, 133, 133, 0.18);
+    }
+
+    .tickets {
+      list-style: none;
+      margin: 0;
+      padding: 0;
+      display: flex;
+      flex-direction: column;
+      gap: 0.45rem;
+    }
+
+    .tickets a {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.35rem;
+      color: var(--accent);
+      text-decoration: none;
+      font-weight: 500;
+      font-size: 0.875rem;
+      padding: 0.25rem 0.5rem;
+      margin: -0.25rem -0.5rem;
+      border-radius: 8px;
+      transition: background 0.15s ease, color 0.15s ease;
+    }
+
+    .tickets a:hover {
+      background: var(--accent-dim);
+      color: #b8f4ff;
+    }
+
+    .tickets a::before {
+      content: "";
+      width: 6px;
+      height: 6px;
+      border-radius: 2px;
+      background: currentColor;
+      opacity: 0.7;
+    }
+
+    .empty {
+      color: var(--muted);
+      font-size: 0.875rem;
+      font-style: italic;
+    }
+
+    footer {
+      margin-top: 1.5rem;
+      font-size: 0.8rem;
+      color: var(--muted);
+      text-align: center;
+    }
+
+    .load-err {
+      display: none;
+      margin-bottom: 1rem;
+      padding: 0.85rem 1rem;
+      border-radius: var(--radius);
+      background: rgba(239, 68, 68, 0.12);
+      border: 1px solid rgba(239, 68, 68, 0.35);
+      color: #fecaca;
+      font-size: 0.875rem;
+    }
+
+    .load-err.visible {
+      display: block;
+    }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <header>
+      <p class="eyebrow">Team X</p>
+      <h1>Data platform capabilities</h1>
+      <p class="sub">
+        Our data platform continues to add capabilities and continually improve the functionality and operational excellence of each existing capability.
+      </p>
+      <div class="legend" aria-hidden="true">
+        <span><span class="dot green"></span> On track</span>
+        <span><span class="dot yellow"></span> Watch / risk</span>
+        <span><span class="dot red"></span> Blocked / gap</span>
+      </div>
+    </header>
+
+    <p id="load-err" class="load-err" role="alert"></p>
+
+    <div class="card">
+      <div class="table-scroll">
+        <table>
+          <thead>
+            <tr>
+              <th scope="col">Capability</th>
+              <th scope="col">Design</th>
+              <th scope="col">Develop</th>
+              <th scope="col">Operations</th>
+            </tr>
+          </thead>
+          <tbody id="cap-body"></tbody>
+        </table>
+      </div>
+    </div>
+
+    <footer>
+      Data from <code style="color: var(--muted)">capabilities.json</code> — replace ticket URLs with your Jira project.
+    </footer>
+  </div>
+
+  <script type="application/json" id="embedded-capabilities">
+{
+  "jiraBaseUrl": "https://your-org.atlassian.net/browse/",
+  "capabilities": [
+    {
+      "description": "On-prem s3-compatible storage",
+      "design": {
+        "status": "green",
+        "tickets": [
+          { "key": "INFRA-701", "url": "https://your-org.atlassian.net/browse/INFRA-701" },
+          { "key": "INFRA-702", "url": "https://your-org.atlassian.net/browse/INFRA-702" }
+        ]
+      },
+      "develop": {
+        "status": "yellow",
+        "tickets": [
+          { "key": "INFRA-710", "url": "https://your-org.atlassian.net/browse/INFRA-710" },
+          { "key": "INFRA-711", "url": "https://your-org.atlassian.net/browse/INFRA-711" }
+        ]
+      },
+      "operations": {
+        "status": "red",
+        "tickets": [{ "key": "OPS-881", "url": "https://your-org.atlassian.net/browse/OPS-881" }]
+      }
+    },
+    {
+      "description": "Synchronous Percona db cluster",
+      "design": {
+        "status": "yellow",
+        "tickets": [{ "key": "DB-1204", "url": "https://your-org.atlassian.net/browse/DB-1204" }]
+      },
+      "develop": {
+        "status": "red",
+        "tickets": [
+          { "key": "DB-1210", "url": "https://your-org.atlassian.net/browse/DB-1210" },
+          { "key": "DB-1211", "url": "https://your-org.atlassian.net/browse/DB-1211" }
+        ]
+      },
+      "operations": {
+        "status": "green",
+        "tickets": [
+          { "key": "OPS-902", "url": "https://your-org.atlassian.net/browse/OPS-902" },
+          { "key": "OPS-903", "url": "https://your-org.atlassian.net/browse/OPS-903" }
+        ]
+      }
+    },
+    {
+      "description": "HAproxy read only endpoint (Round-robin distribution) for all 4 clusters",
+      "design": {
+        "status": "red",
+        "tickets": [{ "key": "NET-440", "url": "https://your-org.atlassian.net/browse/NET-440" }]
+      },
+      "develop": {
+        "status": "green",
+        "tickets": [
+          { "key": "NET-451", "url": "https://your-org.atlassian.net/browse/NET-451" },
+          { "key": "NET-452", "url": "https://your-org.atlassian.net/browse/NET-452" }
+        ]
+      },
+      "operations": {
+        "status": "yellow",
+        "tickets": [{ "key": "OPS-915", "url": "https://your-org.atlassian.net/browse/OPS-915" }]
+      }
+    },
+    {
+      "description": "HAProxy db write endpoint (no distribution) for all 4 clusters",
+      "design": {
+        "status": "green",
+        "tickets": [{ "key": "NET-500", "url": "https://your-org.atlassian.net/browse/NET-500" }]
+      },
+      "develop": {
+        "status": "yellow",
+        "tickets": [
+          { "key": "NET-512", "url": "https://your-org.atlassian.net/browse/NET-512" },
+          { "key": "NET-513", "url": "https://your-org.atlassian.net/browse/NET-513" }
+        ]
+      },
+      "operations": {
+        "status": "red",
+        "tickets": [{ "key": "OPS-920", "url": "https://your-org.atlassian.net/browse/OPS-920" }]
+      }
+    },
+    {
+      "description": "dr-std pxc async replica (Active/Passive)",
+      "design": {
+        "status": "yellow",
+        "tickets": [
+          { "key": "DR-210", "url": "https://your-org.atlassian.net/browse/DR-210" },
+          { "key": "DR-211", "url": "https://your-org.atlassian.net/browse/DR-211" }
+        ]
+      },
+      "develop": {
+        "status": "red",
+        "tickets": [{ "key": "DR-220", "url": "https://your-org.atlassian.net/browse/DR-220" }]
+      },
+      "operations": {
+        "status": "green",
+        "tickets": [
+          { "key": "OPS-940", "url": "https://your-org.atlassian.net/browse/OPS-940" },
+          { "key": "OPS-941", "url": "https://your-org.atlassian.net/browse/OPS-941" }
+        ]
+      }
+    },
+    {
+      "description": "dr-sec pxc async replica (Active/Passive)",
+      "design": {
+        "status": "red",
+        "tickets": [{ "key": "DR-310", "url": "https://your-org.atlassian.net/browse/DR-310" }]
+      },
+      "develop": {
+        "status": "green",
+        "tickets": [{ "key": "DR-320", "url": "https://your-org.atlassian.net/browse/DR-320" }]
+      },
+      "operations": {
+        "status": "yellow",
+        "tickets": [
+          { "key": "OPS-955", "url": "https://your-org.atlassian.net/browse/OPS-955" },
+          { "key": "OPS-956", "url": "https://your-org.atlassian.net/browse/OPS-956" }
+        ]
+      }
+    },
+    {
+      "description": "dr-std seaweed async replication controller pod (Active/Passive)",
+      "design": {
+        "status": "green",
+        "tickets": [
+          { "key": "SW-101", "url": "https://your-org.atlassian.net/browse/SW-101" },
+          { "key": "SW-102", "url": "https://your-org.atlassian.net/browse/SW-102" }
+        ]
+      },
+      "develop": {
+        "status": "yellow",
+        "tickets": [{ "key": "SW-110", "url": "https://your-org.atlassian.net/browse/SW-110" }]
+      },
+      "operations": {
+        "status": "red",
+        "tickets": [
+          { "key": "OPS-970", "url": "https://your-org.atlassian.net/browse/OPS-970" },
+          { "key": "OPS-971", "url": "https://your-org.atlassian.net/browse/OPS-971" }
+        ]
+      }
+    },
+    {
+      "description": "dr-sec seaweed async replication controller pod (Active/Passive)",
+      "design": {
+        "status": "yellow",
+        "tickets": [{ "key": "SW-201", "url": "https://your-org.atlassian.net/browse/SW-201" }]
+      },
+      "develop": {
+        "status": "red",
+        "tickets": [
+          { "key": "SW-215", "url": "https://your-org.atlassian.net/browse/SW-215" },
+          { "key": "SW-216", "url": "https://your-org.atlassian.net/browse/SW-216" }
+        ]
+      },
+      "operations": {
+        "status": "green",
+        "tickets": [{ "key": "OPS-980", "url": "https://your-org.atlassian.net/browse/OPS-980" }]
+      }
+    },
+    {
+      "description": "pxc-backups s3 bucket controller pod",
+      "design": {
+        "status": "red",
+        "tickets": [
+          { "key": "BKUP-55", "url": "https://your-org.atlassian.net/browse/BKUP-55" },
+          { "key": "BKUP-56", "url": "https://your-org.atlassian.net/browse/BKUP-56" }
+        ]
+      },
+      "develop": {
+        "status": "green",
+        "tickets": [{ "key": "BKUP-60", "url": "https://your-org.atlassian.net/browse/BKUP-60" }]
+      },
+      "operations": {
+        "status": "yellow",
+        "tickets": [
+          { "key": "OPS-990", "url": "https://your-org.atlassian.net/browse/OPS-990" },
+          { "key": "OPS-991", "url": "https://your-org.atlassian.net/browse/OPS-991" }
+        ]
+      }
+    },
+    {
+      "description": "Seaweed Filer on each k8s cluster",
+      "design": {
+        "status": "green",
+        "tickets": [{ "key": "SW-330", "url": "https://your-org.atlassian.net/browse/SW-330" }]
+      },
+      "develop": {
+        "status": "yellow",
+        "tickets": [
+          { "key": "SW-340", "url": "https://your-org.atlassian.net/browse/SW-340" },
+          { "key": "SW-341", "url": "https://your-org.atlassian.net/browse/SW-341" }
+        ]
+      },
+      "operations": {
+        "status": "red",
+        "tickets": [{ "key": "OPS-995", "url": "https://your-org.atlassian.net/browse/OPS-995" }]
+      }
+    }
+  ]
+}
+  </script>
+
+  <script>
+    (function () {
+      const VALID = new Set(["green", "yellow", "red"]);
+
+      function normalizeTicket(t, baseUrl) {
+        if (typeof t === "string") {
+          const key = t.trim();
+          const sep = baseUrl.endsWith("/") ? "" : "/";
+          return { key, url: baseUrl ? baseUrl + sep + encodeURIComponent(key) : "#" };
+        }
+        if (t && typeof t === "object" && t.key) {
+          const key = String(t.key);
+          let url = t.url;
+          if (!url && baseUrl) {
+            const sep = baseUrl.endsWith("/") ? "" : "/";
+            url = baseUrl + sep + encodeURIComponent(key);
+          }
+          return { key, url: url || "#" };
+        }
+        return null;
+      }
+
+      function normalizePhase(phase, baseUrl) {
+        const status = VALID.has(phase && phase.status) ? phase.status : "yellow";
+        const raw = Array.isArray(phase && phase.tickets) ? phase.tickets : [];
+        const tickets = raw.map(function (x) {
+          return normalizeTicket(x, baseUrl);
+        }).filter(Boolean);
+        return { status: status, tickets: tickets };
+      }
+
+      function normalizeRow(row, baseUrl) {
+        return {
+          description: row.description || "—",
+          design: normalizePhase(row.design, baseUrl),
+          develop: normalizePhase(row.develop, baseUrl),
+          operations: normalizePhase(row.operations, baseUrl)
+        };
+      }
+
+      function renderTickets(tickets) {
+        if (!tickets.length) {
+          return '<span class="empty">No tickets</span>';
+        }
+        var items = tickets.map(function (t) {
+          return (
+            '<li><a href="' +
+            escapeAttr(t.url) +
+            '" target="_blank" rel="noopener noreferrer">' +
+            escapeHtml(t.key) +
+            "</a></li>"
+          );
+        });
+        return '<ul class="tickets">' + items.join("") + "</ul>";
+      }
+
+      function escapeHtml(s) {
+        return String(s)
+          .replace(/&/g, "&amp;")
+          .replace(/</g, "&lt;")
+          .replace(/>/g, "&gt;")
+          .replace(/"/g, "&quot;");
+      }
+
+      function escapeAttr(s) {
+        return escapeHtml(s).replace(/'/g, "&#39;");
+      }
+
+      function render(data) {
+        var baseUrl = (data.jiraBaseUrl || "").trim();
+        var rows = Array.isArray(data.capabilities) ? data.capabilities : [];
+        var body = document.getElementById("cap-body");
+        body.innerHTML = rows
+          .map(function (raw) {
+            var row = normalizeRow(raw, baseUrl);
+            return (
+              "<tr>" +
+              '<td class="cap-desc">' +
+              escapeHtml(row.description) +
+              "</td>" +
+              '<td><div class="cell ' +
+              escapeAttr(row.design.status) +
+              '">' +
+              renderTickets(row.design.tickets) +
+              "</div></td>" +
+              '<td><div class="cell ' +
+              escapeAttr(row.develop.status) +
+              '">' +
+              renderTickets(row.develop.tickets) +
+              "</div></td>" +
+              '<td><div class="cell ' +
+              escapeAttr(row.operations.status) +
+              '">' +
+              renderTickets(row.operations.tickets) +
+              "</div></td>" +
+              "</tr>"
+            );
+          })
+          .join("");
+      }
+
+      function showErr(msg) {
+        var el = document.getElementById("load-err");
+        el.textContent = msg;
+        el.classList.add("visible");
+      }
+
+      function loadEmbedded() {
+        var el = document.getElementById("embedded-capabilities");
+        return JSON.parse(el.textContent);
+      }
+
+      fetch("capabilities.json")
+        .then(function (r) {
+          if (!r.ok) throw new Error("Could not load capabilities.json (" + r.status + ")");
+          return r.json();
+        })
+        .then(render)
+        .catch(function () {
+          try {
+            render(loadEmbedded());
+            showErr("Using embedded sample data (open via a local web server to load capabilities.json).");
+          } catch (e) {
+            showErr("Failed to parse data.");
+          }
+        });
+    })();
+  </script>
+</body>
+</html>

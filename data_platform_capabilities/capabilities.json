@@ -1,0 +1,200 @@
+{
+  "jiraBaseUrl": "https://your-org.atlassian.net/browse/",
+  "capabilities": [
+    {
+      "description": "On-prem s3-compatible storage",
+      "design": {
+        "status": "green",
+        "tickets": [
+          { "key": "INFRA-701", "url": "https://your-org.atlassian.net/browse/INFRA-701" },
+          { "key": "INFRA-702", "url": "https://your-org.atlassian.net/browse/INFRA-702" }
+        ]
+      },
+      "develop": {
+        "status": "yellow",
+        "tickets": [
+          { "key": "INFRA-710", "url": "https://your-org.atlassian.net/browse/INFRA-710" },
+          { "key": "INFRA-711", "url": "https://your-org.atlassian.net/browse/INFRA-711" }
+        ]
+      },
+      "operations": {
+        "status": "red",
+        "tickets": [{ "key": "OPS-881", "url": "https://your-org.atlassian.net/browse/OPS-881" }]
+      }
+    },
+    {
+      "description": "Synchronous Percona db cluster",
+      "design": {
+        "status": "yellow",
+        "tickets": [{ "key": "DB-1204", "url": "https://your-org.atlassian.net/browse/DB-1204" }]
+      },
+      "develop": {
+        "status": "red",
+        "tickets": [
+          { "key": "DB-1210", "url": "https://your-org.atlassian.net/browse/DB-1210" },
+          { "key": "DB-1211", "url": "https://your-org.atlassian.net/browse/DB-1211" }
+        ]
+      },
+      "operations": {
+        "status": "green",
+        "tickets": [
+          { "key": "OPS-902", "url": "https://your-org.atlassian.net/browse/OPS-902" },
+          { "key": "OPS-903", "url": "https://your-org.atlassian.net/browse/OPS-903" }
+        ]
+      }
+    },
+    {
+      "description": "HAproxy read only endpoint (Round-robin distribution) for all 4 clusters",
+      "design": {
+        "status": "red",
+        "tickets": [{ "key": "NET-440", "url": "https://your-org.atlassian.net/browse/NET-440" }]
+      },
+      "develop": {
+        "status": "green",
+        "tickets": [
+          { "key": "NET-451", "url": "https://your-org.atlassian.net/browse/NET-451" },
+          { "key": "NET-452", "url": "https://your-org.atlassian.net/browse/NET-452" }
+        ]
+      },
+      "operations": {
+        "status": "yellow",
+        "tickets": [{ "key": "OPS-915", "url": "https://your-org.atlassian.net/browse/OPS-915" }]
+      }
+    },
+    {
+      "description": "HAProxy db write endpoint (no distribution) for all 4 clusters",
+      "design": {
+        "status": "green",
+        "tickets": [{ "key": "NET-500", "url": "https://your-org.atlassian.net/browse/NET-500" }]
+      },
+      "develop": {
+        "status": "yellow",
+        "tickets": [
+          { "key": "NET-512", "url": "https://your-org.atlassian.net/browse/NET-512" },
+          { "key": "NET-513", "url": "https://your-org.atlassian.net/browse/NET-513" }
+        ]
+      },
+      "operations": {
+        "status": "red",
+        "tickets": [{ "key": "OPS-920", "url": "https://your-org.atlassian.net/browse/OPS-920" }]
+      }
+    },
+    {
+      "description": "dr-std pxc async replica (Active/Passive)",
+      "design": {
+        "status": "yellow",
+        "tickets": [
+          { "key": "DR-210", "url": "https://your-org.atlassian.net/browse/DR-210" },
+          { "key": "DR-211", "url": "https://your-org.atlassian.net/browse/DR-211" }
+        ]
+      },
+      "develop": {
+        "status": "red",
+        "tickets": [{ "key": "DR-220", "url": "https://your-org.atlassian.net/browse/DR-220" }]
+      },
+      "operations": {
+        "status": "green",
+        "tickets": [
+          { "key": "OPS-940", "url": "https://your-org.atlassian.net/browse/OPS-940" },
+          { "key": "OPS-941", "url": "https://your-org.atlassian.net/browse/OPS-941" }
+        ]
+      }
+    },
+    {
+      "description": "dr-sec pxc async replica (Active/Passive)",
+      "design": {
+        "status": "red",
+        "tickets": [{ "key": "DR-310", "url": "https://your-org.atlassian.net/browse/DR-310" }]
+      },
+      "develop": {
+        "status": "green",
+        "tickets": [{ "key": "DR-320", "url": "https://your-org.atlassian.net/browse/DR-320" }]
+      },
+      "operations": {
+        "status": "yellow",
+        "tickets": [
+          { "key": "OPS-955", "url": "https://your-org.atlassian.net/browse/OPS-955" },
+          { "key": "OPS-956", "url": "https://your-org.atlassian.net/browse/OPS-956" }
+        ]
+      }
+    },
+    {
+      "description": "dr-std seaweed async replication controller pod (Active/Passive)",
+      "design": {
+        "status": "green",
+        "tickets": [
+          { "key": "SW-101", "url": "https://your-org.atlassian.net/browse/SW-101" },
+          { "key": "SW-102", "url": "https://your-org.atlassian.net/browse/SW-102" }
+        ]
+      },
+      "develop": {
+        "status": "yellow",
+        "tickets": [{ "key": "SW-110", "url": "https://your-org.atlassian.net/browse/SW-110" }]
+      },
+      "operations": {
+        "status": "red",
+        "tickets": [
+          { "key": "OPS-970", "url": "https://your-org.atlassian.net/browse/OPS-970" },
+          { "key": "OPS-971", "url": "https://your-org.atlassian.net/browse/OPS-971" }
+        ]
+      }
+    },
+    {
+      "description": "dr-sec seaweed async replication controller pod (Active/Passive)",
+      "design": {
+        "status": "yellow",
+        "tickets": [{ "key": "SW-201", "url": "https://your-org.atlassian.net/browse/SW-201" }]
+      },
+      "develop": {
+        "status": "red",
+        "tickets": [
+          { "key": "SW-215", "url": "https://your-org.atlassian.net/browse/SW-215" },
+          { "key": "SW-216", "url": "https://your-org.atlassian.net/browse/SW-216" }
+        ]
+      },
+      "operations": {
+        "status": "green",
+        "tickets": [{ "key": "OPS-980", "url": "https://your-org.atlassian.net/browse/OPS-980" }]
+      }
+    },
+    {
+      "description": "pxc-backups s3 bucket controller pod",
+      "design": {
+        "status": "red",
+        "tickets": [
+          { "key": "BKUP-55", "url": "https://your-org.atlassian.net/browse/BKUP-55" },
+          { "key": "BKUP-56", "url": "https://your-org.atlassian.net/browse/BKUP-56" }
+        ]
+      },
+      "develop": {
+        "status": "green",
+        "tickets": [{ "key": "BKUP-60", "url": "https://your-org.atlassian.net/browse/BKUP-60" }]
+      },
+      "operations": {
+        "status": "yellow",
+        "tickets": [
+          { "key": "OPS-990", "url": "https://your-org.atlassian.net/browse/OPS-990" },
+          { "key": "OPS-991", "url": "https://your-org.atlassian.net/browse/OPS-991" }
+        ]
+      }
+    },
+    {
+      "description": "Seaweed Filer on each k8s cluster",
+      "design": {
+        "status": "green",
+        "tickets": [{ "key": "SW-330", "url": "https://your-org.atlassian.net/browse/SW-330" }]
+      },
+      "develop": {
+        "status": "yellow",
+        "tickets": [
+          { "key": "SW-340", "url": "https://your-org.atlassian.net/browse/SW-340" },
+          { "key": "SW-341", "url": "https://your-org.atlassian.net/browse/SW-341" }
+        ]
+      },
+      "operations": {
+        "status": "red",
+        "tickets": [{ "key": "OPS-995", "url": "https://your-org.atlassian.net/browse/OPS-995" }]
+      }
+    }
+  ]
+}

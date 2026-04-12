@@ -18,7 +18,19 @@ function printReport(ns: string, findings: import("./types").Finding[]): void {
   for (const f of sorted) {
     const tag = f.severity.toUpperCase().padEnd(4);
     console.log(`[${tag}] ${f.title}`);
-    if (f.detail) console.log(`       ${f.detail.replace(/\n/g, "\n       ")}`);
+    const detail =
+      f.detail == null || f.detail === ""
+        ? ""
+        : typeof f.detail === "string"
+          ? f.detail
+          : (() => {
+              try {
+                return JSON.stringify(f.detail);
+              } catch {
+                return String(f.detail);
+              }
+            })();
+    if (detail) console.log(`       ${detail.replace(/\n/g, "\n       ")}`);
   }
 
   console.log(line);

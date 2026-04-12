@@ -4,7 +4,8 @@ export type Finding = {
   severity: Severity;
   code: string;
   title: string;
-  detail: string;
+  /** Prefer string; CLI tolerates non-strings from unusual API shapes. */
+  detail: string | unknown;
 };
 
 export type Prescription = {

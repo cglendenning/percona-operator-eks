@@ -131,10 +131,16 @@ export function buildPrescriptions(ns: string, findings: Finding[]): Prescriptio
     )
   ) {
     const pxc = findings.find((f) => f.code === "PXC_STATUS");
+    const pxcDetail =
+      pxc?.detail == null
+        ? ""
+        : typeof pxc.detail === "string"
+          ? pxc.detail
+          : JSON.stringify(pxc.detail);
     rx.push({
       title: "PXC CR reports non-ready state",
       probableRootCause:
-        pxc?.detail?.includes("proxy") || pxc?.detail?.includes("refused")
+        pxcDetail.includes("proxy") || pxcDetail.includes("refused")
           ? "Operator cannot open SQL/admin connection via proxy path (often HAProxy Service → backends)."
           : "Reconciliation or cluster startup error; see status.message and operator logs.",
       commands: [
