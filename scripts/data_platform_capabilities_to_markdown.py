@@ -57,6 +57,17 @@ STATUS_CELL_STYLE: dict[str, str] = {
     ),
 }
 
+ACCENT_LINK = "#6ee7ff"
+
+# Typography (rem): capability column slightly below default table/body (~1rem);
+# phase status labels bumped ~1–2pt from prior 0.72rem.
+CAP_TITLE_REM = "0.875"
+CAP_DETAIL_REM = "0.8125"
+CAP_DETAIL_COLOR = "#9aa3b2"  # --muted in index.html
+CAP_TITLE_COLOR = "#e8eaef"  # --text
+PHASE_LABEL_REM = "0.875"
+LEGEND_FONT_REM = "0.8125"
+
 # Compact legend chips (same palette as .cell)
 LEGEND_BADGE_STYLE: dict[str, str] = {
     "green": (
@@ -65,7 +76,7 @@ LEGEND_BADGE_STYLE: dict[str, str] = {
         "border:1px solid rgba(74,222,128,0.55);"
         "border-radius:8px;"
         "padding:0.25rem 0.55rem;"
-        "font-size:0.75rem;"
+        f"font-size:{LEGEND_FONT_REM}rem;"
         "font-weight:700;"
         "white-space:nowrap;"
         "color:#e8eaef;"
@@ -76,7 +87,7 @@ LEGEND_BADGE_STYLE: dict[str, str] = {
         "border:1px solid rgba(255,245,154,0.58);"
         "border-radius:8px;"
         "padding:0.25rem 0.55rem;"
-        "font-size:0.75rem;"
+        f"font-size:{LEGEND_FONT_REM}rem;"
         "font-weight:700;"
         "white-space:nowrap;"
         "color:#e8eaef;"
@@ -87,14 +98,12 @@ LEGEND_BADGE_STYLE: dict[str, str] = {
         "border:1px solid rgba(255,133,133,0.58);"
         "border-radius:8px;"
         "padding:0.25rem 0.55rem;"
-        "font-size:0.75rem;"
+        f"font-size:{LEGEND_FONT_REM}rem;"
         "font-weight:700;"
         "white-space:nowrap;"
         "color:#e8eaef;"
     ),
 }
-
-ACCENT_LINK = "#6ee7ff"
 
 
 def legend_badge_html(status_key: str, text: str) -> str:
@@ -214,12 +223,26 @@ def escape_md_cell(text: str) -> str:
     return text.replace("\\", "\\\\").replace("|", "\\|")
 
 
+def capability_cell_text(text: str) -> str:
+    """HTML-escape content, then escape pipes for GFM table cells."""
+    return escape_md_cell(escape(text))
+
+
 def render_capability_cell(name: str, detail: str) -> str:
-    name_e = escape_md_cell(name)
-    if detail:
-        d = escape_md_cell(detail)
-        return f"**{name_e}**<br>{d}"
-    return f"**{name_e}**"
+    title_t = capability_cell_text(name)
+    title_block = (
+        f'<div style="font-size:{CAP_TITLE_REM}rem;font-weight:700;'
+        f'line-height:1.35;color:{CAP_TITLE_COLOR}">{title_t}</div>'
+    )
+    if not detail:
+        return title_block
+    desc_t = capability_cell_text(detail)
+    desc_block = (
+        f'<div style="margin-top:0.55rem;font-size:{CAP_DETAIL_REM}rem;'
+        f'line-height:1.55;font-weight:400;color:{CAP_DETAIL_COLOR}">'
+        f"{desc_t}</div>"
+    )
+    return title_block + desc_block
 
 
 def render_phase_cell(phase: dict[str, Any]) -> str:
@@ -230,8 +253,8 @@ def render_phase_cell(phase: dict[str, Any]) -> str:
     tickets: list[dict[str, str]] = phase["tickets"]
 
     label_html = (
-        f'<div style="font-size:0.72rem;font-weight:700;line-height:1.25;'
-        f'white-space:nowrap;color:#e8eaef">{escape(label)}</div>'
+        f'<div style="font-size:{PHASE_LABEL_REM}rem;font-weight:700;'
+        f'line-height:1.25;white-space:nowrap;color:#e8eaef">{escape(label)}</div>'
     )
 
     if not tickets:
