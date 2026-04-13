@@ -5,9 +5,9 @@ Render data_platform_capabilities/index.html + capabilities.json as Markdown.
 Mirrors the browser normalization (normalizeTicket / normalizePhase / normalizeRow)
 and layout: eyebrow, title, intro, status legend, then the capability table with
 phase cells styled like index.html (.cell.green / .yellow / .red): tinted
-background, border, and inset text. Status labels and ticket lines use
-white-space:nowrap and smaller type for labels so they stay on one line; the
-table is wrapped in a horizontal scroll container when needed.
+background and ticket links only (no status text in cells). Ticket lines use
+white-space:nowrap; the table is wrapped in a horizontal scroll container when
+needed.
 """
 
 from __future__ import annotations
@@ -22,12 +22,6 @@ from typing import Any
 from urllib.parse import quote
 
 VALID = frozenset({"green", "yellow", "red"})
-
-STATUS_LABEL = {
-    "green": "On track",
-    "yellow": "Watch / risk",
-    "red": "Blocked / gap",
-}
 
 # Matches .cell.* and --status-*-bg in data_platform_capabilities/index.html
 STATUS_CELL_STYLE: dict[str, str] = {
@@ -59,13 +53,12 @@ STATUS_CELL_STYLE: dict[str, str] = {
 
 ACCENT_LINK = "#6ee7ff"
 
-# Typography (rem): capability column slightly below default table/body (~1rem);
-# phase status labels bumped ~1–2pt from prior 0.72rem.
-CAP_TITLE_REM = "0.875"
-CAP_DETAIL_REM = "0.8125"
+# Typography (rem): capability title/description; legend chips; phase cells are
+# color-only plus tickets. Sizes use ~1pt ≈ 0.0833rem at a 16px root.
+CAP_TITLE_REM = "0.958"
+CAP_DETAIL_REM = "0.896"
 CAP_DETAIL_COLOR = "#9aa3b2"  # --muted in index.html
 CAP_TITLE_COLOR = "#e8eaef"  # --text
-PHASE_LABEL_REM = "0.875"
 LEGEND_FONT_REM = "0.8125"
 
 # Compact legend chips (same palette as .cell)
@@ -248,18 +241,12 @@ def render_capability_cell(name: str, detail: str) -> str:
 def render_phase_cell(phase: dict[str, Any]) -> str:
     status = phase["status"]
     sk = status if status in VALID else "yellow"
-    label = STATUS_LABEL.get(sk, STATUS_LABEL["yellow"])
     shell = STATUS_CELL_STYLE.get(sk, STATUS_CELL_STYLE["yellow"])
     tickets: list[dict[str, str]] = phase["tickets"]
 
-    label_html = (
-        f'<div style="font-size:{PHASE_LABEL_REM}rem;font-weight:700;'
-        f'line-height:1.25;white-space:nowrap;color:#e8eaef">{escape(label)}</div>'
-    )
-
     if not tickets:
         body = (
-            f'<div style="margin-top:0.4rem;font-size:0.8125rem;font-style:italic;'
+            f'<div style="font-size:0.8125rem;font-style:italic;'
             f'opacity:0.9;white-space:nowrap">No tickets</div>'
         )
     else:
@@ -275,14 +262,13 @@ def render_phase_cell(phase: dict[str, Any]) -> str:
                 f"</div>"
             )
         body = (
-            f'<div style="margin-top:0.45rem;display:flex;flex-direction:column;'
+            f'<div style="display:flex;flex-direction:column;'
             f'gap:0.35rem">{"".join(rows)}</div>'
         )
 
-    inner = label_html + body
     return (
         f'<div style="{shell}min-width:max-content;box-sizing:border-box">'
-        f"{inner}</div>"
+        f"{body}</div>"
     )
 
 
