@@ -4,9 +4,10 @@ Render data_platform_capabilities/index.html + capabilities.json as Markdown.
 
 Mirrors the browser normalization (normalizeTicket / normalizePhase / normalizeRow)
 and layout: eyebrow, title, intro, status legend, then the capability table with
-phase status labels and ticket links (same semantics as index.html). Status text
-uses HTML spans with the same green/yellow/red hex colors as index.html so
-renderers that allow inline styles show the legend and table labels in color.
+phase cells styled like index.html (.cell.green / .yellow / .red): tinted
+background, border, and inset text. Status labels and ticket lines use
+white-space:nowrap and smaller type for labels so they stay on one line; the
+table is wrapped in a horizontal scroll container when needed.
 """
 
 from __future__ import annotations
@@ -28,19 +29,78 @@ STATUS_LABEL = {
     "red": "Blocked / gap",
 }
 
-# Matches --status-* in data_platform_capabilities/index.html
-STATUS_COLOR = {
-    "green": "#4ade80",
-    "yellow": "#fff59a",
-    "red": "#ff8585",
+# Matches .cell.* and --status-*-bg in data_platform_capabilities/index.html
+STATUS_CELL_STYLE: dict[str, str] = {
+    "green": (
+        "background:rgba(74,222,128,0.2);"
+        "border:1px solid rgba(74,222,128,0.55);"
+        "border-radius:12px;"
+        "padding:0.75rem 0.85rem;"
+        "box-shadow:inset 0 1px 0 rgba(255,255,255,0.1),0 0 20px rgba(74,222,128,0.12);"
+        "color:#e8eaef;"
+    ),
+    "yellow": (
+        "background:rgba(255,245,154,0.24);"
+        "border:1px solid rgba(255,245,154,0.58);"
+        "border-radius:12px;"
+        "padding:0.75rem 0.85rem;"
+        "box-shadow:inset 0 1px 0 rgba(255,255,255,0.12),0 0 22px rgba(255,245,154,0.18);"
+        "color:#e8eaef;"
+    ),
+    "red": (
+        "background:rgba(255,133,133,0.22);"
+        "border:1px solid rgba(255,133,133,0.58);"
+        "border-radius:12px;"
+        "padding:0.75rem 0.85rem;"
+        "box-shadow:inset 0 1px 0 rgba(255,255,255,0.1),0 0 22px rgba(255,133,133,0.18);"
+        "color:#e8eaef;"
+    ),
 }
 
+# Compact legend chips (same palette as .cell)
+LEGEND_BADGE_STYLE: dict[str, str] = {
+    "green": (
+        "display:inline-block;"
+        "background:rgba(74,222,128,0.2);"
+        "border:1px solid rgba(74,222,128,0.55);"
+        "border-radius:8px;"
+        "padding:0.25rem 0.55rem;"
+        "font-size:0.75rem;"
+        "font-weight:700;"
+        "white-space:nowrap;"
+        "color:#e8eaef;"
+    ),
+    "yellow": (
+        "display:inline-block;"
+        "background:rgba(255,245,154,0.24);"
+        "border:1px solid rgba(255,245,154,0.58);"
+        "border-radius:8px;"
+        "padding:0.25rem 0.55rem;"
+        "font-size:0.75rem;"
+        "font-weight:700;"
+        "white-space:nowrap;"
+        "color:#e8eaef;"
+    ),
+    "red": (
+        "display:inline-block;"
+        "background:rgba(255,133,133,0.22);"
+        "border:1px solid rgba(255,133,133,0.58);"
+        "border-radius:8px;"
+        "padding:0.25rem 0.55rem;"
+        "font-size:0.75rem;"
+        "font-weight:700;"
+        "white-space:nowrap;"
+        "color:#e8eaef;"
+    ),
+}
 
-def colored_status_html(status_key: str, text: str) -> str:
-    color = STATUS_COLOR.get(status_key, STATUS_COLOR["yellow"])
-    return (
-        f'<span style="color:{color};font-weight:700">{escape(text)}</span>'
-    )
+ACCENT_LINK = "#6ee7ff"
+
+
+def legend_badge_html(status_key: str, text: str) -> str:
+    sk = status_key if status_key in VALID else "yellow"
+    css = LEGEND_BADGE_STYLE.get(sk, LEGEND_BADGE_STYLE["yellow"])
+    return f'<span style="{css}">{escape(text)}</span>'
 
 
 def _strip_tags(html: str) -> str:
@@ -164,19 +224,43 @@ def render_capability_cell(name: str, detail: str) -> str:
 
 def render_phase_cell(phase: dict[str, Any]) -> str:
     status = phase["status"]
-    label = STATUS_LABEL.get(status, STATUS_LABEL["yellow"])
-    label_html = colored_status_html(status, label)
+    sk = status if status in VALID else "yellow"
+    label = STATUS_LABEL.get(sk, STATUS_LABEL["yellow"])
+    shell = STATUS_CELL_STYLE.get(sk, STATUS_CELL_STYLE["yellow"])
     tickets: list[dict[str, str]] = phase["tickets"]
+
+    label_html = (
+        f'<div style="font-size:0.72rem;font-weight:700;line-height:1.25;'
+        f'white-space:nowrap;color:#e8eaef">{escape(label)}</div>'
+    )
+
     if not tickets:
-        body = "*No tickets*"
+        body = (
+            f'<div style="margin-top:0.4rem;font-size:0.8125rem;font-style:italic;'
+            f'opacity:0.9;white-space:nowrap">No tickets</div>'
+        )
     else:
-        lines = []
+        rows: list[str] = []
         for t in tickets:
-            k = escape_md_cell(t["key"])
-            u = t["url"]
-            lines.append(f"- [{k}]({u})")
-        body = "<br>".join(lines)
-    return f"{label_html}<br>{body}"
+            k = escape(t["key"])
+            u = escape(t["url"], quote=True)
+            rows.append(
+                f'<div style="white-space:nowrap">'
+                f'<a href="{u}" target="_blank" rel="noopener noreferrer" '
+                f'style="color:{ACCENT_LINK};font-weight:500;font-size:0.875rem;'
+                f'text-decoration:none">{k}</a>'
+                f"</div>"
+            )
+        body = (
+            f'<div style="margin-top:0.45rem;display:flex;flex-direction:column;'
+            f'gap:0.35rem">{"".join(rows)}</div>'
+        )
+
+    inner = label_html + body
+    return (
+        f'<div style="{shell}min-width:max-content;box-sizing:border-box">'
+        f"{inner}</div>"
+    )
 
 
 def build_markdown(copy: dict[str, Any], data: dict[str, Any]) -> str:
@@ -203,8 +287,10 @@ def build_markdown(copy: dict[str, Any], data: dict[str, Any]) -> str:
     if legend:
         lines.append("**Status**")
         for status_key, item in legend:
-            lines.append(f"- {colored_status_html(status_key, item)}")
+            lines.append(f"- {legend_badge_html(status_key, item)}")
         lines.append("")
+    lines.append('<div style="overflow-x:auto;width:100%">')
+    lines.append("")
     lines.append(
         "| Capability | Design | Develop | Operations |"
     )
@@ -215,6 +301,8 @@ def build_markdown(copy: dict[str, Any], data: dict[str, Any]) -> str:
         v = render_phase_cell(row["develop"])
         o = render_phase_cell(row["operations"])
         lines.append(f"| {cap} | {d} | {v} | {o} |")
+    lines.append("")
+    lines.append("</div>")
     lines.append("")
     if footer:
         lines.append(footer)
