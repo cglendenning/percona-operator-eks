@@ -5,9 +5,10 @@ Render data_platform_capabilities/index.html + capabilities.json as Markdown.
 Mirrors the browser normalization (normalizeTicket / normalizePhase / normalizeRow)
 and layout: eyebrow, title, intro, status legend, then the capability table with
 phase cells styled like index.html (.cell.green / .yellow / .red): tinted
-background and ticket links only (no status text in cells). Ticket lines use
-white-space:nowrap; the table is wrapped in a horizontal scroll container when
-needed.
+background and ticket links only (no status text in cells). The capabilities
+matrix is emitted as an HTML table so phase cells can span the full column
+width; ticket lines use white-space:nowrap. A horizontal scroll wrapper is used
+when needed.
 """
 
 from __future__ import annotations
@@ -53,13 +54,14 @@ STATUS_CELL_STYLE: dict[str, str] = {
 
 ACCENT_LINK = "#6ee7ff"
 
-# Typography (rem): capability title/description; legend chips; phase cells are
-# color-only plus tickets. Sizes use ~1pt ≈ 0.0833rem at a 16px root.
-CAP_TITLE_REM = "0.958"
-CAP_DETAIL_REM = "0.896"
+# Typography (rem); ~1pt ≈ 0.0833rem at a 16px root.
+CAP_TITLE_REM = "1.125"
+CAP_DETAIL_REM = "1.0625"
 CAP_DETAIL_COLOR = "#9aa3b2"  # --muted in index.html
 CAP_TITLE_COLOR = "#e8eaef"  # --text
 LEGEND_FONT_REM = "0.8125"
+PHASE_TICKET_REM = "1"
+PHASE_EMPTY_REM = "0.9375"
 
 # Compact legend chips (same palette as .cell)
 LEGEND_BADGE_STYLE: dict[str, str] = {
@@ -211,14 +213,9 @@ def normalize_row(row: Any, base_url: str) -> dict[str, Any]:
     }
 
 
-def escape_md_cell(text: str) -> str:
-    """GFM pipe tables: escape | in cell content."""
-    return text.replace("\\", "\\\\").replace("|", "\\|")
-
-
 def capability_cell_text(text: str) -> str:
-    """HTML-escape content, then escape pipes for GFM table cells."""
-    return escape_md_cell(escape(text))
+    """Escape text embedded in HTML table cells."""
+    return escape(text)
 
 
 def render_capability_cell(name: str, detail: str) -> str:
@@ -228,14 +225,19 @@ def render_capability_cell(name: str, detail: str) -> str:
         f'line-height:1.35;color:{CAP_TITLE_COLOR}">{title_t}</div>'
     )
     if not detail:
-        return title_block
-    desc_t = capability_cell_text(detail)
-    desc_block = (
-        f'<div style="margin-top:0.55rem;font-size:{CAP_DETAIL_REM}rem;'
-        f'line-height:1.55;font-weight:400;color:{CAP_DETAIL_COLOR}">'
-        f"{desc_t}</div>"
+        inner = title_block
+    else:
+        desc_t = capability_cell_text(detail)
+        desc_block = (
+            f'<div style="margin-top:0.55rem;font-size:{CAP_DETAIL_REM}rem;'
+            f'line-height:1.55;font-weight:400;color:{CAP_DETAIL_COLOR}">'
+            f"{desc_t}</div>"
+        )
+        inner = title_block + desc_block
+    return (
+        f'<div style="padding:8px 10px 8px 4px;min-width:0;box-sizing:border-box">'
+        f"{inner}</div>"
     )
-    return title_block + desc_block
 
 
 def render_phase_cell(phase: dict[str, Any]) -> str:
@@ -246,7 +248,7 @@ def render_phase_cell(phase: dict[str, Any]) -> str:
 
     if not tickets:
         body = (
-            f'<div style="font-size:0.8125rem;font-style:italic;'
+            f'<div style="font-size:{PHASE_EMPTY_REM}rem;font-style:italic;'
             f'opacity:0.9;white-space:nowrap">No tickets</div>'
         )
     else:
@@ -257,17 +259,18 @@ def render_phase_cell(phase: dict[str, Any]) -> str:
             rows.append(
                 f'<div style="white-space:nowrap">'
                 f'<a href="{u}" target="_blank" rel="noopener noreferrer" '
-                f'style="color:{ACCENT_LINK};font-weight:500;font-size:0.875rem;'
-                f'text-decoration:none">{k}</a>'
+                f'style="color:{ACCENT_LINK};font-weight:500;'
+                f'font-size:{PHASE_TICKET_REM}rem;text-decoration:none">{k}</a>'
                 f"</div>"
             )
         body = (
             f'<div style="display:flex;flex-direction:column;'
-            f'gap:0.35rem">{"".join(rows)}</div>'
+            f'gap:0.4rem;width:100%">{"".join(rows)}</div>'
         )
 
     return (
-        f'<div style="{shell}min-width:max-content;box-sizing:border-box">'
+        f'<div style="{shell}width:100%;min-height:3.25rem;box-sizing:border-box;'
+        f'display:block">'
         f"{body}</div>"
     )
 
@@ -301,15 +304,39 @@ def build_markdown(copy: dict[str, Any], data: dict[str, Any]) -> str:
     lines.append('<div style="overflow-x:auto;width:100%">')
     lines.append("")
     lines.append(
-        "| Capability | Design | Develop | Operations |"
+        '<table style="width:100%;table-layout:fixed;border-collapse:separate;'
+        'border-spacing:6px;min-width:720px">'
     )
-    lines.append("| --- | --- | --- | --- |")
+    lines.append("<colgroup>")
+    lines.append('<col style="width:50%">')
+    lines.append('<col style="width:16.67%">')
+    lines.append('<col style="width:16.67%">')
+    lines.append('<col style="width:16.67%">')
+    lines.append("</colgroup>")
+    lines.append("<thead><tr>")
+    for hdr in ("Capability", "Design", "Develop", "Operations"):
+        lines.append(
+            f'<th scope="col" style="padding:10px 6px;text-align:center;'
+            f'font-size:0.7rem;letter-spacing:0.08em;text-transform:uppercase;'
+            f'color:#9aa3b2;font-weight:600;background:rgba(0,0,0,0.22);'
+            f'border-bottom:1px solid rgba(255,255,255,0.12);vertical-align:middle">'
+            f"{escape(hdr)}</th>"
+        )
+    lines.append("</tr></thead><tbody>")
     for row in normalized:
         cap = render_capability_cell(row["name"], row["detail"])
         d = render_phase_cell(row["design"])
         v = render_phase_cell(row["develop"])
         o = render_phase_cell(row["operations"])
-        lines.append(f"| {cap} | {d} | {v} | {o} |")
+        lines.append("<tr>")
+        lines.append(
+            f'<td style="padding:0;vertical-align:top">{cap}</td>'
+            f'<td style="padding:0;vertical-align:top">{d}</td>'
+            f'<td style="padding:0;vertical-align:top">{v}</td>'
+            f'<td style="padding:0;vertical-align:top">{o}</td>'
+        )
+        lines.append("</tr>")
+    lines.append("</tbody></table>")
     lines.append("")
     lines.append("</div>")
     lines.append("")
