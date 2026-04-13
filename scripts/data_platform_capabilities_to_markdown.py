@@ -4,7 +4,9 @@ Render data_platform_capabilities/index.html + capabilities.json as Markdown.
 
 Mirrors the browser normalization (normalizeTicket / normalizePhase / normalizeRow)
 and layout: eyebrow, title, intro, status legend, then the capability table with
-phase status labels and ticket links (same semantics as index.html).
+phase status labels and ticket links (same semantics as index.html). Status text
+uses HTML spans with the same green/yellow/red hex colors as index.html so
+renderers that allow inline styles show the legend and table labels in color.
 """
 
 from __future__ import annotations
@@ -13,7 +15,7 @@ import argparse
 import json
 import re
 import sys
-from html import unescape
+from html import escape, unescape
 from pathlib import Path
 from typing import Any
 from urllib.parse import quote
@@ -26,6 +28,20 @@ STATUS_LABEL = {
     "red": "Blocked / gap",
 }
 
+# Matches --status-* in data_platform_capabilities/index.html
+STATUS_COLOR = {
+    "green": "#4ade80",
+    "yellow": "#fff59a",
+    "red": "#ff8585",
+}
+
+
+def colored_status_html(status_key: str, text: str) -> str:
+    color = STATUS_COLOR.get(status_key, STATUS_COLOR["yellow"])
+    return (
+        f'<span style="color:{color};font-weight:700">{escape(text)}</span>'
+    )
+
 
 def _strip_tags(html: str) -> str:
     t = re.sub(r"<[^>]+>", " ", html)
@@ -33,7 +49,7 @@ def _strip_tags(html: str) -> str:
     return re.sub(r"\s+", " ", t).strip()
 
 
-def extract_page_copy(html_path: Path) -> dict[str, str | list[str]]:
+def extract_page_copy(html_path: Path) -> dict[str, Any]:
     raw = html_path.read_text(encoding="utf-8")
 
     def grab(class_name: str) -> str | None:
@@ -50,7 +66,7 @@ def extract_page_copy(html_path: Path) -> dict[str, str | list[str]]:
     sub_m = re.search(r'<p class="sub"[^>]*>([\s\S]*?)</p>', raw, re.IGNORECASE)
     sub = _strip_tags(sub_m.group(1)) if sub_m else ""
 
-    legend_items: list[str] = []
+    legend_items: list[tuple[str, str]] = []
     leg_m = re.search(
         r'<div class="legend"[^>]*>([\s\S]*?)</div>',
         raw,
@@ -59,10 +75,10 @@ def extract_page_copy(html_path: Path) -> dict[str, str | list[str]]:
     if leg_m:
         inner = leg_m.group(1)
         for m in re.finditer(
-            r'<span><span class="dot (?:green|yellow|red)"[^>]*></span>\s*([^<]+)</span>',
+            r'<span><span class="dot (green|yellow|red)"[^>]*></span>\s*([^<]+)</span>',
             inner,
         ):
-            legend_items.append(m.group(1).strip())
+            legend_items.append((m.group(1), m.group(2).strip()))
 
     foot_m = re.search(r"<footer[^>]*>([\s\S]*?)</footer>", raw, re.IGNORECASE)
     footer = _strip_tags(foot_m.group(1)) if foot_m else ""
@@ -149,6 +165,7 @@ def render_capability_cell(name: str, detail: str) -> str:
 def render_phase_cell(phase: dict[str, Any]) -> str:
     status = phase["status"]
     label = STATUS_LABEL.get(status, STATUS_LABEL["yellow"])
+    label_html = colored_status_html(status, label)
     tickets: list[dict[str, str]] = phase["tickets"]
     if not tickets:
         body = "*No tickets*"
@@ -159,10 +176,10 @@ def render_phase_cell(phase: dict[str, Any]) -> str:
             u = t["url"]
             lines.append(f"- [{k}]({u})")
         body = "<br>".join(lines)
-    return f"**{escape_md_cell(label)}**<br>{body}"
+    return f"{label_html}<br>{body}"
 
 
-def build_markdown(copy: dict[str, str | list[str]], data: dict[str, Any]) -> str:
+def build_markdown(copy: dict[str, Any], data: dict[str, Any]) -> str:
     base_url = str(data.get("jiraBaseUrl") or "").strip()
     rows_in = data.get("capabilities")
     rows = rows_in if isinstance(rows_in, list) else []
@@ -185,8 +202,8 @@ def build_markdown(copy: dict[str, str | list[str]], data: dict[str, Any]) -> st
         lines.append("")
     if legend:
         lines.append("**Status**")
-        for item in legend:
-            lines.append(f"- {item}")
+        for status_key, item in legend:
+            lines.append(f"- {colored_status_html(status_key, item)}")
         lines.append("")
     lines.append(
         "| Capability | Design | Develop | Operations |"
