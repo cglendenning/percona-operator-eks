@@ -1,0 +1,27 @@
+kubectl -n NS run s3-147b-test --rm -i --restart=Never \
+  --image=amazon/aws-cli \
+  --env="AWS_ACCESS_KEY_ID=..." \
+  --env="AWS_SECRET_ACCESS_KEY=..." \
+  --env="AWS_DEFAULT_REGION=us-east-1" \
+  --command -- bash -lc '
+set -euo pipefail
+KEY="KEY"   # e.g. "_seaweed_s3_smoke/147b.bin"
+dd if=/dev/urandom of=/tmp/147.bin bs=1 count=147 status=none
+wc -c /tmp/147.bin
+
+aws s3 cp --endpoint-url "https://S3_GATEWAY_B" /tmp/147.bin "s3://BUCKET/${KEY}"
+
+aws s3api head-object --endpoint-url "https://S3_GATEWAY_B" --bucket "BUCKET" --key "${KEY}" \
+  | tee /tmp/head.json
+
+aws s3api get-object --endpoint-url "https://S3_GATEWAY_B" --bucket "BUCKET" --key "${KEY}" /tmp/dl.full
+wc -c /tmp/dl.full
+
+aws s3api get-object --endpoint-url "https://S3_GATEWAY_B" --bucket "BUCKET" --key "${KEY}" /tmp/dl.first146 --range bytes=0-145
+wc -c /tmp/dl.first146
+
+aws s3api get-object --endpoint-url "https://S3_GATEWAY_B" --bucket "BUCKET" --key "${KEY}" /tmp/dl.last1 --range bytes=146-146
+wc -c /tmp/dl.last1
+
+md5sum /tmp/147.bin /tmp/dl.full
+'
