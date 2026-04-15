@@ -1,27 +1,34 @@
-kubectl -n NS run s3-147b-test --rm -i --restart=Never \
+kubectl -n NS run s3-copy-verify --rm -i --restart=Never \
   --image=amazon/aws-cli \
   --env="AWS_ACCESS_KEY_ID=..." \
   --env="AWS_SECRET_ACCESS_KEY=..." \
   --env="AWS_DEFAULT_REGION=us-east-1" \
   --command -- bash -lc '
 set -euo pipefail
-KEY="KEY"   # e.g. "_seaweed_s3_smoke/147b.bin"
-dd if=/dev/urandom of=/tmp/147.bin bs=1 count=147 status=none
-wc -c /tmp/147.bin
 
-aws s3 cp --endpoint-url "https://S3_GATEWAY_B" /tmp/147.bin "s3://BUCKET/${KEY}"
+KEY="KEY"   # e.g. path/to/sst_info.000000...
+SRC_EP="https://S3_GATEWAY_A"
+DST_EP="https://S3_GATEWAY_B"
+BUCKET="BUCKET"
 
-aws s3api head-object --endpoint-url "https://S3_GATEWAY_B" --bucket "BUCKET" --key "${KEY}" \
-  | tee /tmp/head.json
+echo "== Download from source A =="
+aws s3 cp --endpoint-url "${SRC_EP}" "s3://${BUCKET}/${KEY}" /tmp/src.bin
+wc -c /tmp/src.bin
+sha256sum /tmp/src.bin | tee /tmp/src.sha
 
-aws s3api get-object --endpoint-url "https://S3_GATEWAY_B" --bucket "BUCKET" --key "${KEY}" /tmp/dl.full
-wc -c /tmp/dl.full
+echo "== Upload to target B =="
+aws s3 cp --endpoint-url "${DST_EP}" /tmp/src.bin "s3://${BUCKET}/${KEY}"
 
-aws s3api get-object --endpoint-url "https://S3_GATEWAY_B" --bucket "BUCKET" --key "${KEY}" /tmp/dl.first146 --range bytes=0-145
-wc -c /tmp/dl.first146
+echo "== Download back from target B =="
+aws s3 cp --endpoint-url "${DST_EP}" "s3://${BUCKET}/${KEY}" /tmp/dst.bin
+wc -c /tmp/dst.bin
+sha256sum /tmp/dst.bin | tee /tmp/dst.sha
 
-aws s3api get-object --endpoint-url "https://S3_GATEWAY_B" --bucket "BUCKET" --key "${KEY}" /tmp/dl.last1 --range bytes=146-146
-wc -c /tmp/dl.last1
+echo "== Compare hashes =="
+diff -u /tmp/src.sha /tmp/dst.sha && echo "HASH MATCH"
 
-md5sum /tmp/147.bin /tmp/dl.full
+echo "== Last-byte range read on B =="
+aws s3api head-object --endpoint-url "${DST_EP}" --bucket "${BUCKET}" --key "${KEY}" | sed -n "s/.*\"ContentLength\": \\([0-9]*\\).*/ContentLength=\\1/p"
+aws s3api get-object --endpoint-url "${DST_EP}" --bucket "${BUCKET}" --key "${KEY}" /tmp/last1 --range bytes=146-146 >/dev/null
+wc -c /tmp/last1
 '
