@@ -12,6 +12,7 @@
 #
 # Optional environment variables:
 # - K8S_NAMESPACE         (default: seaweedfs)
+# - KUBECONFIG_PATH       (optional explicit kubeconfig path)
 # - SRC_ACCESS_KEY_ID     (required if not prompted)
 # - SRC_SECRET_ACCESS_KEY (required if not prompted)
 # - DST_ACCESS_KEY_ID     (defaults to SRC_ACCESS_KEY_ID)
@@ -63,10 +64,61 @@ normalize_endpoint() {
 require_cmd kubectl
 require_cmd date
 
+usage() {
+  cat <<'EOF'
+Usage: rclone-bucket-copy-verify.sh [--kubeconfig /path/to/kubeconfig] [--namespace NAMESPACE]
+
+Options:
+  --kubeconfig PATH   Use this kubeconfig file for all kubectl calls.
+  --namespace NS      Kubernetes namespace (overrides K8S_NAMESPACE env).
+  -h, --help          Show this help.
+EOF
+}
+
+KUBECONFIG_PATH="${KUBECONFIG_PATH:-${KUBECONFIG:-}}"
 K8S_NAMESPACE="${K8S_NAMESPACE:-seaweedfs}"
 RCLONE_IMAGE="${RCLONE_IMAGE:-rclone/rclone:1.68.2}"
 SRC_REGION="${SRC_REGION:-us-east-1}"
 DST_REGION="${DST_REGION:-us-east-1}"
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --kubeconfig)
+      if [[ $# -lt 2 ]]; then
+        echo "--kubeconfig requires a path value" >&2
+        exit 1
+      fi
+      KUBECONFIG_PATH="$2"
+      shift 2
+      ;;
+    --namespace)
+      if [[ $# -lt 2 ]]; then
+        echo "--namespace requires a value" >&2
+        exit 1
+      fi
+      K8S_NAMESPACE="$2"
+      shift 2
+      ;;
+    -h|--help)
+      usage
+      exit 0
+      ;;
+    *)
+      echo "unknown argument: $1" >&2
+      usage >&2
+      exit 1
+      ;;
+  esac
+done
+
+KUBECTL=(kubectl)
+if [[ -n "$KUBECONFIG_PATH" ]]; then
+  if [[ ! -f "$KUBECONFIG_PATH" ]]; then
+    echo "kubeconfig file not found: $KUBECONFIG_PATH" >&2
+    exit 1
+  fi
+  KUBECTL+=(--kubeconfig "$KUBECONFIG_PATH")
+fi
 
 prompt_required BUCKET_NAME "Bucket name"
 prompt_required SOURCE_ENDPOINT "Source S3 endpoint (host:port or http[s]://host:port)"
@@ -86,6 +138,9 @@ POD_NAME="rclone-copy-verify-$(date +%s)"
 LOG_PREFIX="[rclone-copy-verify]"
 
 echo "$LOG_PREFIX namespace: ${K8S_NAMESPACE}"
+if [[ -n "$KUBECONFIG_PATH" ]]; then
+  echo "$LOG_PREFIX kubeconfig: ${KUBECONFIG_PATH}"
+fi
 echo "$LOG_PREFIX pod: ${POD_NAME}"
 echo "$LOG_PREFIX bucket: ${BUCKET_NAME}"
 echo "$LOG_PREFIX source: ${SOURCE_ENDPOINT}"
@@ -93,11 +148,11 @@ echo "$LOG_PREFIX target: ${TARGET_ENDPOINT}"
 echo "$LOG_PREFIX creating pod..."
 
 cleanup() {
-  kubectl -n "$K8S_NAMESPACE" delete pod "$POD_NAME" --ignore-not-found >/dev/null 2>&1 || true
+  "${KUBECTL[@]}" -n "$K8S_NAMESPACE" delete pod "$POD_NAME" --ignore-not-found >/dev/null 2>&1 || true
 }
 trap cleanup EXIT
 
-kubectl -n "$K8S_NAMESPACE" run "$POD_NAME" \
+"${KUBECTL[@]}" -n "$K8S_NAMESPACE" run "$POD_NAME" \
   --restart=Never \
   --image="$RCLONE_IMAGE" \
   --env="BUCKET_NAME=${BUCKET_NAME}" \
@@ -156,15 +211,15 @@ fi
 '
 
 echo "$LOG_PREFIX waiting for pod completion..."
-if ! kubectl -n "$K8S_NAMESPACE" wait --for=condition=Ready "pod/${POD_NAME}" --timeout=120s >/dev/null 2>&1; then
+if ! "${KUBECTL[@]}" -n "$K8S_NAMESPACE" wait --for=condition=Ready "pod/${POD_NAME}" --timeout=120s >/dev/null 2>&1; then
   echo "$LOG_PREFIX pod did not become Ready; printing describe output." >&2
-  kubectl -n "$K8S_NAMESPACE" describe pod "$POD_NAME" >&2 || true
+  "${KUBECTL[@]}" -n "$K8S_NAMESPACE" describe pod "$POD_NAME" >&2 || true
 fi
 
-kubectl -n "$K8S_NAMESPACE" logs -f "$POD_NAME" || true
+"${KUBECTL[@]}" -n "$K8S_NAMESPACE" logs -f "$POD_NAME" || true
 
-PHASE="$(kubectl -n "$K8S_NAMESPACE" get pod "$POD_NAME" -o jsonpath='{.status.phase}' 2>/dev/null || echo Unknown)"
-EXIT_CODE="$(kubectl -n "$K8S_NAMESPACE" get pod "$POD_NAME" -o jsonpath='{.status.containerStatuses[0].state.terminated.exitCode}' 2>/dev/null || echo 1)"
+PHASE="$("${KUBECTL[@]}" -n "$K8S_NAMESPACE" get pod "$POD_NAME" -o jsonpath='{.status.phase}' 2>/dev/null || echo Unknown)"
+EXIT_CODE="$("${KUBECTL[@]}" -n "$K8S_NAMESPACE" get pod "$POD_NAME" -o jsonpath='{.status.containerStatuses[0].state.terminated.exitCode}' 2>/dev/null || echo 1)"
 
 echo "$LOG_PREFIX pod phase: ${PHASE}, exit code: ${EXIT_CODE}"
 if [[ "$EXIT_CODE" != "0" ]]; then
