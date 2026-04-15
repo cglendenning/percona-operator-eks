@@ -1,43 +1,36 @@
 #!/usr/bin/env bash
-# Copy one S3 bucket from a source S3 endpoint to a target S3 endpoint using rclone
-# inside a short-lived pod in the target cluster, then verify integrity and report failures.
+# Copy and verify one bucket between two SeaweedFS clusters using filer HTTP endpoints
+# (no S3 gateway). Runs in the target Kubernetes namespace.
 #
-# Designed for WSL/bash operators: run this from your workstation where kubectl points
-# at the target cluster context.
+# Pushback: rclone is not designed for SeaweedFS filer HTTP (:8888-style) endpoints
+# ---------------------------------------------------------------------------
+# SeaweedFS documents rclone against the S3-compatible API (usually the filer S3 gateway on
+# :8333), not the filer file HTTP API. Pointing rclone's `s3` remote at a filer :8888 URL is
+# the wrong protocol and will fail in confusing ways ("directory not found", etc.).
+# rclone's `http` backend is read-only and aimed at generic web directory listings; it is not
+# a supported stand-in for "use filer instead of S3" for read/write bucket sync.
+# This script therefore defaults to `weed filer.sync` for filer-to-filer work, and keeps an
+# optional `--mode s3` path only for real S3 API endpoints.
 #
-# Preflight (before creating the rclone pod):
-# - Verifies each endpoint responds like a SeaweedFS filer HTTP API (GET /status).
-# - Verifies the bucket path exists as a directory listing under ${BUCKET_FILER_PREFIX}/<bucket>/
-#   (GET with Accept: application/json). Default prefix is /buckets.
-# - Verifies rclone can list the bucket on both S3 endpoints (runs a tiny ephemeral pod
-#   in the target namespace, then deletes it).
+# Default mode: filer
+# - Preflight: GET /status and JSON list under ${BUCKET_FILER_PREFIX}/<bucket>/ on both filers.
+# - Sync: `weed filer.sync` between source and target filer peers for a bounded time window
+#   (continuous replication; see FILER_SYNC_SECONDS).
+# - Verify: in-cluster Python walk of both filer trees; compares relative paths and byte sizes.
 #
-# Important SeaweedFS endpoint mismatch:
-# - SeaweedFS "filer" HTTP is commonly on :8888 and is NOT the S3 API that rclone's
-#   `s3` backend expects (SeaweedFS documents S3 for rclone on :8333).
-# - If you only have :8888 exposed on the network, use an in-cluster S3 endpoint for
-#   rclone (often `http://<filer-s3-service>.<ns>.svc.cluster.local:8333`) or expose S3.
+# Optional mode: s3 (legacy)
+# - Uses rclone s3 remotes against SOURCE_ENDPOINT / TARGET_ENDPOINT (SeaweedFS S3 API, :8333).
 #
-# Prompts:
-# - Bucket name
-# - Source S3 endpoint (host:port or http[s]://host:port) — must be S3 API (usually :8333)
-# - Target S3 endpoint (host:port or http[s]://host:port) — must be S3 API (usually :8333)
-# - Filer HTTP base URL for preflight checks (host:port or http[s]://host:port) — usually :8888
+# Usage:
+#   ./rclone-bucket-copy-verify.sh [--kubeconfig PATH] [--namespace NS] [--mode filer|s3]
 #
-# Optional environment variables:
-# - K8S_NAMESPACE         (optional; if unset, script prompts)
-# - KUBECONFIG_PATH       (optional explicit kubeconfig path)
-# - SRC_ACCESS_KEY_ID     (required if not prompted)
-# - SRC_SECRET_ACCESS_KEY (required if not prompted)
-# - DST_ACCESS_KEY_ID     (defaults to SRC_ACCESS_KEY_ID)
-# - DST_SECRET_ACCESS_KEY (defaults to SRC_SECRET_ACCESS_KEY)
-# - SRC_REGION            (default: us-east-1)
-# - DST_REGION            (default: us-east-1)
-# - RCLONE_IMAGE          (default: rclone/rclone:1.68.2)
-# - SOURCE_FILER_HTTP     (optional; if unset, script prompts)
-# - TARGET_FILER_HTTP     (optional; if unset, script prompts)
-# - SKIP_RCLONE_PREFLIGHT (optional; set to 1 to skip the in-cluster rclone list-bucket preflight)
-# - BUCKET_FILER_PREFIX   (optional; default /buckets) filer path prefix before /<bucket> for HTTP checks
+# Filer mode environment (optional):
+# - SEAWEEDFS_IMAGE       (default: chrislusf/seaweedfs:4.13)
+# - VERIFY_IMAGE          (default: python:3.12-alpine)
+# - FILER_SYNC_SECONDS    (default: 600) how long to run filer.sync before SIGTERM
+# - BUCKET_FILER_PREFIX   (default: /buckets)
+# - FILER_A_FILER_PROXY   set to 1 to pass -a.filerProxy
+# - FILER_B_FILER_PROXY   set to 1 to pass -b.filerProxy
 #
 set -euo pipefail
 
@@ -85,6 +78,22 @@ strip_trailing_slash() {
   printf "%s" "$s"
 }
 
+filer_peer_from_url() {
+  python3 -c 'import sys,urllib.parse
+u=sys.argv[1]
+if "://" not in u:
+  u="http://"+u
+p=urllib.parse.urlparse(u)
+host=p.hostname
+port=p.port
+if not host:
+  raise SystemExit("could not parse host from filer URL: "+sys.argv[1])
+if port is None:
+  # Seaweed filer HTTP default when omitted (avoid guessing 80/443).
+  port = 8888
+print(host+":"+str(port))' "$1"
+}
+
 require_cmd kubectl
 require_cmd date
 require_cmd curl
@@ -92,12 +101,17 @@ require_cmd python3
 
 usage() {
   cat <<'EOF'
-Usage: rclone-bucket-copy-verify.sh [--kubeconfig /path/to/kubeconfig] [--namespace NAMESPACE]
+Usage: rclone-bucket-copy-verify.sh [--kubeconfig /path/to/kubeconfig] [--namespace NS] [--mode filer|s3]
 
 Options:
   --kubeconfig PATH   Use this kubeconfig file for all kubectl calls.
   --namespace NS      Kubernetes namespace (overrides K8S_NAMESPACE env).
+  --mode MODE         filer (default): weed filer.sync + filer HTTP verify.
+                      s3: rclone only — expects SeaweedFS S3 API URLs (e.g. :8333), not filer :8888.
   -h, --help          Show this help.
+
+Note: rclone is not intended to drive the filer HTTP file API. Use --mode filer for filer LB
+URLs, or expose/use the in-cluster S3 gateway for --mode s3.
 EOF
 }
 
@@ -139,7 +153,6 @@ if not isinstance(obj.get("Entries"), list):
 path=str(obj.get("Path",""))
 want=(prefix.rstrip("/") + "/" + bucket).rstrip("/")
 if path.rstrip("/") != want:
-  # Some proxies/normalizers may return the bucket path with or without a trailing slash.
   if path.rstrip("/") != want.rstrip("/"):
     raise SystemExit(1)
 ' "$bucket" "$prefix" >/dev/null; then
@@ -148,53 +161,6 @@ if path.rstrip("/") != want:
     exit 2
   fi
 }
-
-KUBECONFIG_PATH="${KUBECONFIG_PATH:-${KUBECONFIG:-}}"
-K8S_NAMESPACE="${K8S_NAMESPACE:-}"
-RCLONE_IMAGE="${RCLONE_IMAGE:-rclone/rclone:1.68.2}"
-SRC_REGION="${SRC_REGION:-us-east-1}"
-DST_REGION="${DST_REGION:-us-east-1}"
-
-while [[ $# -gt 0 ]]; do
-  case "$1" in
-    --kubeconfig)
-      if [[ $# -lt 2 ]]; then
-        echo "--kubeconfig requires a path value" >&2
-        exit 1
-      fi
-      KUBECONFIG_PATH="$2"
-      shift 2
-      ;;
-    --namespace)
-      if [[ $# -lt 2 ]]; then
-        echo "--namespace requires a value" >&2
-        exit 1
-      fi
-      K8S_NAMESPACE="$2"
-      shift 2
-      ;;
-    -h|--help)
-      usage
-      exit 0
-      ;;
-    *)
-      echo "unknown argument: $1" >&2
-      usage >&2
-      exit 1
-      ;;
-  esac
-done
-
-KUBECTL=(kubectl)
-if [[ -n "$KUBECONFIG_PATH" ]]; then
-  if [[ ! -f "$KUBECONFIG_PATH" ]]; then
-    echo "kubeconfig file not found: $KUBECONFIG_PATH" >&2
-    exit 1
-  fi
-  KUBECTL+=(--kubeconfig "$KUBECONFIG_PATH")
-fi
-
-LOG_PREFIX="[rclone-copy-verify]"
 
 preflight_rclone_s3_bucket_list() {
   if [[ "${SKIP_RCLONE_PREFLIGHT:-0}" == "1" ]]; then
@@ -278,29 +244,354 @@ rclone lsf "dst:${BUCKET_NAME}" --fast-list --max-depth 1 --s3-no-check-bucket >
   echo "$LOG_PREFIX preflight: rclone validated both S3 endpoints for bucket ${BUCKET_NAME}"
 }
 
-prompt_required K8S_NAMESPACE "Target namespace for rclone pod"
+wait_pod_terminal() {
+  local pod="$1"
+  local max_wait="${2:-900}"
+  local deadline=$((SECONDS + max_wait))
+  local phase="Unknown"
+  while [[ $SECONDS -lt $deadline ]]; do
+    phase="$("${KUBECTL[@]}" -n "$K8S_NAMESPACE" get pod "$pod" -o jsonpath='{.status.phase}' 2>/dev/null || echo Unknown)"
+    if [[ "$phase" == "Succeeded" || "$phase" == "Failed" ]]; then
+      break
+    fi
+    sleep 3
+  done
+  printf "%s" "$phase"
+}
+
+KUBECONFIG_PATH="${KUBECONFIG_PATH:-${KUBECONFIG:-}}"
+K8S_NAMESPACE="${K8S_NAMESPACE:-}"
+SYNC_MODE="${SYNC_MODE:-filer}"
+RCLONE_IMAGE="${RCLONE_IMAGE:-rclone/rclone:1.68.2}"
+SEAWEEDFS_IMAGE="${SEAWEEDFS_IMAGE:-chrislusf/seaweedfs:4.13}"
+VERIFY_IMAGE="${VERIFY_IMAGE:-python:3.12-alpine}"
+FILER_SYNC_SECONDS="${FILER_SYNC_SECONDS:-600}"
+SRC_REGION="${SRC_REGION:-us-east-1}"
+DST_REGION="${DST_REGION:-us-east-1}"
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --kubeconfig)
+      if [[ $# -lt 2 ]]; then
+        echo "--kubeconfig requires a path value" >&2
+        exit 1
+      fi
+      KUBECONFIG_PATH="$2"
+      shift 2
+      ;;
+    --namespace)
+      if [[ $# -lt 2 ]]; then
+        echo "--namespace requires a value" >&2
+        exit 1
+      fi
+      K8S_NAMESPACE="$2"
+      shift 2
+      ;;
+    --mode)
+      if [[ $# -lt 2 ]]; then
+        echo "--mode requires filer or s3" >&2
+        exit 1
+      fi
+      SYNC_MODE="$2"
+      shift 2
+      ;;
+    -h|--help)
+      usage
+      exit 0
+      ;;
+    *)
+      echo "unknown argument: $1" >&2
+      usage >&2
+      exit 1
+      ;;
+  esac
+done
+
+KUBECTL=(kubectl)
+if [[ -n "$KUBECONFIG_PATH" ]]; then
+  if [[ ! -f "$KUBECONFIG_PATH" ]]; then
+    echo "kubeconfig file not found: $KUBECONFIG_PATH" >&2
+    exit 1
+  fi
+  KUBECTL+=(--kubeconfig "$KUBECONFIG_PATH")
+fi
+
+LOG_PREFIX="[filersync-bucket-verify]"
+
+case "$SYNC_MODE" in
+  filer|s3) ;;
+  *)
+    echo "invalid --mode: $SYNC_MODE (use filer or s3)" >&2
+    exit 1
+    ;;
+esac
+
+prompt_required K8S_NAMESPACE "Target namespace for job pods"
 prompt_required BUCKET_NAME "Bucket name"
+
+BUCKET_FILER_PREFIX="${BUCKET_FILER_PREFIX:-/buckets}"
+BUCKET_FILER_PREFIX="$(strip_trailing_slash "$BUCKET_FILER_PREFIX")"
+SYNC_PATH="${BUCKET_FILER_PREFIX}/${BUCKET_NAME}"
+
+if [[ "$SYNC_MODE" == "filer" ]]; then
+  prompt_required SOURCE_FILER_HTTP "Source filer base URL (host:port or http[s]://host:port)"
+  prompt_required TARGET_FILER_HTTP "Target filer base URL (host:port or http[s]://host:port)"
+
+  SOURCE_FILER_HTTP="$(strip_trailing_slash "$(normalize_endpoint "$SOURCE_FILER_HTTP")")"
+  TARGET_FILER_HTTP="$(strip_trailing_slash "$(normalize_endpoint "$TARGET_FILER_HTTP")")"
+
+  SRC_PEER="$(filer_peer_from_url "$SOURCE_FILER_HTTP")"
+  DST_PEER="$(filer_peer_from_url "$TARGET_FILER_HTTP")"
+
+  preflight_filer_http_bucket "source" "$SOURCE_FILER_HTTP" "$BUCKET_NAME" "$BUCKET_FILER_PREFIX"
+  preflight_filer_http_bucket "target" "$TARGET_FILER_HTTP" "$BUCKET_NAME" "$BUCKET_FILER_PREFIX"
+
+  SYNC_POD="weed-filersync-$(date +%s)-$RANDOM"
+  echo "$LOG_PREFIX namespace: ${K8S_NAMESPACE}"
+  if [[ -n "$KUBECONFIG_PATH" ]]; then
+    echo "$LOG_PREFIX kubeconfig: ${KUBECONFIG_PATH}"
+  fi
+  echo "$LOG_PREFIX mode: filer (weed filer.sync)"
+  echo "$LOG_PREFIX sync pod: ${SYNC_POD}"
+  echo "$LOG_PREFIX bucket path on filers: ${SYNC_PATH}"
+  echo "$LOG_PREFIX filer A (-a): ${SRC_PEER} (from ${SOURCE_FILER_HTTP})"
+  echo "$LOG_PREFIX filer B (-b): ${DST_PEER} (from ${TARGET_FILER_HTTP})"
+  echo "$LOG_PREFIX filer.sync duration: ${FILER_SYNC_SECONDS}s (then SIGTERM; increase FILER_SYNC_SECONDS if needed)"
+
+  cleanup_sync() {
+    "${KUBECTL[@]}" -n "$K8S_NAMESPACE" delete pod "$SYNC_POD" --ignore-not-found >/dev/null 2>&1 || true
+  }
+  trap cleanup_sync EXIT
+
+  "${KUBECTL[@]}" -n "$K8S_NAMESPACE" run "$SYNC_POD" \
+    --restart=Never \
+    --image="$SEAWEEDFS_IMAGE" \
+    --env="SRC_PEER=${SRC_PEER}" \
+    --env="DST_PEER=${DST_PEER}" \
+    --env="SYNC_PATH=${SYNC_PATH}" \
+    --env="FILER_SYNC_SECONDS=${FILER_SYNC_SECONDS}" \
+    --env="FILER_A_FILER_PROXY=${FILER_A_FILER_PROXY:-0}" \
+    --env="FILER_B_FILER_PROXY=${FILER_B_FILER_PROXY:-0}" \
+    --command -- /bin/sh -c '
+set -eu
+echo "[pod] weed version:"
+weed version || true
+
+echo "[pod] starting weed filer.sync (background) for ${FILER_SYNC_SECONDS}s"
+set -- weed filer.sync \
+  -a "${SRC_PEER}" \
+  -b "${DST_PEER}" \
+  -isActivePassive=true \
+  -a.path="${SYNC_PATH}" \
+  -b.path="${SYNC_PATH}"
+
+if [ "${FILER_A_FILER_PROXY}" = "1" ]; then
+  set -- "$@" -a.filerProxy
+fi
+if [ "${FILER_B_FILER_PROXY}" = "1" ]; then
+  set -- "$@" -b.filerProxy
+fi
+
+"$@" &
+pid=$!
+
+i=0
+while [ "$i" -lt "${FILER_SYNC_SECONDS}" ]; do
+  sleep 1
+  i=$((i + 1))
+done
+
+echo "[pod] sending SIGTERM to filer.sync (pid ${pid})"
+kill -TERM "$pid" 2>/dev/null || true
+wait "$pid" 2>/dev/null || true
+echo "[pod] filer.sync stopped after ${FILER_SYNC_SECONDS}s window"
+exit 0
+'
+
+  echo "$LOG_PREFIX waiting for sync pod to finish..."
+  sync_phase="$(wait_pod_terminal "$SYNC_POD" $((FILER_SYNC_SECONDS + 120)))"
+  "${KUBECTL[@]}" -n "$K8S_NAMESPACE" logs "$SYNC_POD" 2>/dev/null || true
+  sync_exit="$("${KUBECTL[@]}" -n "$K8S_NAMESPACE" get pod "$SYNC_POD" -o jsonpath='{.status.containerStatuses[0].state.terminated.exitCode}' 2>/dev/null || true)"
+  sync_exit="${sync_exit:-1}"
+  cleanup_sync
+  trap - EXIT
+
+  if [[ "$sync_phase" != "Succeeded" ]]; then
+    echo "$LOG_PREFIX sync pod phase=${sync_phase} exit=${sync_exit}" >&2
+    "${KUBECTL[@]}" -n "$K8S_NAMESPACE" describe pod "$SYNC_POD" >&2 || true
+    exit 4
+  fi
+
+  VERIFY_POD="filer-tree-verify-$(date +%s)-$RANDOM"
+  VERIFY_TMP="$(mktemp)"
+  trap 'rm -f "$VERIFY_TMP"' EXIT
+
+  cat <<'PY' >"$VERIFY_TMP"
+import json
+import os
+import urllib.error
+import urllib.parse
+import urllib.request
+
+def http_json(url: str):
+    req = urllib.request.Request(
+        url,
+        headers={"Accept": "application/json"},
+        method="GET",
+    )
+    with urllib.request.urlopen(req, timeout=300) as resp:
+        return json.loads(resp.read().decode("utf-8"))
+
+def file_size_from_entry(entry: dict) -> int:
+    chunks = entry.get("chunks") or []
+    if chunks:
+        return int(sum(int(c.get("size") or 0) for c in chunks))
+    fsz = entry.get("FileSize")
+    if fsz is not None:
+        return int(fsz)
+    return 0
+
+def is_dir_listing(base: str, fullpath: str) -> bool:
+    """True if GET /fullpath/ returns a JSON directory listing."""
+    url = base.rstrip("/") + fullpath.rstrip("/") + "/?pretty=y&limit=1"
+    try:
+        doc = http_json(url)
+    except urllib.error.HTTPError:
+        return False
+    return isinstance(doc, dict) and "Entries" in doc
+
+def list_children(base: str, dir_path: str):
+    last = ""
+    while True:
+        q = [("pretty", "y"), ("limit", "2000")]
+        if last:
+            q.append(("lastFileName", last))
+        qs = urllib.parse.urlencode(q)
+        url = base.rstrip("/") + dir_path.rstrip("/") + "/?" + qs
+        doc = http_json(url)
+        entries = doc.get("Entries") or []
+        for ent in entries:
+            fp = ent.get("FullPath")
+            if fp:
+                yield fp, ent
+        if not doc.get("ShouldDisplayLoadMore"):
+            break
+        if not entries:
+            break
+        last = entries[-1].get("FullPath", "").rsplit("/", 1)[-1]
+        if not last:
+            break
+
+def walk_files(base: str, root_dir: str):
+    out = {}
+    root_dir = root_dir.rstrip("/")
+    stack = [root_dir + "/"]
+
+    while stack:
+        cur = stack.pop()
+        for fp, ent in list_children(base, cur):
+            if is_dir_listing(base, fp):
+                stack.append(fp.rstrip("/") + "/")
+                continue
+            rel = fp[len(root_dir) :].lstrip("/")
+            out[rel] = file_size_from_entry(ent)
+
+    return out
+
+def main():
+    src = os.environ["SRC_BASE"].rstrip("/")
+    dst = os.environ["DST_BASE"].rstrip("/")
+    root = os.environ["ROOT_PREFIX"].rstrip("/")
+    if not root.startswith("/"):
+        root = "/" + root
+
+    a = walk_files(src, root)
+    b = walk_files(dst, root)
+    if a == b:
+        print("verify ok: %d files, sizes match" % len(a))
+        return 0
+
+    only_a = sorted(set(a) - set(b))
+    only_b = sorted(set(b) - set(a))
+    mismatch = sorted(k for k in set(a) & set(b) if a[k] != b[k])
+    print("verify failed: src files=%d dst files=%d" % (len(a), len(b)))
+    for k in only_a[:50]:
+        print("only_in_src", k, a[k])
+    for k in only_b[:50]:
+        print("only_in_dst", k, b[k])
+    for k in mismatch[:50]:
+        print("size_mismatch", k, a[k], b[k])
+    if len(only_a) > 50 or len(only_b) > 50 or len(mismatch) > 50:
+        print("... truncated ...")
+    return 1
+
+if __name__ == "__main__":
+    raise SystemExit(main())
+PY
+
+  VERIFY_B64="$(base64 <"$VERIFY_TMP" | tr -d '\n')"
+  rm -f "$VERIFY_TMP"
+  trap - EXIT
+
+  echo "$LOG_PREFIX verify pod: ${VERIFY_POD} (image ${VERIFY_IMAGE})"
+
+  cleanup_verify() {
+    "${KUBECTL[@]}" -n "$K8S_NAMESPACE" delete pod "$VERIFY_POD" --ignore-not-found >/dev/null 2>&1 || true
+  }
+  trap cleanup_verify EXIT
+
+  "${KUBECTL[@]}" -n "$K8S_NAMESPACE" run "$VERIFY_POD" \
+    --restart=Never \
+    --image="$VERIFY_IMAGE" \
+    --env="SRC_BASE=${SOURCE_FILER_HTTP}" \
+    --env="DST_BASE=${TARGET_FILER_HTTP}" \
+    --env="ROOT_PREFIX=${SYNC_PATH}" \
+    --env="VERIFY_B64=${VERIFY_B64}" \
+    --command -- /bin/sh -c '
+set -eu
+printf "%s" "$VERIFY_B64" | base64 -d > /tmp/verify.py
+python3 /tmp/verify.py
+'
+
+  echo "$LOG_PREFIX waiting for verify pod..."
+  v_phase="$(wait_pod_terminal "$VERIFY_POD" 900)"
+  echo "$LOG_PREFIX verify pod logs (${VERIFY_POD}):"
+  "${KUBECTL[@]}" -n "$K8S_NAMESPACE" logs "$VERIFY_POD" 2>/dev/null || true
+  v_exit="$("${KUBECTL[@]}" -n "$K8S_NAMESPACE" get pod "$VERIFY_POD" -o jsonpath='{.status.containerStatuses[0].state.terminated.exitCode}' 2>/dev/null || echo 1)"
+  cleanup_verify
+  trap - EXIT
+
+  if [[ "$v_phase" != "Succeeded" || "$v_exit" != "0" ]]; then
+    echo "$LOG_PREFIX verify failed: phase=${v_phase} exit=${v_exit}" >&2
+    "${KUBECTL[@]}" -n "$K8S_NAMESPACE" describe pod "$VERIFY_POD" >&2 || true
+    exit 5
+  fi
+
+  echo "$LOG_PREFIX success: filer sync window completed and tree verify passed."
+  exit 0
+fi
+
+# ---- s3 (rclone) mode ----
+LOG_PREFIX="[rclone-copy-verify]"
+echo "$LOG_PREFIX --mode s3: rclone expects SeaweedFS S3-compatible API base URLs (typically :8333)." >&2
+echo "$LOG_PREFIX Do not use filer file HTTP URLs (e.g. :8888) as rclone s3 endpoints; that is the wrong protocol." >&2
 prompt_required SOURCE_ENDPOINT "Source S3 API endpoint for rclone (host:port or http[s]://host:port; usually :8333)"
 prompt_required TARGET_ENDPOINT "Target S3 API endpoint for rclone (host:port or http[s]://host:port; usually :8333)"
 
 SOURCE_ENDPOINT="$(normalize_endpoint "$SOURCE_ENDPOINT")"
 TARGET_ENDPOINT="$(normalize_endpoint "$TARGET_ENDPOINT")"
 
-prompt_required SOURCE_FILER_HTTP "Source filer HTTP base URL for preflight (host:port or http[s]://host:port; usually :8888)"
-prompt_required TARGET_FILER_HTTP "Target filer HTTP base URL for preflight (host:port or http[s]://host:port; usually :8888)"
+prompt_required SOURCE_FILER_HTTP "Source filer base URL for preflight (host:port or http[s]://host:port)"
+prompt_required TARGET_FILER_HTTP "Target filer base URL for preflight (host:port or http[s]://host:port)"
 
-SOURCE_FILER_HTTP="$(normalize_endpoint "$SOURCE_FILER_HTTP")"
-TARGET_FILER_HTTP="$(normalize_endpoint "$TARGET_FILER_HTTP")"
+SOURCE_FILER_HTTP="$(strip_trailing_slash "$(normalize_endpoint "$SOURCE_FILER_HTTP")")"
+TARGET_FILER_HTTP="$(strip_trailing_slash "$(normalize_endpoint "$TARGET_FILER_HTTP")")"
 
-# Credentials: destination defaults to source unless explicitly set.
 prompt_required SRC_ACCESS_KEY_ID "Source access key ID"
 prompt_required SRC_SECRET_ACCESS_KEY "Source secret access key" "true"
 
 DST_ACCESS_KEY_ID="${DST_ACCESS_KEY_ID:-$SRC_ACCESS_KEY_ID}"
 DST_SECRET_ACCESS_KEY="${DST_SECRET_ACCESS_KEY:-$SRC_SECRET_ACCESS_KEY}"
-
-BUCKET_FILER_PREFIX="${BUCKET_FILER_PREFIX:-/buckets}"
-BUCKET_FILER_PREFIX="$(strip_trailing_slash "$BUCKET_FILER_PREFIX")"
 
 preflight_filer_http_bucket "source" "$SOURCE_FILER_HTTP" "$BUCKET_NAME" "$BUCKET_FILER_PREFIX"
 preflight_filer_http_bucket "target" "$TARGET_FILER_HTTP" "$BUCKET_NAME" "$BUCKET_FILER_PREFIX"
@@ -316,8 +607,8 @@ echo "$LOG_PREFIX pod: ${POD_NAME}"
 echo "$LOG_PREFIX bucket: ${BUCKET_NAME}"
 echo "$LOG_PREFIX rclone source (S3): ${SOURCE_ENDPOINT}"
 echo "$LOG_PREFIX rclone target (S3): ${TARGET_ENDPOINT}"
-echo "$LOG_PREFIX preflight source filer (HTTP): $(strip_trailing_slash "$SOURCE_FILER_HTTP")"
-echo "$LOG_PREFIX preflight target filer (HTTP): $(strip_trailing_slash "$TARGET_FILER_HTTP")"
+echo "$LOG_PREFIX preflight source filer (HTTP): ${SOURCE_FILER_HTTP}"
+echo "$LOG_PREFIX preflight target filer (HTTP): ${TARGET_FILER_HTTP}"
 echo "$LOG_PREFIX filer bucket prefix: ${BUCKET_FILER_PREFIX}"
 echo "$LOG_PREFIX creating pod..."
 
