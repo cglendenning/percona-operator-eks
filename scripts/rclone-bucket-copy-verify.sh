@@ -11,7 +11,7 @@
 # runs `rclone lsf` on the source URL so you fail fast if your filer layout is incompatible.
 #
 # Default mode: filer
-# - Preflight: GET /status and JSON list under ${BUCKET_FILER_PREFIX}/<bucket>/ on both filers.
+# - Preflight: TCP connect (nc from TOOLS_IMAGE pod) + JSON list under ${BUCKET_FILER_PREFIX}/<bucket>/ (curl).
 # - Sync: `weed filer.sync` between source and target filer peers for a bounded time window
 #   (continuous replication; see FILER_SYNC_SECONDS).
 # - Verify: in-cluster Python walk of both filer trees; compares relative paths and byte sizes.
@@ -38,6 +38,9 @@
 # filer-to-s3 mode (optional):
 # - ALLOW_FILER_SOURCE_NON_8888  set to 1 to skip strict "source port must be 8888" check
 # - ALLOW_S3_TARGET_PORT_8888    set to 1 to allow target port 8888 (not recommended)
+#
+# TCP probes (optional):
+# - TOOLS_IMAGE (default: nicolaka/netshoot) — must include nc; used for in-cluster TCP checks (no /status).
 #
 set -euo pipefail
 
@@ -119,7 +122,27 @@ Options:
   -h, --help          Show this help.
 
 Note: use --mode filer-to-s3 when the source only exposes filer :8888 and the target is S3.
+
+TCP checks use TOOLS_IMAGE (default nicolaka/netshoot, includes nc). RCLONE_IMAGE defaults to alpine:3.20
+and installs rclone + netcat-openbsd in the pod before running rclone.
 EOF
+}
+
+# Prints "host port" for TCP checks (http without explicit port defaults to 8888 for Seaweed filer-style URLs).
+host_port_for_tcp() {
+  python3 -c 'import sys,urllib.parse
+u=sys.argv[1]
+if not u.startswith(("http://","https://")):
+  u="http://"+u
+p=urllib.parse.urlparse(u)
+h=p.hostname
+if not h:
+  raise SystemExit("no host in URL")
+port=p.port
+if port is None:
+  port = 443 if p.scheme == "https" else 8888
+print("%s %s" % (h, port))
+' "$1"
 }
 
 preflight_filer_http_bucket() {
@@ -130,12 +153,9 @@ preflight_filer_http_bucket() {
 
   base_url="$(strip_trailing_slash "$(normalize_endpoint "$base_url")")"
 
-  echo "$LOG_PREFIX preflight: ${name} filer status: ${base_url}/status"
-  if ! out="$(curl -fsS --max-time 20 "${base_url}/status" 2>&1)"; then
-    echo "$LOG_PREFIX preflight failed: ${name} GET ${base_url}/status" >&2
-    echo "$out" >&2
-    exit 2
-  fi
+  local nc_host nc_port
+  read -r nc_host nc_port < <(host_port_for_tcp "$base_url")
+  nc_tcp_probe_cluster "${name} filer base ${base_url}" "$nc_host" "$nc_port"
 
   local bucket_url="${base_url}${prefix}/${bucket}/"
   echo "$LOG_PREFIX preflight: ${name} bucket listing: ${bucket_url}"
@@ -238,7 +258,47 @@ wait_preflight_pod() {
   printf "%s" "$phase"
 }
 
+# In-cluster TCP check (TOOLS_IMAGE must ship nc, e.g. nicolaka/netshoot).
+nc_tcp_probe_cluster() {
+  local desc="$1"
+  local host="$2"
+  local port="$3"
+  local pod="nc-tcp-$(date +%s)-$RANDOM"
+
+  echo "$LOG_PREFIX TCP probe: ${desc} -> ${host}:${port} (pod ${pod}, image ${TOOLS_IMAGE})"
+  "${KUBECTL[@]}" -n "$K8S_NAMESPACE" run "$pod" \
+    --restart=Never \
+    --image="${TOOLS_IMAGE}" \
+    --command -- nc -z -w 15 "$host" "$port"
+
+  local phase
+  phase="$(wait_preflight_pod "$pod")"
+  echo "$LOG_PREFIX TCP probe logs (${pod}):"
+  "${KUBECTL[@]}" -n "$K8S_NAMESPACE" logs "$pod" 2>/dev/null || true
+  local PF_EXIT
+  PF_EXIT="$("${KUBECTL[@]}" -n "$K8S_NAMESPACE" get pod "$pod" -o jsonpath='{.status.containerStatuses[0].state.terminated.exitCode}' 2>/dev/null || true)"
+  PF_EXIT="${PF_EXIT:-1}"
+  "${KUBECTL[@]}" -n "$K8S_NAMESPACE" delete pod "$pod" --ignore-not-found >/dev/null 2>&1 || true
+
+  if [[ "$phase" != "Succeeded" || "$PF_EXIT" != "0" ]]; then
+    echo "$LOG_PREFIX TCP probe failed: ${desc} (${host}:${port}) phase=${phase} exit=${PF_EXIT}" >&2
+    "${KUBECTL[@]}" -n "$K8S_NAMESPACE" describe pod "$pod" >&2 || true
+    exit 2
+  fi
+}
+
+nc_tcp_probe_url() {
+  local desc="$1"
+  local url="$2"
+  url="$(strip_trailing_slash "$(normalize_endpoint "$url")")"
+  local nh np
+  read -r nh np < <(host_port_for_tcp "$url")
+  nc_tcp_probe_cluster "$desc" "$nh" "$np"
+}
+
 preflight_rclone_filer_http_src() {
+  nc_tcp_probe_url "source filer (rclone http root)" "$SRC_HTTP_URL"
+
   local pf_pod="rclone-preflight-http-src-$(date +%s)-$RANDOM"
   echo "$LOG_PREFIX preflight: pod ${pf_pod} — rclone http list against source filer tree"
 
@@ -248,6 +308,7 @@ preflight_rclone_filer_http_src() {
     --env="SRC_HTTP_URL=${SRC_HTTP_URL}" \
     --command -- /bin/sh -c '
 set -eu
+apk add --no-cache --quiet ca-certificates netcat-openbsd rclone >/dev/null
 rclone version >/dev/null
 rclone config create src http url "$SRC_HTTP_URL" >/dev/null
 rclone lsf "src:" --fast-list --max-depth 2
@@ -274,6 +335,8 @@ preflight_rclone_s3_dst_only() {
     return 0
   fi
 
+  nc_tcp_probe_url "target S3 (rclone destination)" "$TARGET_S3_ENDPOINT"
+
   local pf_pod="rclone-preflight-s3-dst-$(date +%s)-$RANDOM"
   echo "$LOG_PREFIX preflight: pod ${pf_pod} — rclone s3 list on destination only"
 
@@ -287,6 +350,7 @@ preflight_rclone_s3_dst_only() {
     --env="DST_REGION=${DST_REGION}" \
     --command -- /bin/sh -c '
 set -eu
+apk add --no-cache --quiet ca-certificates netcat-openbsd rclone >/dev/null
 rclone version >/dev/null
 rclone config create dst s3 \
   provider Other \
@@ -320,6 +384,11 @@ preflight_rclone_s3_bucket_list() {
     return 0
   fi
 
+  nc_tcp_probe_url "source S3 (rclone)" "$SOURCE_ENDPOINT"
+  nc_tcp_probe_url "target S3 (rclone)" "$TARGET_ENDPOINT"
+  nc_tcp_probe_url "source filer (curl preflight)" "$SOURCE_FILER_HTTP"
+  nc_tcp_probe_url "target filer (curl preflight)" "$TARGET_FILER_HTTP"
+
   local pf_pod="rclone-preflight-$(date +%s)-$RANDOM"
 
   echo "$LOG_PREFIX preflight: creating temporary pod ${pf_pod} to validate S3 endpoints with rclone"
@@ -338,6 +407,7 @@ preflight_rclone_s3_bucket_list() {
     --env="DST_REGION=${DST_REGION}" \
     --command -- /bin/sh -c '
 set -eu
+apk add --no-cache --quiet ca-certificates netcat-openbsd rclone >/dev/null
 rclone version >/dev/null
 
 rclone config create src s3 \
@@ -414,7 +484,9 @@ wait_pod_terminal() {
 KUBECONFIG_PATH="${KUBECONFIG_PATH:-${KUBECONFIG:-}}"
 K8S_NAMESPACE="${K8S_NAMESPACE:-}"
 SYNC_MODE="${SYNC_MODE:-filer}"
-RCLONE_IMAGE="${RCLONE_IMAGE:-rclone/rclone:1.68.2}"
+# Default Alpine image so we can `apk add` rclone + netcat-openbsd (nc) in-pod before running rclone.
+RCLONE_IMAGE="${RCLONE_IMAGE:-alpine:3.20}"
+TOOLS_IMAGE="${TOOLS_IMAGE:-nicolaka/netshoot:latest}"
 SEAWEEDFS_IMAGE="${SEAWEEDFS_IMAGE:-chrislusf/seaweedfs:4.13}"
 VERIFY_IMAGE="${VERIFY_IMAGE:-python:3.12-alpine}"
 FILER_SYNC_SECONDS="${FILER_SYNC_SECONDS:-600}"
@@ -567,6 +639,7 @@ print(base+prefix.rstrip("/")+"/"+bucket+"/")
     --env="DST_REGION=${DST_REGION}" \
     --command -- /bin/sh -c '
 set -eu
+apk add --no-cache --quiet ca-certificates netcat-openbsd rclone >/dev/null
 echo "[pod] rclone version:"
 rclone version
 
@@ -918,6 +991,7 @@ trap cleanup EXIT
   --env="DST_REGION=${DST_REGION}" \
   --command -- /bin/sh -c '
 set -eu
+apk add --no-cache --quiet ca-certificates netcat-openbsd rclone >/dev/null
 echo "[pod] rclone version:"
 rclone version
 
