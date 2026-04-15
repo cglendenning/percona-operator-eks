@@ -1,0 +1,31 @@
+# LoadBalancer Service that fronts the same pods as your in-cluster SeaweedFS S3 gateway (port 8333).
+# Apply on the SOURCE cluster: kubectl apply -f manifests/seaweedfs-s3-gateway-external-lb.yaml
+#
+# Before apply:
+# 1) Set metadata.namespace to the namespace where S3 runs.
+# 2) Set spec.selector to match the EXISTING S3 gateway Service (or the S3 Deployment pod labels).
+#    Copy from: kubectl get svc -n <ns> <your-existing-s3-service> -o jsonpath='{.spec.selector}' ; echo
+#    Example (this repo minimal-deployment.nix): selector app: "<release>-s3"
+# 3) Set external-dns hostname to a DNS name you control (parent zone must delegate to external-dns).
+#
+# Optional annotations (uncomment as needed):
+# - AWS internal NLB: service.beta.kubernetes.io/aws-load-balancer-internal: "true"
+# - GCP internal: networking.gke.io/load-balancer-type: Internal
+
+apiVersion: v1
+kind: Service
+metadata:
+  name: seaweedfs-s3-gateway-external
+  namespace: seaweedfs
+  annotations:
+    external-dns.alpha.kubernetes.io/hostname: seaweedfs-s3-source.example.com
+spec:
+  type: LoadBalancer
+  ports:
+    - name: s3
+      port: 8333
+      targetPort: 8333
+      protocol: TCP
+  selector:
+    # REPLACE: must match labels on the S3 gateway pods (same as existing ClusterIP Service selector).
+    app: seaweedfs-s3
