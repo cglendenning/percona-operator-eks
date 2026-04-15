@@ -11,7 +11,7 @@
 # - Target S3 endpoint (e.g. http://10.0.0.20:8333)
 #
 # Optional environment variables:
-# - K8S_NAMESPACE         (default: seaweedfs)
+# - K8S_NAMESPACE         (optional; if unset, script prompts)
 # - KUBECONFIG_PATH       (optional explicit kubeconfig path)
 # - SRC_ACCESS_KEY_ID     (required if not prompted)
 # - SRC_SECRET_ACCESS_KEY (required if not prompted)
@@ -76,7 +76,7 @@ EOF
 }
 
 KUBECONFIG_PATH="${KUBECONFIG_PATH:-${KUBECONFIG:-}}"
-K8S_NAMESPACE="${K8S_NAMESPACE:-seaweedfs}"
+K8S_NAMESPACE="${K8S_NAMESPACE:-}"
 RCLONE_IMAGE="${RCLONE_IMAGE:-rclone/rclone:1.68.2}"
 SRC_REGION="${SRC_REGION:-us-east-1}"
 DST_REGION="${DST_REGION:-us-east-1}"
@@ -120,6 +120,7 @@ if [[ -n "$KUBECONFIG_PATH" ]]; then
   KUBECTL+=(--kubeconfig "$KUBECONFIG_PATH")
 fi
 
+prompt_required K8S_NAMESPACE "Target namespace for rclone pod"
 prompt_required BUCKET_NAME "Bucket name"
 prompt_required SOURCE_ENDPOINT "Source S3 endpoint (host:port or http[s]://host:port)"
 prompt_required TARGET_ENDPOINT "Target S3 endpoint (host:port or http[s]://host:port)"
