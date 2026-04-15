@@ -5,7 +5,11 @@
 # 1) Set metadata.namespace to the namespace where S3 runs.
 # 2) Set spec.selector to match the EXISTING S3 gateway Service (or the S3 Deployment pod labels).
 #    Copy from: kubectl get svc -n <ns> <your-existing-s3-service> -o jsonpath='{.spec.selector}' ; echo
-#    Example (this repo minimal-deployment.nix): selector app: "<release>-s3"
+#    Service selectors AND every key: include both name + component only if your pods carry both.
+#    Helm-style (below): app.kubernetes.io/name + app.kubernetes.io/component (often also instance).
+#    Minimal / custom charts may use only one label, e.g.:
+#      selector:
+#        app: mycluster-s3
 # 3) Set external-dns hostname to a DNS name you control (parent zone must delegate to external-dns).
 #
 # Optional annotations (uncomment as needed):
@@ -27,5 +31,6 @@ spec:
       targetPort: 8333
       protocol: TCP
   selector:
-    # REPLACE: must match labels on the S3 gateway pods (same as existing ClusterIP Service selector).
-    app: seaweedfs-s3
+    # REPLACE values to match your S3 gateway pods (same label set as the existing ClusterIP Service).
+    app.kubernetes.io/name: seaweedfs
+    app.kubernetes.io/component: s3
