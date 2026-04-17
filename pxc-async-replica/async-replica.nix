@@ -27,7 +27,7 @@ let
     version = "1.0.0";
     inherit src;
 
-    npmDepsHash = "sha256-31M6Eqswiggzo/35JrBLHox9eLQ4tMCk3lKzU0aFUTk=";
+    npmDepsHash = "sha256-E8Akqj3Z0bWG/Ro9cLnVxEPOgVr2TzmL6ToPC1TMWeo=";
 
     nativeBuildInputs = [ pkgs.esbuild ];
 
@@ -95,9 +95,19 @@ let
       name: ${roleName}
       namespace: ${ns}
     rules:
+      - apiGroups: [""]
+        resources: ["secrets"]
+        verbs: ["get"]
+        resourceNames: ["seaweedfs-s3-credentials", "pxc-async-replica-mysql", "root-db-users"]
+      - apiGroups: ["apps"]
+        resources: ["statefulsets", "deployments"]
+        verbs: ["get", "list", "patch"]
       - apiGroups: ["pxc.percona.com"]
         resources: ["perconaxtradbclusters"]
-        verbs: ["get", "list", "watch", "patch", "update"]
+        verbs: ["get", "patch"]
+      - apiGroups: ["pxc.percona.com"]
+        resources: ["perconaxtradbclusterrestores"]
+        verbs: ["get", "list", "create"]
     ---
     apiVersion: rbac.authorization.k8s.io/v1
     kind: RoleBinding
@@ -146,12 +156,39 @@ let
                   value: "db-pxc-0.dev.wookie.com,db-pxc-1.dev.wookie.com,db-pxc-2.dev.wookie.com"
                 - name: SOURCE_PORT
                   value: "3306"
+                - name: S3_ENDPOINT_URL
+                  value: "http://seaweedfs-s3.seaweedfs.svc.cluster.local:8333"
+                - name: S3_REGION
+                  value: "us-east-1"
+                - name: S3_FORCE_PATH_STYLE
+                  value: "true"
+                - name: S3_BACKUP_BUCKET
+                  value: "pxc-backups"
+                - name: S3_BACKUP_PREFIX
+                  value: ""
+                - name: S3_BACKUP_FOLDER_PREFIX
+                  value: "db-"
+                - name: S3_CREDENTIALS_SECRET
+                  value: "seaweedfs-s3-credentials"
+                - name: SOURCE_MYSQL_URL
+                  value: "mysql://root@db-haproxy.percona.svc.cluster.local:3306/mysql"
+                - name: REPLICA_MYSQL_URL
+                  valueFrom:
+                    secretKeyRef:
+                      name: pxc-async-replica-mysql
+                      key: REPLICA_MYSQL_URL
                 - name: READY_TIMEOUT_SECONDS
                   value: "7200"
                 - name: POLL_INTERVAL_MS
                   value: "10000"
-                - name: IDLE_AFTER_SUCCESS_SECONDS
-                  value: "600"
+                - name: RESTORE_TIMEOUT_SECONDS
+                  value: "7200"
+                - name: HEALTHCHECK_INTERVAL_SECONDS
+                  value: "60"
+                - name: MAX_REPLICATION_LAG_SECONDS
+                  value: "5"
+                - name: SELF_HEAL_FAILURE_THRESHOLD
+                  value: "3"
   '';
 
 in
