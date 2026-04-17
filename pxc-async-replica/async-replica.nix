@@ -1,9 +1,9 @@
-# Single-file Nix: npm+esbuild bundle on the host (Darwin/Linux), Linux OCI image via pulled Node base.
+# Nix: npm + esbuild bundle (host), plus rendered Kubernetes RBAC/Deployment YAML.
 #
-#   cd pxc-async-replica && nix-build async-replica.nix -A ociImage
-#   docker load < result
+#   cd pxc-async-replica && nix-build async-replica.nix -A controllerApp   # bundled JS
+#   nix-build async-replica.nix -A k8sManifest && kubectl apply -f result
 #
-# Also: nix-build async-replica.nix -A k8sManifest && kubectl apply -f result
+# Container image: build with Docker in this directory (see Dockerfile).
 
 let
   nixpkgsSrc = builtins.fetchTarball {
@@ -14,13 +14,6 @@ let
   pkgs = import nixpkgsSrc { system = builtins.currentSystem; };
   lib = pkgs.lib;
   src = lib.cleanSource ./.;
-
-  # linux/arm64 vs linux/amd64 single-arch Node 20 Alpine (official index digest)
-  nodeBaseDigest =
-    if builtins.elem builtins.currentSystem [ "aarch64-darwin" "aarch64-linux" ] then
-      "sha256:545117153efee1468bed699fa8f2b4525582454d876c6a0fdc764893a2b51a08"
-    else
-      "sha256:42d1d5b07c84257b55d409f4e6e3be3b55d42867afce975a5648a3f231bf7e81";
 
   controllerApp = pkgs.buildNpmPackage rec {
     pname = "pxc-async-replica-controller";
@@ -39,42 +32,6 @@ let
         --bundle --platform=node --target=node20 --format=cjs \
         --outfile=$out/bundle.cjs
     '';
-  };
-
-  appRoot = pkgs.runCommand "pxc-async-replica-app-root" { } ''
-    mkdir -p $out/app
-    cp ${controllerApp}/bundle.cjs $out/app/bundle.cjs
-  '';
-
-  imageArch =
-    if builtins.elem builtins.currentSystem [ "aarch64-darwin" "aarch64-linux" ] then "arm64" else "amd64";
-
-  nodeBase = pkgs.dockerTools.pullImage {
-    imageName = "docker.io/library/node";
-    imageDigest = nodeBaseDigest;
-    sha256 = "sha256-wtlgnFWfaf8yM9ug7HgKxBldbI4iGSTV84T5/ItdNs0=";
-    arch = imageArch;
-    os = "linux";
-    finalImageTag = "20-alpine";
-  };
-
-  ociImage = pkgs.dockerTools.buildImage {
-    name = "pxc-async-replica-controller";
-    tag = "local";
-    fromImage = nodeBase;
-    copyToRoot = pkgs.buildEnv {
-      name = "image-root";
-      paths = [ appRoot ];
-      pathsToLink = [ "/" ];
-    };
-    config = {
-      Cmd = [ "node" "/app/bundle.cjs" ];
-      Env = [
-        "NODE_ENV=production"
-        "NODE_EXTRA_CA_CERTS=/etc/ssl/certs/ca-certificates.crt"
-      ];
-      WorkingDir = "/";
-    };
   };
 
   ns = "pxc-replica-local";
@@ -141,7 +98,7 @@ let
           serviceAccountName: ${saName}
           containers:
             - name: controller
-              image: pxc-async-replica-controller:local
+              image: pxc-async-replica-controller:latest
               imagePullPolicy: IfNotPresent
               env:
                 - name: PXC_NAMESPACE
@@ -193,7 +150,7 @@ let
 
 in
 {
-  inherit controllerApp ociImage rbacAndDeployYaml;
-  default = ociImage;
+  inherit controllerApp rbacAndDeployYaml;
   k8sManifest = rbacAndDeployYaml;
+  default = rbacAndDeployYaml;
 }
