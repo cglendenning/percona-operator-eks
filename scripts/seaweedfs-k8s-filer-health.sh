@@ -7,10 +7,12 @@
 #   - Runs df on volume (and optionally filer) pods to catch disks nearing full
 #
 # Usage:
-#   ./seaweedfs-k8s-filer-health.sh [--namespace NS]
+#   ./seaweedfs-k8s-filer-health.sh [--kubeconfig PATH | --kubeconfig=PATH] [--namespace NS]
 #
 # Environment (optional):
-#   KUBECONFIG          If set, every kubectl uses --kubeconfig "$KUBECONFIG"
+#   KUBECONFIG          If set to a single file path, kubectl is run with --kubeconfig (same as
+#                       `kubectl --kubeconfig=...`). If it contains ':' (multiple files), the
+#                       script uses plain kubectl so the merge behavior matches the kubectl CLI.
 #   SEAWEED_NAMESPACE   Kubernetes namespace (default: seaweedfs)
 #   SEAWEED_FILER_SVC   Master service hostname as seen from pods (default: auto)
 #   SEAWEED_MASTER_SVC  Same (default: auto)
@@ -24,6 +26,7 @@
 set -euo pipefail
 
 NS="${SEAWEED_NAMESPACE:-seaweedfs}"
+KUBECONFIG_PATH="${KUBECONFIG_PATH:-}"
 WARN_PCT="${WARN_PCT:-85}"
 CRIT_PCT="${CRIT_PCT:-95}"
 MIN_FREE_SLOTS="${MIN_FREE_SLOTS:-2}"
@@ -38,7 +41,7 @@ bump_exit() {
 }
 
 usage() {
-  sed -n '1,25p' "$0" | sed -n '/^#/p' | sed 's/^# \{0,1\}//'
+  sed -n '1,30p' "$0" | sed -n '/^#/p' | sed 's/^# \{0,1\}//'
   exit 1
 }
 
@@ -47,6 +50,14 @@ while [[ $# -gt 0 ]]; do
     --namespace|-n)
       NS="$2"
       shift 2
+      ;;
+    --kubeconfig)
+      KUBECONFIG_PATH="$2"
+      shift 2
+      ;;
+    --kubeconfig=*)
+      KUBECONFIG_PATH="${1#*=}"
+      shift
       ;;
     -h|--help)
       usage
@@ -67,14 +78,35 @@ need_cmd() {
 
 need_cmd kubectl
 
+# Match `kubectl --kubeconfig=/path`: use explicit --kubeconfig from the flag, else a single-file
+# KUBECONFIG env. If KUBECONFIG lists multiple files (':'), rely on the environment (kubectl merge).
 KUBECTL=(kubectl)
-if [[ -n "${KUBECONFIG:-}" ]]; then
-  KUBECTL=(kubectl --kubeconfig "$KUBECONFIG")
+if [[ -n "$KUBECONFIG_PATH" ]]; then
+  KUBECTL=(kubectl --kubeconfig "$KUBECONFIG_PATH")
+elif [[ -n "${KUBECONFIG:-}" ]]; then
+  case "$KUBECONFIG" in
+    *:*)
+      KUBECTL=(kubectl)
+      ;;
+    *)
+      KUBECTL=(kubectl --kubeconfig "$KUBECONFIG")
+      ;;
+  esac
 fi
 
-if ! "${KUBECTL[@]}" get ns "$NS" >/dev/null 2>&1; then
-  echo "error: namespace '$NS' not found or kubectl not configured" >&2
-  exit 3
+# Prefer cluster-scoped `get namespace`; if that fails (RBAC often forbids it), fall back to
+# any namespaced read — many roles can list pods but cannot `get namespace`.
+if ! "${KUBECTL[@]}" get namespace "$NS" -o name &>/dev/null; then
+  if "${KUBECTL[@]}" get pods -n "$NS" --request-timeout=20s &>/dev/null; then
+    echo "note: cannot read Namespace object (RBAC); using namespaced API access only." >&2
+  else
+    echo "error: cannot use namespace '$NS'. Details from kubectl:" >&2
+    echo "--- kubectl get namespace $NS ---" >&2
+    "${KUBECTL[@]}" get namespace "$NS" -o name 2>&1 | sed 's/^/  /' >&2 || true
+    echo "--- kubectl get pods -n $NS ---" >&2
+    "${KUBECTL[@]}" get pods -n "$NS" --request-timeout=20s 2>&1 | sed 's/^/  /' >&2 || true
+    exit 3
+  fi
 fi
 
 discover_master_svc() {
