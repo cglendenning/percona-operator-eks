@@ -10,6 +10,7 @@
 #   ./seaweedfs-k8s-filer-health.sh [--namespace NS]
 #
 # Environment (optional):
+#   KUBECONFIG          If set, every kubectl uses --kubeconfig "$KUBECONFIG"
 #   SEAWEED_NAMESPACE   Kubernetes namespace (default: seaweedfs)
 #   SEAWEED_FILER_SVC   Master service hostname as seen from pods (default: auto)
 #   SEAWEED_MASTER_SVC  Same (default: auto)
@@ -66,14 +67,19 @@ need_cmd() {
 
 need_cmd kubectl
 
-if ! kubectl get ns "$NS" >/dev/null 2>&1; then
+KUBECTL=(kubectl)
+if [[ -n "${KUBECONFIG:-}" ]]; then
+  KUBECTL=(kubectl --kubeconfig "$KUBECONFIG")
+fi
+
+if ! "${KUBECTL[@]}" get ns "$NS" >/dev/null 2>&1; then
   echo "error: namespace '$NS' not found or kubectl not configured" >&2
   exit 3
 fi
 
 discover_master_svc() {
   local s
-  for s in $(kubectl get svc -n "$NS" -o jsonpath='{.items[*].metadata.name}' 2>/dev/null); do
+  for s in $("${KUBECTL[@]}" get svc -n "$NS" -o jsonpath='{.items[*].metadata.name}' 2>/dev/null); do
     if [[ "$s" == *master* ]]; then
       printf '%s' "$s"
       return 0
@@ -84,7 +90,7 @@ discover_master_svc() {
 
 discover_filer_svc() {
   local s
-  for s in $(kubectl get svc -n "$NS" -o jsonpath='{.items[*].metadata.name}' 2>/dev/null); do
+  for s in $("${KUBECTL[@]}" get svc -n "$NS" -o jsonpath='{.items[*].metadata.name}' 2>/dev/null); do
     [[ "$s" == *filer* ]] || continue
     [[ "$s" == *s3* ]] && continue
     [[ "$s" == *sync* ]] && continue
@@ -105,13 +111,13 @@ echo ""
 
 pick_filer_pod() {
   local p ready phase
-  for p in $(kubectl get pods -n "$NS" -o jsonpath='{.items[*].metadata.name}' 2>/dev/null); do
+  for p in $("${KUBECTL[@]}" get pods -n "$NS" -o jsonpath='{.items[*].metadata.name}' 2>/dev/null); do
     [[ "$p" == *filer* ]] || continue
     [[ "$p" == *filer-sync* ]] && continue
     [[ "$p" == *s3* ]] && continue
-    phase=$(kubectl get pod -n "$NS" "$p" -o jsonpath='{.status.phase}' 2>/dev/null || true)
+    phase=$("${KUBECTL[@]}" get pod -n "$NS" "$p" -o jsonpath='{.status.phase}' 2>/dev/null || true)
     [[ "$phase" == "Running" ]] || continue
-    ready=$(kubectl get pod -n "$NS" "$p" -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}' 2>/dev/null || true)
+    ready=$("${KUBECTL[@]}" get pod -n "$NS" "$p" -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}' 2>/dev/null || true)
     [[ "$ready" == "True" ]] || continue
     printf '%s' "$p"
     return 0
@@ -124,7 +130,7 @@ if [[ -z "$FILER_POD" ]]; then
   echo "CRITICAL: no Running/Ready filer pod found in ${NS} (name contains 'filer', excludes s3/sync)." >&2
   bump_exit 2
   echo "(listing pods for debugging)"
-  kubectl get pods -n "$NS" -o wide || true
+  "${KUBECTL[@]}" get pods -n "$NS" -o wide || true
   exit "$MAX_EXIT"
 fi
 
@@ -132,7 +138,7 @@ echo "Using filer pod: ${FILER_POD}"
 filer_exec() {
   local -a extra=()
   [[ -n "${FILER_CONTAINER:-}" ]] && extra=(-c "$FILER_CONTAINER")
-  kubectl exec -n "$NS" "${extra[@]}" "$FILER_POD" -- sh -lc "$1"
+  "${KUBECTL[@]}" exec -n "$NS" "${extra[@]}" "$FILER_POD" -- sh -lc "$1"
 }
 
 http_get() {
@@ -227,7 +233,7 @@ df_report_pod() {
   local out pct path line used
   echo ""
   echo "-- df (${role}: ${pod}) --"
-  if ! out=$(kubectl exec -n "$NS" "$pod" -- sh -lc 'df -P 2>/dev/null || df' 2>/dev/null); then
+  if ! out=$("${KUBECTL[@]}" exec -n "$NS" "$pod" -- sh -lc 'df -P 2>/dev/null || df' 2>/dev/null); then
     echo "WARN: could not run df in ${pod}" >&2
     bump_exit 1
     return
@@ -258,9 +264,9 @@ df_report_pod() {
 echo ""
 echo "-- Volume server disks (df inside each *volume* pod) --"
 vol_found=0
-for p in $(kubectl get pods -n "$NS" -o jsonpath='{.items[*].metadata.name}' 2>/dev/null); do
+for p in $("${KUBECTL[@]}" get pods -n "$NS" -o jsonpath='{.items[*].metadata.name}' 2>/dev/null); do
   [[ "$p" == *volume* ]] || continue
-  phase=$(kubectl get pod -n "$NS" "$p" -o jsonpath='{.status.phase}' 2>/dev/null || true)
+  phase=$("${KUBECTL[@]}" get pod -n "$NS" "$p" -o jsonpath='{.status.phase}' 2>/dev/null || true)
   [[ "$phase" == "Running" ]] || continue
   vol_found=1
   df_report_pod "$p" "volume"
