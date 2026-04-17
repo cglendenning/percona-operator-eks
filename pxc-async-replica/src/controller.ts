@@ -110,7 +110,7 @@ export async function runController(): Promise<void> {
   })();
   const SOURCE_NS = process.env.SOURCE_NS?.trim() || DEST_NS;
 
-  const PXC_CLUSTER = envOptional("PXC_CLUSTER_NAME", "db");
+  const PXC_CLUSTER = envOptional("PXC_CLUSTER", "db");
   const isLocal = parseBoolEnv("IS_LOCAL", parseBoolEnv("isLocal", false));
   const CHANNEL_NAME = envOptional("REPLICATION_CHANNEL_NAME", "wookie_primary_to_replica");
 

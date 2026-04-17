@@ -134,7 +134,7 @@ let
                       fieldPath: metadata.namespace
                 - name: SOURCE_NS
                   value: "${sourceNs}"
-                - name: PXC_CLUSTER_NAME
+                - name: PXC_CLUSTER
                   value: "pxc-cluster"
                 - name: REPLICATION_CHANNEL_NAME
                   value: "wookie_primary_to_replica"
