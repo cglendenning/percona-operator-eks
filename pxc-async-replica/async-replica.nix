@@ -34,28 +34,30 @@ let
     '';
   };
 
-  ns = "pxc-replica-local";
+  destNs = "pxc-replica-local";
+  sourceNs = "percona";
   saName = "pxc-async-replica-sa";
   deployName = "pxc-async-replica-controller";
-  roleName = "pxc-async-replica";
+  destRoleName = "pxc-async-replica-dest";
+  sourceSecretRoleName = "pxc-async-replica-source-secret-reader";
 
   rbacAndDeployYaml = pkgs.writeText "pxc-async-replica-k8s.yaml" ''
     apiVersion: v1
     kind: ServiceAccount
     metadata:
       name: ${saName}
-      namespace: ${ns}
+      namespace: ${destNs}
     ---
     apiVersion: rbac.authorization.k8s.io/v1
     kind: Role
     metadata:
-      name: ${roleName}
-      namespace: ${ns}
+      name: ${destRoleName}
+      namespace: ${destNs}
     rules:
       - apiGroups: [""]
         resources: ["secrets"]
         verbs: ["get"]
-        resourceNames: ["seaweedfs-s3-credentials", "pxc-async-replica-mysql", "root-db-users"]
+        resourceNames: ["seaweedfs-s3-credentials", "pxc-async-replica-mysql"]
       - apiGroups: ["apps"]
         resources: ["statefulsets", "deployments"]
         verbs: ["get", "list", "patch"]
@@ -69,22 +71,47 @@ let
     apiVersion: rbac.authorization.k8s.io/v1
     kind: RoleBinding
     metadata:
-      name: ${roleName}
-      namespace: ${ns}
+      name: ${destRoleName}
+      namespace: ${destNs}
     subjects:
       - kind: ServiceAccount
         name: ${saName}
-        namespace: ${ns}
+        namespace: ${destNs}
     roleRef:
       apiGroup: rbac.authorization.k8s.io
       kind: Role
-      name: ${roleName}
+      name: ${destRoleName}
+    ---
+    apiVersion: rbac.authorization.k8s.io/v1
+    kind: Role
+    metadata:
+      name: ${sourceSecretRoleName}
+      namespace: ${sourceNs}
+    rules:
+      - apiGroups: [""]
+        resources: ["secrets"]
+        verbs: ["get"]
+        resourceNames: ["root-db-users"]
+    ---
+    apiVersion: rbac.authorization.k8s.io/v1
+    kind: RoleBinding
+    metadata:
+      name: ${sourceSecretRoleName}
+      namespace: ${sourceNs}
+    subjects:
+      - kind: ServiceAccount
+        name: ${saName}
+        namespace: ${destNs}
+    roleRef:
+      apiGroup: rbac.authorization.k8s.io
+      kind: Role
+      name: ${sourceSecretRoleName}
     ---
     apiVersion: apps/v1
     kind: Deployment
     metadata:
       name: ${deployName}
-      namespace: ${ns}
+      namespace: ${destNs}
     spec:
       replicas: 1
       selector:
@@ -101,10 +128,12 @@ let
               image: pxc-async-replica-controller:latest
               imagePullPolicy: IfNotPresent
               env:
-                - name: PXC_NAMESPACE
+                - name: DEST_NS
                   valueFrom:
                     fieldRef:
                       fieldPath: metadata.namespace
+                - name: SOURCE_NS
+                  value: "${sourceNs}"
                 - name: PXC_CLUSTER_NAME
                   value: "pxc-cluster"
                 - name: REPLICATION_CHANNEL_NAME

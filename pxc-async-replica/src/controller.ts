@@ -98,16 +98,17 @@ function replicationBroken(s: SlaveStatus | null): boolean {
 }
 
 export async function runController(): Promise<void> {
-  const PXC_NS = (() => {
-    const fromEnv = process.env.PXC_NAMESPACE?.trim();
-    if (fromEnv) return fromEnv;
+  const DEST_NS = (() => {
+    const explicit = process.env.DEST_NS?.trim() || process.env.PXC_NAMESPACE?.trim();
+    if (explicit) return explicit;
     const nsPath = "/var/run/secrets/kubernetes.io/serviceaccount/namespace";
     try {
       return fs.readFileSync(nsPath, "utf8").trim();
     } catch {
-      throw new Error(`PXC_NAMESPACE is not set and could not read pod namespace from ${nsPath}`);
+      throw new Error(`DEST_NS/PXC_NAMESPACE is not set and could not read pod namespace from ${nsPath}`);
     }
   })();
+  const SOURCE_NS = process.env.SOURCE_NS?.trim() || DEST_NS;
 
   const PXC_CLUSTER = envOptional("PXC_CLUSTER_NAME", "db");
   const isLocal = parseBoolEnv("IS_LOCAL", parseBoolEnv("isLocal", false));
@@ -150,7 +151,7 @@ export async function runController(): Promise<void> {
   const apps = kc.makeApiClient(k8s.AppsV1Api);
 
   async function loadSourceMysqlRootPasswordFromSecret(): Promise<string> {
-    const sec = await core.readNamespacedSecret({ namespace: PXC_NS, name: SOURCE_ROOT_DB_USERS_SECRET });
+    const sec = await core.readNamespacedSecret({ namespace: SOURCE_NS, name: SOURCE_ROOT_DB_USERS_SECRET });
     const data = sec.data as Record<string, string> | undefined;
     return decodeSecretData(data, SOURCE_MYSQL_ROOT_PASSWORD_KEY);
   }
@@ -176,7 +177,7 @@ export async function runController(): Promise<void> {
   const desiredChannels = buildDesiredReplicationChannels({ channelName: CHANNEL_NAME, sources });
 
   log(
-    `pxc-async-replica-controller starting ns=${PXC_NS} cluster=${PXC_CLUSTER} channel=${CHANNEL_NAME} ` +
+    `pxc-async-replica-controller starting sourceNs=${SOURCE_NS} destNs=${DEST_NS} cluster=${PXC_CLUSTER} channel=${CHANNEL_NAME} ` +
       `SOURCE_HOSTS(${allHosts.length})=${allHosts.join(",")} replicationHosts(${hostsForReplication.length})=${hostsForReplication.join(",")} ` +
       `S3_ENDPOINT=${S3_ENDPOINT} S3_BUCKET=${S3_BUCKET} S3_PREFIX=${S3_PREFIX || "<none>"} S3_BACKUP_FOLDER_PREFIX=${S3_BACKUP_FOLDER_PREFIX}`
   );
@@ -187,9 +188,9 @@ export async function runController(): Promise<void> {
   async function waitClusterReadyOrThrow(): Promise<void> {
     const deadline = Date.now() + READY_TIMEOUT_SEC * 1000;
     while (!shuttingDown && Date.now() < deadline) {
-      const ok = await getClusterReady(custom, { pxcApiVersion: PXC_API_VERSION, ns: PXC_NS, cluster: PXC_CLUSTER });
+      const ok = await getClusterReady(custom, { pxcApiVersion: PXC_API_VERSION, ns: DEST_NS, cluster: PXC_CLUSTER });
       if (ok) return;
-      const body = await getPxcSpec(custom, { pxcApiVersion: PXC_API_VERSION, ns: PXC_NS, cluster: PXC_CLUSTER });
+      const body = await getPxcSpec(custom, { pxcApiVersion: PXC_API_VERSION, ns: DEST_NS, cluster: PXC_CLUSTER });
       const status = body?.status as Obj | undefined;
       const state = typeof status?.state === "string" ? status.state : "";
       const msg = typeof status?.message === "string" ? status.message : "";
@@ -200,7 +201,7 @@ export async function runController(): Promise<void> {
   }
 
   async function loadS3CfgFromSecret(): Promise<S3ClientConfig> {
-    const sec = await core.readNamespacedSecret({ namespace: PXC_NS, name: S3_SECRET_NAME });
+    const sec = await core.readNamespacedSecret({ namespace: DEST_NS, name: S3_SECRET_NAME });
     const data = sec.data as Record<string, string> | undefined;
 
     let accessKeyId = "";
@@ -232,7 +233,7 @@ export async function runController(): Promise<void> {
     });
     log(`Selected latest backup destination=${latest.destination} (chosenPrefix=${latest.chosenPrefix}, listPrefix=${JSON.stringify(listPrefix)})`);
 
-    if (await restoreInProgress(custom, { pxcApiVersion: PXC_API_VERSION, ns: PXC_NS })) {
+    if (await restoreInProgress(custom, { pxcApiVersion: PXC_API_VERSION, ns: DEST_NS })) {
       log("Restore already in progress in this namespace; waiting for cluster ready (external restore)");
       await waitClusterReadyOrThrow();
       return;
@@ -242,7 +243,7 @@ export async function runController(): Promise<void> {
 
     await createRestoreFromS3Destination(custom, {
       pxcApiVersion: PXC_API_VERSION,
-      ns: PXC_NS,
+      ns: DEST_NS,
       cluster: PXC_CLUSTER,
       restoreName,
       destination: latest.destination,
@@ -257,7 +258,7 @@ export async function runController(): Promise<void> {
     const result = await waitRestoreSucceededAndClusterReady({
       custom,
       pxcApiVersion: PXC_API_VERSION,
-      ns: PXC_NS,
+      ns: DEST_NS,
       cluster: PXC_CLUSTER,
       restoreName,
       timeoutSeconds: RESTORE_TIMEOUT_SEC,
@@ -271,14 +272,14 @@ export async function runController(): Promise<void> {
   }
 
   async function applyReplicationIfNeeded(): Promise<void> {
-    const initial = await getPxcSpec(custom, { pxcApiVersion: PXC_API_VERSION, ns: PXC_NS, cluster: PXC_CLUSTER });
+    const initial = await getPxcSpec(custom, { pxcApiVersion: PXC_API_VERSION, ns: DEST_NS, cluster: PXC_CLUSTER });
     const initialSpec = initial?.spec as Obj | undefined;
     const initialPxc = initialSpec?.pxc as Obj | undefined;
     const existing = initialPxc?.replicationChannels;
 
     const already = await verifyReplicationChannels(custom, {
       pxcApiVersion: PXC_API_VERSION,
-      ns: PXC_NS,
+      ns: DEST_NS,
       cluster: PXC_CLUSTER,
       desired: desiredChannels,
     });
@@ -290,13 +291,13 @@ export async function runController(): Promise<void> {
     log(`Current replicationChannels: ${JSON.stringify(existing)}`);
     await patchReplicationChannels(custom, {
       pxcApiVersion: PXC_API_VERSION,
-      ns: PXC_NS,
+      ns: DEST_NS,
       cluster: PXC_CLUSTER,
       channels: desiredChannels,
     });
     await sleep(3000);
 
-    if (!(await verifyReplicationChannels(custom, { pxcApiVersion: PXC_API_VERSION, ns: PXC_NS, cluster: PXC_CLUSTER, desired: desiredChannels }))) {
+    if (!(await verifyReplicationChannels(custom, { pxcApiVersion: PXC_API_VERSION, ns: DEST_NS, cluster: PXC_CLUSTER, desired: desiredChannels }))) {
       throw new Error("VERIFY FAILED: replicationChannels do not match desired after patch");
     }
   }
@@ -382,7 +383,7 @@ export async function runController(): Promise<void> {
     const labelSelector = `app.kubernetes.io/name=${args.appLabel},app.kubernetes.io/component=${args.component}`;
     try {
       if (args.object === "statefulset") {
-        const resp = await apps.listNamespacedStatefulSet({ namespace: PXC_NS, labelSelector });
+        const resp = await apps.listNamespacedStatefulSet({ namespace: DEST_NS, labelSelector });
         const items = resp.items ?? [];
         if (items.length === 0) {
           log(`SELF-HEAL: no StatefulSet matched selector ${labelSelector}`);
@@ -393,13 +394,13 @@ export async function runController(): Promise<void> {
         log(`SELF-HEAL: restarting StatefulSet/${name} (${labelSelector})`);
         const patch = { spec: { template: { metadata: { annotations: { "pxc-async-replica/restartedAt": new Date().toISOString() } } } } };
         await apps.patchNamespacedStatefulSet(
-          { namespace: PXC_NS, name, body: patch },
+          { namespace: DEST_NS, name, body: patch },
           K8S_PATCH_CONTENT_TYPE_OPTIONS
         );
         return true;
       }
 
-      const resp = await apps.listNamespacedDeployment({ namespace: PXC_NS, labelSelector });
+      const resp = await apps.listNamespacedDeployment({ namespace: DEST_NS, labelSelector });
       const items = resp.items ?? [];
       if (items.length === 0) {
         log(`SELF-HEAL: no Deployment matched selector ${labelSelector}`);
@@ -410,7 +411,7 @@ export async function runController(): Promise<void> {
       log(`SELF-HEAL: restarting Deployment/${name} (${labelSelector})`);
       const patch = { spec: { template: { metadata: { annotations: { "pxc-async-replica/restartedAt": new Date().toISOString() } } } } };
       await apps.patchNamespacedDeployment(
-        { namespace: PXC_NS, name, body: patch },
+        { namespace: DEST_NS, name, body: patch },
         K8S_PATCH_CONTENT_TYPE_OPTIONS
       );
       return true;
@@ -428,12 +429,12 @@ export async function runController(): Promise<void> {
       log("SELF-HEAL: re-applying replicationChannels (merge patch)");
       await patchReplicationChannels(custom, {
         pxcApiVersion: PXC_API_VERSION,
-        ns: PXC_NS,
+        ns: DEST_NS,
         cluster: PXC_CLUSTER,
         channels: desiredChannels,
       });
       await sleep(3000);
-      await verifyReplicationChannels(custom, { pxcApiVersion: PXC_API_VERSION, ns: PXC_NS, cluster: PXC_CLUSTER, desired: desiredChannels });
+      await verifyReplicationChannels(custom, { pxcApiVersion: PXC_API_VERSION, ns: DEST_NS, cluster: PXC_CLUSTER, desired: desiredChannels });
     } catch (e: unknown) {
       log(`SELF-HEAL: replication patch/verify failed: ${formatK8sError(e)}`);
     }
