@@ -1,10 +1,8 @@
+import { asString } from "./primitives";
+
 export type Obj = Record<string, unknown>;
 
 export type SourceEntry = { host: string; port: number; weight: number };
-
-function asString(x: unknown): string {
-  return typeof x === "string" ? x : "";
-}
 
 /** Recursively sort object keys so JSON comparison is order-insensitive. */
 export function sortKeysDeep(val: unknown): unknown {

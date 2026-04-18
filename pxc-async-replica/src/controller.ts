@@ -10,7 +10,6 @@ import {
   mergePasswordIntoMysqlUrl,
   readReplicaSlaveStatus,
   scalarString,
-  type SlaveStatus,
 } from "./mysql";
 import type { Pool } from "mysql2/promise";
 import { findLatestBackupS3Destination, type S3ClientConfig } from "./s3-latest-backup";
@@ -21,14 +20,15 @@ import {
   patchReplicationChannels,
   verifyReplicationChannels,
 } from "./replication";
+import { formatSlaveStatusLogLine, replicationBroken, slaveLooksHealthy } from "./replication-health";
 import {
   createRestoreFromS3Destination,
   restoreInProgress,
   waitRestoreSucceededAndClusterReady,
 } from "./restore";
 import { K8S_PATCH_CONTENT_TYPE_OPTIONS } from "./k8s-patch-options";
-
-type SourceEntry = { host: string; port: number; weight: number };
+import type { SourceEntry } from "./channel-normalize";
+import { waitUntilTrue } from "./wait-until";
 
 function env(name: string): string {
   const v = process.env[name];
@@ -84,19 +84,6 @@ function sqlString(s: string): string {
   return `'${s.replace(/'/g, "''")}'`;
 }
 
-function slaveLooksHealthy(s: SlaveStatus, maxLagSeconds: number): boolean {
-  if (s.ioRunning !== "Yes" || s.sqlRunning !== "Yes") return false;
-  if (s.secondsBehind === null) return false;
-  return s.secondsBehind <= maxLagSeconds;
-}
-
-function replicationBroken(s: SlaveStatus | null): boolean {
-  if (!s) return true;
-  if (s.ioRunning !== "Yes" || s.sqlRunning !== "Yes") return true;
-  if (s.lastIoError || s.lastSqlError) return true;
-  return false;
-}
-
 export async function runController(): Promise<void> {
   const DEST_NS = (() => {
     const explicit = process.env.DEST_NS?.trim() || process.env.PXC_NAMESPACE?.trim();
@@ -112,7 +99,8 @@ export async function runController(): Promise<void> {
 
   const PXC_CLUSTER = envOptional("PXC_CLUSTER", "db");
   const isLocal = parseBoolEnv("IS_LOCAL", parseBoolEnv("isLocal", false));
-  const CHANNEL_NAME = envOptional("REPLICATION_CHANNEL_NAME", "wookie_primary_to_replica");
+  const CHANNEL_NAME = envOptional("REPLICATION_CHANNEL_NAME", "wookie_primary_to_replica").trim();
+  if (!CHANNEL_NAME) throw new Error("REPLICATION_CHANNEL_NAME must be non-empty");
 
   const allHosts = parseSourceHostList(env("SOURCE_HOSTS"));
   if (allHosts.length === 0) throw new Error("SOURCE_HOSTS must contain at least one hostname");
@@ -175,6 +163,7 @@ export async function runController(): Promise<void> {
     weight: SOURCE_WEIGHT,
   }));
   const desiredChannels = buildDesiredReplicationChannels({ channelName: CHANNEL_NAME, sources });
+  const pxcRef = { pxcApiVersion: PXC_API_VERSION, ns: DEST_NS, cluster: PXC_CLUSTER } as const;
 
   log(
     `pxc-async-replica-controller starting sourceNs=${SOURCE_NS} destNs=${DEST_NS} cluster=${PXC_CLUSTER} channel=${CHANNEL_NAME} ` +
@@ -188,9 +177,9 @@ export async function runController(): Promise<void> {
   async function waitClusterReadyOrThrow(): Promise<void> {
     const deadline = Date.now() + READY_TIMEOUT_SEC * 1000;
     while (!shuttingDown && Date.now() < deadline) {
-      const ok = await getClusterReady(custom, { pxcApiVersion: PXC_API_VERSION, ns: DEST_NS, cluster: PXC_CLUSTER });
+      const ok = await getClusterReady(custom, pxcRef);
       if (ok) return;
-      const body = await getPxcSpec(custom, { pxcApiVersion: PXC_API_VERSION, ns: DEST_NS, cluster: PXC_CLUSTER });
+      const body = await getPxcSpec(custom, pxcRef);
       const status = body?.status as Obj | undefined;
       const state = typeof status?.state === "string" ? status.state : "";
       const msg = typeof status?.message === "string" ? status.message : "";
@@ -224,6 +213,12 @@ export async function runController(): Promise<void> {
   }
 
   async function restoreFromLatestSeaweedBackup(): Promise<void> {
+    if (await restoreInProgress(custom, { pxcApiVersion: pxcRef.pxcApiVersion, ns: pxcRef.ns })) {
+      log("Restore already in progress in this namespace; waiting for cluster ready (external restore)");
+      await waitClusterReadyOrThrow();
+      return;
+    }
+
     const s3cfg = await loadS3CfgFromSecret();
     const listPrefix = `${S3_PREFIX}${S3_BACKUP_FOLDER_PREFIX}`;
     const latest = await findLatestBackupS3Destination({
@@ -233,18 +228,12 @@ export async function runController(): Promise<void> {
     });
     log(`Selected latest backup destination=${latest.destination} (chosenPrefix=${latest.chosenPrefix}, listPrefix=${JSON.stringify(listPrefix)})`);
 
-    if (await restoreInProgress(custom, { pxcApiVersion: PXC_API_VERSION, ns: DEST_NS })) {
-      log("Restore already in progress in this namespace; waiting for cluster ready (external restore)");
-      await waitClusterReadyOrThrow();
-      return;
-    }
-
     const restoreName = `async-replica-restore-${new Date().toISOString().replace(/[-:.TZ]/g, "").slice(0, 14)}`;
 
     await createRestoreFromS3Destination(custom, {
-      pxcApiVersion: PXC_API_VERSION,
-      ns: DEST_NS,
-      cluster: PXC_CLUSTER,
+      pxcApiVersion: pxcRef.pxcApiVersion,
+      ns: pxcRef.ns,
+      cluster: pxcRef.cluster,
       restoreName,
       destination: latest.destination,
       s3: {
@@ -257,9 +246,9 @@ export async function runController(): Promise<void> {
 
     const result = await waitRestoreSucceededAndClusterReady({
       custom,
-      pxcApiVersion: PXC_API_VERSION,
-      ns: DEST_NS,
-      cluster: PXC_CLUSTER,
+      pxcApiVersion: pxcRef.pxcApiVersion,
+      ns: pxcRef.ns,
+      cluster: pxcRef.cluster,
       restoreName,
       timeoutSeconds: RESTORE_TIMEOUT_SEC,
       pollMs: POLL_MS,
@@ -272,16 +261,15 @@ export async function runController(): Promise<void> {
   }
 
   async function applyReplicationIfNeeded(): Promise<void> {
-    const initial = await getPxcSpec(custom, { pxcApiVersion: PXC_API_VERSION, ns: DEST_NS, cluster: PXC_CLUSTER });
+    const initial = await getPxcSpec(custom, pxcRef);
     const initialSpec = initial?.spec as Obj | undefined;
     const initialPxc = initialSpec?.pxc as Obj | undefined;
     const existing = initialPxc?.replicationChannels;
 
     const already = await verifyReplicationChannels(custom, {
-      pxcApiVersion: PXC_API_VERSION,
-      ns: DEST_NS,
-      cluster: PXC_CLUSTER,
+      ...pxcRef,
       desired: desiredChannels,
+      clusterBody: initial,
     });
     if (already) {
       log("replicationChannels already match desired; skipping patch");
@@ -290,14 +278,12 @@ export async function runController(): Promise<void> {
 
     log(`Current replicationChannels: ${JSON.stringify(existing)}`);
     await patchReplicationChannels(custom, {
-      pxcApiVersion: PXC_API_VERSION,
-      ns: DEST_NS,
-      cluster: PXC_CLUSTER,
+      ...pxcRef,
       channels: desiredChannels,
     });
     await sleep(3000);
 
-    if (!(await verifyReplicationChannels(custom, { pxcApiVersion: PXC_API_VERSION, ns: DEST_NS, cluster: PXC_CLUSTER, desired: desiredChannels }))) {
+    if (!(await verifyReplicationChannels(custom, { ...pxcRef, desired: desiredChannels }))) {
       throw new Error("VERIFY FAILED: replicationChannels do not match desired after patch");
     }
   }
@@ -305,14 +291,11 @@ export async function runController(): Promise<void> {
   async function waitMysqlReplicationHealthy(pool: Pool): Promise<void> {
     const deadline = Date.now() + READY_TIMEOUT_SEC * 1000;
     while (!shuttingDown && Date.now() < deadline) {
-      const s = await readReplicaSlaveStatus(pool);
+      const s = await readReplicaSlaveStatus(pool, CHANNEL_NAME);
       if (!s) {
         log("Replication check: SHOW SLAVE STATUS returned no rows (replication not configured yet?)");
       } else {
-        log(
-          `Replication check: IO=${s.ioRunning} SQL=${s.sqlRunning} lag=${s.secondsBehind ?? "null"}s ` +
-            `ioErr=${JSON.stringify(s.lastIoError)} sqlErr=${JSON.stringify(s.lastSqlError)}`
-        );
+        log(`Replication check: ${formatSlaveStatusLogLine(s)}`);
         if (slaveLooksHealthy(s, MAX_LAG_SECONDS)) return;
       }
       await sleep(POLL_MS);
@@ -320,7 +303,11 @@ export async function runController(): Promise<void> {
     throw new Error(`Timed out after ${READY_TIMEOUT_SEC}s waiting for replication lag<=${MAX_LAG_SECONDS}s`);
   }
 
-  async function runOneShotRowReplicationTest(): Promise<void> {
+  /**
+   * Row-level write probe: DDL + INSERT on source, verify on replica, DROP on source, verify cleanup.
+   * Not a read-only check; requires privileges on `REPLICATION_E2E_DATABASE`.
+   */
+  async function validateReplication(): Promise<void> {
     const sourcePool = createMysqlPoolFromUrl(sourceMysqlUrl);
     const replicaPool = createMysqlPoolFromUrl(REPLICA_MYSQL_URL);
 
@@ -335,17 +322,13 @@ export async function runController(): Promise<void> {
       await execSql(sourcePool, `INSERT INTO ${fqtn} (id, note) VALUES (1, ${sqlString(note)})`);
 
       log("E2E: waiting for row to appear on REPLICA");
-      const deadline = Date.now() + READY_TIMEOUT_SEC * 1000;
-      let ok = false;
-      while (!shuttingDown && Date.now() < deadline) {
-        const got = await scalarString(replicaPool, `SELECT note FROM ${fqtn} WHERE id=1`);
-        if (got === note) {
-          ok = true;
-          break;
-        }
-        await sleep(500);
-      }
-      if (!ok) {
+      const rowOk = await waitUntilTrue({
+        pollMs: 500,
+        deadlineMs: READY_TIMEOUT_SEC * 1000,
+        isShuttingDown: () => shuttingDown,
+        predicate: async () => (await scalarString(replicaPool, `SELECT note FROM ${fqtn} WHERE id=1`)) === note,
+      });
+      if (!rowOk) {
         const got = await scalarString(replicaPool, `SELECT note FROM ${fqtn} WHERE id=1`);
         throw new Error(`E2E FAILED: expected replicated note=${JSON.stringify(note)} got=${JSON.stringify(got)}`);
       }
@@ -355,23 +338,20 @@ export async function runController(): Promise<void> {
       await execSql(sourcePool, `DROP TABLE IF EXISTS ${fqtn}`);
 
       log("E2E: waiting for DROP to replicate to REPLICA");
-      const deadline2 = Date.now() + READY_TIMEOUT_SEC * 1000;
-      while (!shuttingDown && Date.now() < deadline2) {
-        const cnt = await scalarString(
-          replicaPool,
-          `SELECT COUNT(*) FROM information_schema.tables WHERE table_schema='${E2E_DB.replace(/'/g, "''")}' AND table_name='${table.replace(/'/g, "''")}'`
-        );
-        if (cnt === "0") {
-          log("E2E: drop replicated; cleanup verified");
-          return;
-        }
-        await sleep(500);
+      const ischemaWhere = `table_schema='${E2E_DB.replace(/'/g, "''")}' AND table_name='${table.replace(/'/g, "''")}'`;
+      const tableCountSql = `SELECT COUNT(*) FROM information_schema.tables WHERE ${ischemaWhere}`;
+      const dropOk = await waitUntilTrue({
+        pollMs: 500,
+        deadlineMs: READY_TIMEOUT_SEC * 1000,
+        isShuttingDown: () => shuttingDown,
+        predicate: async () => (await scalarString(replicaPool, tableCountSql)) === "0",
+      });
+      if (dropOk) {
+        log("E2E: drop replicated; cleanup verified");
+        return;
       }
 
-      const cnt2 = await scalarString(
-        replicaPool,
-        `SELECT COUNT(*) FROM information_schema.tables WHERE table_schema='${E2E_DB.replace(/'/g, "''")}' AND table_name='${table.replace(/'/g, "''")}'`
-      );
+      const cnt2 = await scalarString(replicaPool, tableCountSql);
       throw new Error(`E2E FAILED: expected table gone on replica, information_schema count=${cnt2}`);
     } finally {
       await sourcePool.end().catch(() => {});
@@ -379,8 +359,38 @@ export async function runController(): Promise<void> {
     }
   }
 
+  /** True if a full end-to-end replicated write/drop succeeds; false on any failure (no throw). */
+  async function tryE2eFirstReplicationGate(): Promise<boolean> {
+    if (shuttingDown) {
+      log("E2E-first gate: shutdown requested before gate ran");
+      return false;
+    }
+    try {
+      await validateReplication();
+      return true;
+    } catch (e: unknown) {
+      const detail = e instanceof Error ? e.message : formatK8sError(e);
+      log(`E2E-first gate did not pass: ${detail}`);
+      return false;
+    }
+  }
+
+  async function runFullBootstrapPhases(pool: Pool): Promise<void> {
+    log("Phase A: restore latest backup from Seaweed S3 (if needed)");
+    await restoreFromLatestSeaweedBackup();
+    log("Phase B: wait for PXC cluster ready after restore/bootstrap");
+    await waitClusterReadyOrThrow();
+    log("Phase C: apply replicationChannels after restore + ready");
+    await applyReplicationIfNeeded();
+    log(`Phase D: wait for async replication health (lag<=${MAX_LAG_SECONDS}s)`);
+    await waitMysqlReplicationHealthy(pool);
+    log("Phase E: replication validation (source->replica->drop)");
+    await validateReplication();
+  }
+
   async function tryRestartWorkloadByLabels(args: { appLabel: string; component: string; object: "statefulset" | "deployment" }): Promise<boolean> {
     const labelSelector = `app.kubernetes.io/name=${args.appLabel},app.kubernetes.io/component=${args.component}`;
+    const patch = { spec: { template: { metadata: { annotations: { "pxc-async-replica/restartedAt": new Date().toISOString() } } } } };
     try {
       if (args.object === "statefulset") {
         const resp = await apps.listNamespacedStatefulSet({ namespace: DEST_NS, labelSelector });
@@ -392,11 +402,7 @@ export async function runController(): Promise<void> {
         const name = items[0].metadata?.name;
         if (!name) return false;
         log(`SELF-HEAL: restarting StatefulSet/${name} (${labelSelector})`);
-        const patch = { spec: { template: { metadata: { annotations: { "pxc-async-replica/restartedAt": new Date().toISOString() } } } } };
-        await apps.patchNamespacedStatefulSet(
-          { namespace: DEST_NS, name, body: patch },
-          K8S_PATCH_CONTENT_TYPE_OPTIONS
-        );
+        await apps.patchNamespacedStatefulSet({ namespace: DEST_NS, name, body: patch }, K8S_PATCH_CONTENT_TYPE_OPTIONS);
         return true;
       }
 
@@ -409,11 +415,7 @@ export async function runController(): Promise<void> {
       const name = items[0].metadata?.name;
       if (!name) return false;
       log(`SELF-HEAL: restarting Deployment/${name} (${labelSelector})`);
-      const patch = { spec: { template: { metadata: { annotations: { "pxc-async-replica/restartedAt": new Date().toISOString() } } } } };
-      await apps.patchNamespacedDeployment(
-        { namespace: DEST_NS, name, body: patch },
-        K8S_PATCH_CONTENT_TYPE_OPTIONS
-      );
+      await apps.patchNamespacedDeployment({ namespace: DEST_NS, name, body: patch }, K8S_PATCH_CONTENT_TYPE_OPTIONS);
       return true;
     } catch (e: unknown) {
       log(`SELF-HEAL: restart failed: ${formatK8sError(e)}`);
@@ -427,14 +429,9 @@ export async function runController(): Promise<void> {
     // 1) Re-assert desired replicationChannels (covers drift / partial application)
     try {
       log("SELF-HEAL: re-applying replicationChannels (merge patch)");
-      await patchReplicationChannels(custom, {
-        pxcApiVersion: PXC_API_VERSION,
-        ns: DEST_NS,
-        cluster: PXC_CLUSTER,
-        channels: desiredChannels,
-      });
+      await patchReplicationChannels(custom, { ...pxcRef, channels: desiredChannels });
       await sleep(3000);
-      await verifyReplicationChannels(custom, { pxcApiVersion: PXC_API_VERSION, ns: DEST_NS, cluster: PXC_CLUSTER, desired: desiredChannels });
+      await verifyReplicationChannels(custom, { ...pxcRef, desired: desiredChannels });
     } catch (e: unknown) {
       log(`SELF-HEAL: replication patch/verify failed: ${formatK8sError(e)}`);
     }
@@ -462,33 +459,26 @@ export async function runController(): Promise<void> {
   const replicaPool = createMysqlPoolFromUrl(REPLICA_MYSQL_URL);
 
   try {
-    log("Phase A: restore latest backup from Seaweed S3 (if needed)");
-    await restoreFromLatestSeaweedBackup();
-
-    log("Phase B: wait for PXC cluster ready after restore/bootstrap");
-    await waitClusterReadyOrThrow();
-
-    log("Phase C: apply replicationChannels after restore + ready");
-    await applyReplicationIfNeeded();
-
-    log(`Phase D: wait for async replication health (lag<=${MAX_LAG_SECONDS}s)`);
-    await waitMysqlReplicationHealthy(replicaPool);
-
-    log("Phase E: one-shot row-level replication test (source->replica->drop)");
-    await runOneShotRowReplicationTest();
+    log(
+      "Phase 0: E2E-first gate — row-level replication test on source/replica (insert, verify, drop, verify)"
+    );
+    const gateOk = await tryE2eFirstReplicationGate();
+    if (gateOk) {
+      log("E2E-first gate passed: replication verified; skipping Phases A–E");
+    } else {
+      log("E2E-first gate did not pass; running full bootstrap Phases A–E");
+      await runFullBootstrapPhases(replicaPool);
+    }
 
     log(`Phase F: periodic replication health checks every ${HEALTH_INTERVAL_SEC}s`);
     let failStreak = 0;
 
     while (!shuttingDown) {
-      const s = await readReplicaSlaveStatus(replicaPool);
+      const s = await readReplicaSlaveStatus(replicaPool, CHANNEL_NAME);
       if (!s) {
         log("HEALTH: SHOW SLAVE STATUS returned no rows");
       } else {
-        log(
-          `HEALTH: IO=${s.ioRunning} SQL=${s.sqlRunning} lag=${s.secondsBehind ?? "null"}s ` +
-            `ioErr=${JSON.stringify(s.lastIoError)} sqlErr=${JSON.stringify(s.lastSqlError)}`
-        );
+        log(`HEALTH: ${formatSlaveStatusLogLine(s)}`);
       }
 
       const healthy = !!s && slaveLooksHealthy(s, MAX_LAG_SECONDS) && !replicationBroken(s);

@@ -8,7 +8,7 @@
     "build": "tsc -p tsconfig.json",
     "start": "node dist/index.js",
     "pretest": "npm run build",
-    "test": "node --test dist/channel-normalize.test.js"
+    "test": "node --test dist/primitives.test.js dist/channel-normalize.test.js dist/restore.test.js dist/replication-health.test.js dist/mysql.test.js dist/wait-until.test.js dist/replication-cluster.test.js"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.1031.0",

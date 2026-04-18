@@ -1,4 +1,5 @@
 import { createPool, type Pool } from "mysql2/promise";
+import { asString } from "./primitives";
 
 export type SlaveStatus = {
   ioRunning: string;
@@ -8,10 +9,6 @@ export type SlaveStatus = {
   lastSqlError: string;
   lastErrno: number | null;
 };
-
-function asString(x: unknown): string {
-  return typeof x === "string" ? x : "";
-}
 
 function asNumberOrNull(x: unknown): number | null {
   if (x === null || x === undefined) return null;
@@ -72,19 +69,33 @@ export function mergePasswordIntoMysqlUrl(urlStr: string, password: string): str
   return u.toString();
 }
 
-export async function readReplicaSlaveStatus(pool: Pool): Promise<SlaveStatus | null> {
-  const [rows] = await pool.query("SHOW SLAVE STATUS");
+function sqlStringLiteral(s: string): string {
+  return `'${s.replace(/'/g, "''")}'`;
+}
+
+/**
+ * SQL for `SHOW SLAVE STATUS` scoped to a named replication channel (matches `REPLICATION_CHANNEL_NAME` / CR channel).
+ * Percona/MySQL 8 still accept this form; newer MySQL may prefer `SHOW REPLICA STATUS FOR CHANNEL` if you hit deprecation.
+ */
+export function buildShowSlaveStatusForChannelSql(replicationChannelName: string): string {
+  const ch = replicationChannelName.trim();
+  if (!ch) throw new Error("replicationChannelName must be non-empty");
+  return `SHOW SLAVE STATUS FOR CHANNEL ${sqlStringLiteral(ch)}`;
+}
+
+export async function readReplicaSlaveStatus(pool: Pool, replicationChannelName: string): Promise<SlaveStatus | null> {
+  const [rows] = await pool.query(buildShowSlaveStatusForChannelSql(replicationChannelName));
   if (!Array.isArray(rows) || rows.length === 0) return null;
   const r = rows[0] as Record<string, unknown>;
 
   // mysql2 returns column names as returned by server; keep tolerant access.
   const io = asString(r["Slave_IO_Running"] ?? r["slave_io_running"]);
-  const sql = asString(r["Slave_SQL_Running"] ?? r["slave_sql_running"]);
+  const sqlRunning = asString(r["Slave_SQL_Running"] ?? r["slave_sql_running"]);
   const sbm = asNumberOrNull(r["Seconds_Behind_Master"] ?? r["seconds_behind_master"]);
 
   return {
     ioRunning: io,
-    sqlRunning: sql,
+    sqlRunning,
     secondsBehind: sbm,
     lastIoError: asString(r["Last_IO_Error"] ?? r["last_io_error"]),
     lastSqlError: asString(r["Last_SQL_Error"] ?? r["last_sql_error"]),

@@ -2,6 +2,7 @@ import type * as k8s from "@kubernetes/client-node";
 import type { Obj } from "./types";
 import { formatK8sError } from "./k8s-errors";
 import { log, sleep } from "./log";
+import { getPxcSpec, isPxcClusterReadyBody } from "./replication";
 
 export function parseS3Bucket(destination: string): string {
   const match = destination.match(/^s3:\/\/([^/]+)/);
@@ -131,17 +132,16 @@ export async function waitRestoreSucceededAndClusterReady(args: {
 
         const clusterReady = await (async () => {
           try {
-            const resp = (await args.custom.getNamespacedCustomObject({
-              group: "pxc.percona.com",
-              version: args.pxcApiVersion,
-              namespace: args.ns,
-              plural: "perconaxtradbclusters",
-              name: args.cluster,
-            })) as { status?: { state?: string; status?: string } };
-            const st = typeof resp?.status?.state === "string" ? resp.status.state : "";
-            const status = typeof resp?.status?.status === "string" ? resp.status.status : "";
+            const body = await getPxcSpec(args.custom, {
+              pxcApiVersion: args.pxcApiVersion,
+              ns: args.ns,
+              cluster: args.cluster,
+            });
+            const statusObj = body?.status as { state?: string; status?: string } | undefined;
+            const st = typeof statusObj?.state === "string" ? statusObj.state : "";
+            const status = typeof statusObj?.status === "string" ? statusObj.status : "";
             log(`PXC cluster ${args.cluster} status: state="${st}" status="${status}"`);
-            return st === "ready";
+            return isPxcClusterReadyBody(body);
           } catch (e: unknown) {
             log(`ERROR checking PXC cluster readiness: ${formatK8sError(e)}`);
             return false;

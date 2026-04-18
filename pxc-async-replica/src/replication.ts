@@ -21,12 +21,16 @@ export async function getPxcSpec(custom: k8s.CustomObjectsApi, args: { pxcApiVer
   }
 }
 
-export async function getClusterReady(custom: k8s.CustomObjectsApi, args: { pxcApiVersion: string; ns: string; cluster: string }): Promise<boolean> {
-  const body = await getPxcSpec(custom, args);
+export function isPxcClusterReadyBody(body: Obj | null): boolean {
   if (!body) return false;
   const status = body.status as Obj | undefined;
   const state = typeof status?.state === "string" ? status.state : "";
   return state === "ready";
+}
+
+export async function getClusterReady(custom: k8s.CustomObjectsApi, args: { pxcApiVersion: string; ns: string; cluster: string }): Promise<boolean> {
+  const body = await getPxcSpec(custom, args);
+  return isPxcClusterReadyBody(body);
 }
 
 export function buildDesiredReplicationChannels(args: { channelName: string; sources: SourceEntry[] }): Obj[] {
@@ -66,9 +70,9 @@ export async function patchReplicationChannels(
 
 export async function verifyReplicationChannels(
   custom: k8s.CustomObjectsApi,
-  args: { pxcApiVersion: string; ns: string; cluster: string; desired: Obj[] }
+  args: { pxcApiVersion: string; ns: string; cluster: string; desired: Obj[]; clusterBody?: Obj | null }
 ): Promise<boolean> {
-  const body = await getPxcSpec(custom, args);
+  const body = args.clusterBody !== undefined ? args.clusterBody : await getPxcSpec(custom, args);
   if (!body) return false;
   const spec = body.spec as Obj | undefined;
   const pxc = spec?.pxc as Obj | undefined;

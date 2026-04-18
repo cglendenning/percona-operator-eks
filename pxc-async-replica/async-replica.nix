@@ -41,72 +41,108 @@ let
   destRoleName = "pxc-async-replica-dest";
   sourceSecretRoleName = "pxc-async-replica-source-secret-reader";
 
-  rbacAndDeployYaml = pkgs.writeText "pxc-async-replica-k8s.yaml" ''
-    apiVersion: v1
-    kind: ServiceAccount
-    metadata:
-      name: ${saName}
-      namespace: ${destNs}
-    ---
-    apiVersion: rbac.authorization.k8s.io/v1
-    kind: Role
-    metadata:
-      name: ${destRoleName}
-      namespace: ${destNs}
-    rules:
-      - apiGroups: [""]
-        resources: ["secrets"]
-        verbs: ["get"]
-        resourceNames: ["seaweedfs-s3-credentials", "pxc-async-replica-mysql"]
-      - apiGroups: ["apps"]
-        resources: ["statefulsets", "deployments"]
-        verbs: ["get", "list", "patch"]
-      - apiGroups: ["pxc.percona.com"]
-        resources: ["perconaxtradbclusters"]
-        verbs: ["get", "patch"]
-      - apiGroups: ["pxc.percona.com"]
-        resources: ["perconaxtradbclusterrestores"]
-        verbs: ["get", "list", "create"]
-    ---
-    apiVersion: rbac.authorization.k8s.io/v1
-    kind: RoleBinding
-    metadata:
-      name: ${destRoleName}
-      namespace: ${destNs}
-    subjects:
-      - kind: ServiceAccount
-        name: ${saName}
-        namespace: ${destNs}
-    roleRef:
-      apiGroup: rbac.authorization.k8s.io
-      kind: Role
-      name: ${destRoleName}
-    ---
-    apiVersion: rbac.authorization.k8s.io/v1
-    kind: Role
-    metadata:
-      name: ${sourceSecretRoleName}
-      namespace: ${sourceNs}
-    rules:
-      - apiGroups: [""]
-        resources: ["secrets"]
-        verbs: ["get"]
-        resourceNames: ["root-db-users"]
-    ---
-    apiVersion: rbac.authorization.k8s.io/v1
-    kind: RoleBinding
-    metadata:
-      name: ${sourceSecretRoleName}
-      namespace: ${sourceNs}
-    subjects:
-      - kind: ServiceAccount
-        name: ${saName}
-        namespace: ${destNs}
-    roleRef:
-      apiGroup: rbac.authorization.k8s.io
-      kind: Role
-      name: ${sourceSecretRoleName}
-    ---
+  # ServiceAccount + namespaced Role/RoleBinding (not ClusterRole: secrets and apps workloads are namespace-scoped).
+  rbacKubernetesObjects = [
+    {
+      apiVersion = "v1";
+      kind = "ServiceAccount";
+      metadata = {
+        name = saName;
+        namespace = destNs;
+      };
+    }
+    {
+      apiVersion = "rbac.authorization.k8s.io/v1";
+      kind = "Role";
+      metadata = {
+        name = destRoleName;
+        namespace = destNs;
+      };
+      rules = [
+        {
+          apiGroups = [ "" ];
+          resources = [ "secrets" ];
+          verbs = [ "get" ];
+          resourceNames = [ "seaweedfs-s3-credentials" "pxc-async-replica-mysql" ];
+        }
+        {
+          apiGroups = [ "apps" ];
+          resources = [ "statefulsets" "deployments" ];
+          verbs = [ "get" "list" "patch" ];
+        }
+        {
+          apiGroups = [ "pxc.percona.com" ];
+          resources = [ "perconaxtradbclusters" ];
+          verbs = [ "get" "patch" ];
+        }
+        {
+          apiGroups = [ "pxc.percona.com" ];
+          resources = [ "perconaxtradbclusterrestores" ];
+          verbs = [ "get" "list" "create" ];
+        }
+      ];
+    }
+    {
+      apiVersion = "rbac.authorization.k8s.io/v1";
+      kind = "RoleBinding";
+      metadata = {
+        name = destRoleName;
+        namespace = destNs;
+      };
+      subjects = [
+        {
+          kind = "ServiceAccount";
+          name = saName;
+          namespace = destNs;
+        }
+      ];
+      roleRef = {
+        apiGroup = "rbac.authorization.k8s.io";
+        kind = "Role";
+        name = destRoleName;
+      };
+    }
+    {
+      apiVersion = "rbac.authorization.k8s.io/v1";
+      kind = "Role";
+      metadata = {
+        name = sourceSecretRoleName;
+        namespace = sourceNs;
+      };
+      rules = [
+        {
+          apiGroups = [ "" ];
+          resources = [ "secrets" ];
+          verbs = [ "get" ];
+          resourceNames = [ "root-db-users" ];
+        }
+      ];
+    }
+    {
+      apiVersion = "rbac.authorization.k8s.io/v1";
+      kind = "RoleBinding";
+      metadata = {
+        name = sourceSecretRoleName;
+        namespace = sourceNs;
+      };
+      subjects = [
+        {
+          kind = "ServiceAccount";
+          name = saName;
+          namespace = destNs;
+        }
+      ];
+      roleRef = {
+        apiGroup = "rbac.authorization.k8s.io";
+        kind = "Role";
+        name = sourceSecretRoleName;
+      };
+    }
+  ];
+
+  rbacYaml = lib.concatStringsSep "\n---\n" (map (obj: lib.generators.toYAML { } obj) rbacKubernetesObjects);
+
+  deploymentYamlFragment = ''
     apiVersion: apps/v1
     kind: Deployment
     metadata:
@@ -176,6 +212,8 @@ let
                 - name: SELF_HEAL_FAILURE_THRESHOLD
                   value: "3"
   '';
+
+  rbacAndDeployYaml = pkgs.writeText "pxc-async-replica-k8s.yaml" (rbacYaml + "\n---\n" + deploymentYamlFragment);
 
 in
 {
