@@ -10,6 +10,7 @@ import {
   mergeUserAndPasswordIntoMysqlUrl,
   readReplicaSlaveStatus,
   scalarString,
+  type SlaveStatus,
 } from "./mysql";
 import type { Pool } from "mysql2/promise";
 import { findLatestBackupS3Destination, type S3ClientConfig } from "./s3-latest-backup";
@@ -357,6 +358,41 @@ export async function runController(): Promise<void> {
     }
   }
 
+  /**
+   * Blocks until the SOURCE MySQL endpoint is reachable and can execute a trivial query.
+   * Uses the same pacing as the main health loop.
+   */
+  async function waitUntilSourceReachable(logPrefix = "SOURCE GATE"): Promise<void> {
+    const intervalSec = HEALTH_INTERVAL_SEC;
+    let attempt = 0;
+    while (!shuttingDown) {
+      attempt += 1;
+      try {
+        const p = createMysqlPoolFromUrl(sourceMysqlUrl);
+        try {
+          await scalarString(p, "SELECT 1");
+        } finally {
+          await p.end().catch(() => {});
+        }
+        log(`${logPrefix}: source is reachable (attempt ${attempt})`);
+        return;
+      } catch (e: unknown) {
+        const detail = e instanceof Error ? e.message : formatK8sError(e);
+        log(
+          `${logPrefix}: source is unreachable (${detail}). ` +
+            `Not proceeding with restore, bootstrap, or self-heal. Will retry every ${intervalSec}s until the source is reachable. (attempt ${attempt})`
+        );
+        const total = intervalSec * 1000;
+        const step = 1000;
+        let waited = 0;
+        while (!shuttingDown && waited < total) {
+          await sleep(Math.min(step, total - waited));
+          waited += step;
+        }
+      }
+    }
+  }
+
   /** True if a full end-to-end replicated write/drop succeeds; false on any failure (no throw). */
   async function tryE2eFirstReplicationGate(): Promise<boolean> {
     if (shuttingDown) {
@@ -421,6 +457,39 @@ export async function runController(): Promise<void> {
     }
   }
 
+  /** IO/SQL running and no slave errors, but lag above threshold or lag unknown — not yet a candidate for immediate re-seed. */
+  function isLagOnlyUnhealthy(s: SlaveStatus | null): boolean {
+    return !!s && !replicationBroken(s) && !slaveLooksHealthy(s, MAX_LAG_SECONDS);
+  }
+
+  /**
+   * When unhealthy is lag-only, wait for up to 5 replica status checks spaced 1 minute apart before allowing re-seed.
+   * @returns true if replication became healthy (caller should skip re-seed), false if still unhealthy after all attempts.
+   */
+  async function waitLagOnlyBeforeReseed(pool: Pool): Promise<boolean> {
+    const attempts = 5;
+    const delayMs = 60_000;
+    for (let i = 1; i <= attempts; i++) {
+      if (shuttingDown) return true;
+      const st = await readReplicaSlaveStatus(pool, CHANNEL_NAME);
+      const ok = !!st && !replicationBroken(st) && slaveLooksHealthy(st, MAX_LAG_SECONDS);
+      if (ok) {
+        log(`SELF-HEAL: lag watch ${i}/${attempts}: replication healthy; skipping re-seed`);
+        return true;
+      }
+      log(`SELF-HEAL: lag watch ${i}/${attempts}: still lagging or lag unknown`);
+      if (i < attempts) {
+        let waited = 0;
+        while (!shuttingDown && waited < delayMs) {
+          const step = Math.min(1000, delayMs - waited);
+          await sleep(step);
+          waited += step;
+        }
+      }
+    }
+    return false;
+  }
+
   async function selfHealReplication(args: { replicaPool: Pool; attempt: number }): Promise<void> {
     log(`SELF-HEAL: attempt ${args.attempt} starting (threshold=${SELF_HEAL_FAILURE_THRESHOLD})`);
 
@@ -445,6 +514,14 @@ export async function runController(): Promise<void> {
 
     // 3) Last resort: restore from latest Seaweed backup again
     if (args.attempt >= SELF_HEAL_FAILURE_THRESHOLD) {
+      const st = await readReplicaSlaveStatus(args.replicaPool, CHANNEL_NAME);
+      if (isLagOnlyUnhealthy(st)) {
+        log(
+          "SELF-HEAL: replication appears lag-only (IO/SQL Yes, no slave errors); 5 status checks at 1m spacing before re-seed"
+        );
+        const recovered = await waitLagOnlyBeforeReseed(args.replicaPool);
+        if (recovered) return;
+      }
       log("SELF-HEAL: escalating to full restore-from-latest-backup");
       await restoreFromLatestSeaweedBackup();
       await waitClusterReadyOrThrow();
@@ -457,6 +534,13 @@ export async function runController(): Promise<void> {
   const replicaPool = createMysqlPoolFromUrl(REPLICA_MYSQL_URL);
 
   try {
+    log("SOURCE GATE: waiting until source is reachable (no restore/bootstrap until then)");
+    await waitUntilSourceReachable();
+    if (shuttingDown) {
+      log("SOURCE GATE: shutdown requested; exiting before Phase 0");
+      return;
+    }
+
     log(
       "Phase 0: E2E-first gate — row-level replication test on source/replica (insert, verify, drop, verify)"
     );
@@ -483,9 +567,19 @@ export async function runController(): Promise<void> {
       if (healthy) {
         failStreak = 0;
       } else {
-        failStreak += 1;
-        log(`HEALTH: unhealthy (failStreak=${failStreak})`);
-        await selfHealReplication({ replicaPool, attempt: failStreak });
+        log("HEALTH: replication unhealthy — waiting for source reachability before any recovery action");
+        await waitUntilSourceReachable("SOURCE GATE (replication unhealthy)");
+        if (shuttingDown) break;
+        const s2 = await readReplicaSlaveStatus(replicaPool, CHANNEL_NAME);
+        const healthyNow = !!s2 && slaveLooksHealthy(s2, MAX_LAG_SECONDS) && !replicationBroken(s2);
+        if (healthyNow) {
+          log("HEALTH: replication healthy after source reachability gate; skipping self-heal");
+          failStreak = 0;
+        } else {
+          failStreak += 1;
+          log(`HEALTH: still unhealthy after source reachability gate (failStreak=${failStreak}); running self-heal`);
+          await selfHealReplication({ replicaPool, attempt: failStreak });
+        }
       }
 
       // Sleep in small chunks so SIGTERM is responsive.
