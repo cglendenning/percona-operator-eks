@@ -35,11 +35,9 @@ let
   };
 
   destNs = "pxc-replica-local";
-  sourceNs = "percona";
   saName = "pxc-async-replica-sa";
   deployName = "pxc-async-replica-controller";
   destRoleName = "pxc-async-replica-dest";
-  sourceSecretRoleName = "pxc-async-replica-source-secret-reader";
 
   # ServiceAccount + namespaced Role/RoleBinding (not ClusterRole: secrets and apps workloads are namespace-scoped).
   rbacKubernetesObjects = [
@@ -63,7 +61,7 @@ let
           apiGroups = [ "" ];
           resources = [ "secrets" ];
           verbs = [ "get" ];
-          resourceNames = [ "seaweedfs-s3-credentials" "pxc-async-replica-mysql" ];
+          resourceNames = [ "seaweedfs-s3-credentials" "pxc-async-replica-mysql" "db-root-users" ];
         }
         {
           apiGroups = [ "apps" ];
@@ -102,42 +100,6 @@ let
         name = destRoleName;
       };
     }
-    {
-      apiVersion = "rbac.authorization.k8s.io/v1";
-      kind = "Role";
-      metadata = {
-        name = sourceSecretRoleName;
-        namespace = sourceNs;
-      };
-      rules = [
-        {
-          apiGroups = [ "" ];
-          resources = [ "secrets" ];
-          verbs = [ "get" ];
-          resourceNames = [ "root-db-users" ];
-        }
-      ];
-    }
-    {
-      apiVersion = "rbac.authorization.k8s.io/v1";
-      kind = "RoleBinding";
-      metadata = {
-        name = sourceSecretRoleName;
-        namespace = sourceNs;
-      };
-      subjects = [
-        {
-          kind = "ServiceAccount";
-          name = saName;
-          namespace = destNs;
-        }
-      ];
-      roleRef = {
-        apiGroup = "rbac.authorization.k8s.io";
-        kind = "Role";
-        name = sourceSecretRoleName;
-      };
-    }
   ];
 
   rbacYaml = lib.concatStringsSep "\n---\n" (map (obj: lib.generators.toYAML { } obj) rbacKubernetesObjects);
@@ -168,8 +130,6 @@ let
                   valueFrom:
                     fieldRef:
                       fieldPath: metadata.namespace
-                - name: SOURCE_NS
-                  value: "${sourceNs}"
                 - name: PXC_CLUSTER
                   value: "pxc-cluster"
                 - name: REPLICATION_CHANNEL_NAME
@@ -193,7 +153,7 @@ let
                 - name: S3_CREDENTIALS_SECRET
                   value: "seaweedfs-s3-credentials"
                 - name: SOURCE_MYSQL_URL
-                  value: "mysql://root@db-haproxy.percona.svc.cluster.local:3306/mysql"
+                  value: "mysql://replication@db-haproxy.percona.svc.cluster.local:3306/mysql"
                 - name: REPLICA_MYSQL_URL
                   valueFrom:
                     secretKeyRef:

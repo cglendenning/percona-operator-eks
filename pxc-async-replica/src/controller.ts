@@ -7,7 +7,7 @@ import { formatK8sError } from "./k8s-errors";
 import {
   createMysqlPoolFromUrl,
   execSql,
-  mergePasswordIntoMysqlUrl,
+  mergeUserAndPasswordIntoMysqlUrl,
   readReplicaSlaveStatus,
   scalarString,
 } from "./mysql";
@@ -95,8 +95,6 @@ export async function runController(): Promise<void> {
       throw new Error(`DEST_NS/PXC_NAMESPACE is not set and could not read pod namespace from ${nsPath}`);
     }
   })();
-  const SOURCE_NS = process.env.SOURCE_NS?.trim() || DEST_NS;
-
   const PXC_CLUSTER = envOptional("PXC_CLUSTER", "db");
   const isLocal = parseBoolEnv("IS_LOCAL", parseBoolEnv("isLocal", false));
   const CHANNEL_NAME = envOptional("REPLICATION_CHANNEL_NAME", "wookie_primary_to_replica").trim();
@@ -128,8 +126,13 @@ export async function runController(): Promise<void> {
 
   const SOURCE_MYSQL_URL_BASE = env("SOURCE_MYSQL_URL");
   const REPLICA_MYSQL_URL = env("REPLICA_MYSQL_URL");
-  const SOURCE_ROOT_DB_USERS_SECRET = envOptional("SOURCE_ROOT_DB_USERS_SECRET", "root-db-users");
-  const SOURCE_MYSQL_ROOT_PASSWORD_KEY = envOptional("SOURCE_MYSQL_ROOT_PASSWORD_KEY", "mysql_root_source_pxc");
+  /** Destination-namespace Secret holding the `replication` user password (same as PXC async replication). */
+  const SOURCE_DB_USERS_SECRET = envOptional("SOURCE_DB_USERS_SECRET", "db-root-users");
+  const SOURCE_MYSQL_REPLICATION_PASSWORD_KEY = envOptional("SOURCE_MYSQL_REPLICATION_PASSWORD_KEY", "replication");
+  const SOURCE_MYSQL_REPLICATION_USER = assertMysqlIdentifier(
+    envOptional("SOURCE_MYSQL_REPLICATION_USER", "replication"),
+    "SOURCE_MYSQL_REPLICATION_USER"
+  );
   const E2E_DB = assertMysqlIdentifier(envOptional("REPLICATION_E2E_DATABASE", "mysql"), "REPLICATION_E2E_DATABASE");
 
   const kc = new k8s.KubeConfig();
@@ -138,15 +141,16 @@ export async function runController(): Promise<void> {
   const custom = kc.makeApiClient(k8s.CustomObjectsApi);
   const apps = kc.makeApiClient(k8s.AppsV1Api);
 
-  async function loadSourceMysqlRootPasswordFromSecret(): Promise<string> {
-    const sec = await core.readNamespacedSecret({ namespace: SOURCE_NS, name: SOURCE_ROOT_DB_USERS_SECRET });
+  async function loadReplicationPasswordFromDestSecret(): Promise<string> {
+    const sec = await core.readNamespacedSecret({ namespace: DEST_NS, name: SOURCE_DB_USERS_SECRET });
     const data = sec.data as Record<string, string> | undefined;
-    return decodeSecretData(data, SOURCE_MYSQL_ROOT_PASSWORD_KEY);
+    return decodeSecretData(data, SOURCE_MYSQL_REPLICATION_PASSWORD_KEY);
   }
 
-  const sourceMysqlUrl = mergePasswordIntoMysqlUrl(
+  const sourceMysqlUrl = mergeUserAndPasswordIntoMysqlUrl(
     SOURCE_MYSQL_URL_BASE,
-    await loadSourceMysqlRootPasswordFromSecret()
+    SOURCE_MYSQL_REPLICATION_USER,
+    await loadReplicationPasswordFromDestSecret()
   );
 
   let shuttingDown = false;
@@ -166,8 +170,9 @@ export async function runController(): Promise<void> {
   const pxcRef = { pxcApiVersion: PXC_API_VERSION, ns: DEST_NS, cluster: PXC_CLUSTER } as const;
 
   log(
-    `pxc-async-replica-controller starting sourceNs=${SOURCE_NS} destNs=${DEST_NS} cluster=${PXC_CLUSTER} channel=${CHANNEL_NAME} ` +
+    `pxc-async-replica-controller starting destNs=${DEST_NS} cluster=${PXC_CLUSTER} channel=${CHANNEL_NAME} ` +
       `SOURCE_HOSTS(${allHosts.length})=${allHosts.join(",")} replicationHosts(${hostsForReplication.length})=${hostsForReplication.join(",")} ` +
+      `sourceAuth=Secret/${SOURCE_DB_USERS_SECRET}#${SOURCE_MYSQL_REPLICATION_PASSWORD_KEY} user=${SOURCE_MYSQL_REPLICATION_USER} ` +
       `S3_ENDPOINT=${S3_ENDPOINT} S3_BUCKET=${S3_BUCKET} S3_PREFIX=${S3_PREFIX || "<none>"} S3_BACKUP_FOLDER_PREFIX=${S3_BACKUP_FOLDER_PREFIX}`
   );
   if (isLocal && allHosts.length > 1) {

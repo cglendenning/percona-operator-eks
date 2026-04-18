@@ -1,6 +1,10 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { buildShowSlaveStatusForChannelSql, mergePasswordIntoMysqlUrl } from "./mysql";
+import {
+  buildShowSlaveStatusForChannelSql,
+  mergePasswordIntoMysqlUrl,
+  mergeUserAndPasswordIntoMysqlUrl,
+} from "./mysql";
 
 describe("buildShowSlaveStatusForChannelSql", () => {
   it("builds SHOW SLAVE STATUS FOR CHANNEL with quoted name", () => {
@@ -19,6 +23,26 @@ describe("buildShowSlaveStatusForChannelSql", () => {
 
   it("rejects empty channel after trim", () => {
     assert.throws(() => buildShowSlaveStatusForChannelSql("   "), /non-empty/);
+  });
+});
+
+describe("mergeUserAndPasswordIntoMysqlUrl", () => {
+  it("sets user and password regardless of URL placeholder user", () => {
+    const out = mergeUserAndPasswordIntoMysqlUrl(
+      "mysql://root@h.example:3307/dbname",
+      "replication",
+      "s3cret"
+    );
+    const u = new URL(out);
+    assert.equal(u.username, "replication");
+    assert.equal(u.password, "s3cret");
+    assert.equal(u.hostname, "h.example");
+    assert.equal(u.port, "3307");
+    assert.equal(u.pathname, "/dbname");
+  });
+
+  it("rejects empty user", () => {
+    assert.throws(() => mergeUserAndPasswordIntoMysqlUrl("mysql://x@h/db", "", "p"), /user must be non-empty/);
   });
 });
 

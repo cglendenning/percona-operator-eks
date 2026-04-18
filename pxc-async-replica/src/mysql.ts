@@ -69,6 +69,26 @@ export function mergePasswordIntoMysqlUrl(urlStr: string, password: string): str
   return u.toString();
 }
 
+/**
+ * Sets username and password on a mysql/mysql2 URL (host/port/database unchanged). Do not log the result.
+ */
+export function mergeUserAndPasswordIntoMysqlUrl(urlStr: string, user: string, password: string): string {
+  if (!user) throw new Error("MySQL user must be non-empty");
+  if (!password) throw new Error("MySQL password must be non-empty");
+  let u: URL;
+  try {
+    u = new URL(urlStr);
+  } catch {
+    throw new Error(`SOURCE_MYSQL_URL is not a valid URL`);
+  }
+  if (u.protocol !== "mysql:" && u.protocol !== "mysql2:") {
+    throw new Error(`SOURCE_MYSQL_URL must use mysql:// or mysql2:// (got ${JSON.stringify(u.protocol)})`);
+  }
+  u.username = user;
+  u.password = password;
+  return u.toString();
+}
+
 function sqlStringLiteral(s: string): string {
   return `'${s.replace(/'/g, "''")}'`;
 }
