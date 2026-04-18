@@ -39,6 +39,18 @@ let
   deployName = "pxc-async-replica-controller";
   destRoleName = "pxc-async-replica-dest";
 
+  # First host is used for SOURCE_MYSQL_URL (mysql client); full list is SOURCE_HOSTS for replication channel sources.
+  sourceHosts = [
+    "db-haproxy.percona.svc.cluster.local"
+    "db-pxc-0.dev.wookie.com"
+    "db-pxc-1.dev.wookie.com"
+    "db-pxc-2.dev.wookie.com"
+  ];
+  sourcePort = "3306";
+  sourceMysqlHost = builtins.elemAt sourceHosts 0;
+  sourceMysqlUrl = "mysql://replication@${sourceMysqlHost}:${sourcePort}/mysql";
+  sourceHostsCsv = lib.concatStringsSep "," sourceHosts;
+
   # ServiceAccount + namespaced Role/RoleBinding (not ClusterRole: secrets and apps workloads are namespace-scoped).
   rbacKubernetesObjects = [
     {
@@ -135,9 +147,9 @@ let
                 - name: REPLICATION_CHANNEL_NAME
                   value: "wookie_primary_to_replica"
                 - name: SOURCE_HOSTS
-                  value: "db-pxc-0.dev.wookie.com,db-pxc-1.dev.wookie.com,db-pxc-2.dev.wookie.com"
+                  value: "${sourceHostsCsv}"
                 - name: SOURCE_PORT
-                  value: "3306"
+                  value: "${sourcePort}"
                 - name: S3_ENDPOINT_URL
                   value: "http://seaweedfs-s3.seaweedfs.svc.cluster.local:8333"
                 - name: S3_REGION
@@ -153,7 +165,7 @@ let
                 - name: DB_ROOT_USERS_SECRET
                   value: "db-root-users"
                 - name: SOURCE_MYSQL_URL
-                  value: "mysql://replication@db-haproxy.percona.svc.cluster.local:3306/mysql"
+                  value: "${sourceMysqlUrl}"
                 - name: REPLICA_MYSQL_URL
                   valueFrom:
                     secretKeyRef:
