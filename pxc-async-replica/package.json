@@ -4,11 +4,14 @@
   "private": true,
   "main": "dist/index.js",
   "type": "commonjs",
+  "engines": {
+    "node": ">=20"
+  },
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "start": "node dist/index.js",
     "pretest": "npm run build",
-    "test": "node --test dist/primitives.test.js dist/channel-normalize.test.js dist/restore.test.js dist/replication-health.test.js dist/mysql.test.js dist/wait-until.test.js dist/replication-cluster.test.js"
+    "test": "node --test dist/primitives.test.js dist/channel-normalize.test.js dist/restore.test.js dist/replication-health.test.js dist/mysql.test.js dist/wait-until.test.js dist/pxc-cluster-ready.test.js"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.1031.0",

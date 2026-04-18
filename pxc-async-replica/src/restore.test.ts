@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { matchesRunningRestoreState, parseS3Bucket } from "./restore";
+import { matchesRunningRestoreState, parseS3Bucket } from "./restore-pure";
 
 describe("parseS3Bucket", () => {
   it("extracts bucket from s3:// URL", () => {

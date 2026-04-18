@@ -4,6 +4,9 @@ import { formatK8sError } from "./k8s-errors";
 import { log } from "./log";
 import { buildDesiredChannels, channelsMatchSpec, normalizeChannels, type SourceEntry } from "./channel-normalize";
 import { K8S_PATCH_CONTENT_TYPE_OPTIONS } from "./k8s-patch-options";
+import { isPxcClusterReadyBody } from "./pxc-cluster-ready";
+
+export { isPxcClusterReadyBody };
 
 export async function getPxcSpec(custom: k8s.CustomObjectsApi, args: { pxcApiVersion: string; ns: string; cluster: string }): Promise<Obj | null> {
   try {
@@ -19,13 +22,6 @@ export async function getPxcSpec(custom: k8s.CustomObjectsApi, args: { pxcApiVer
     log(`get cluster failed: ${formatK8sError(e)}`);
     return null;
   }
-}
-
-export function isPxcClusterReadyBody(body: Obj | null): boolean {
-  if (!body) return false;
-  const status = body.status as Obj | undefined;
-  const state = typeof status?.state === "string" ? status.state : "";
-  return state === "ready";
 }
 
 export async function getClusterReady(custom: k8s.CustomObjectsApi, args: { pxcApiVersion: string; ns: string; cluster: string }): Promise<boolean> {

@@ -2,19 +2,11 @@ import type * as k8s from "@kubernetes/client-node";
 import type { Obj } from "./types";
 import { formatK8sError } from "./k8s-errors";
 import { log, sleep } from "./log";
-import { getPxcSpec, isPxcClusterReadyBody } from "./replication";
+import { getPxcSpec } from "./replication";
+import { isPxcClusterReadyBody } from "./pxc-cluster-ready";
+import { matchesRunningRestoreState, parseS3Bucket } from "./restore-pure";
 
-export function parseS3Bucket(destination: string): string {
-  const match = destination.match(/^s3:\/\/([^/]+)/);
-  if (!match) {
-    throw new Error(`Cannot parse S3 bucket from destination: ${destination}`);
-  }
-  return match[1]!;
-}
-
-export function matchesRunningRestoreState(state: string | undefined): boolean {
-  return state === "Starting" || state === "Running";
-}
+export { matchesRunningRestoreState, parseS3Bucket } from "./restore-pure";
 
 export async function restoreInProgress(custom: k8s.CustomObjectsApi, args: { pxcApiVersion: string; ns: string }): Promise<boolean> {
   const resp = (await custom.listNamespacedCustomObject({

@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # Run unit tests locally (Linux / WSL / macOS). Requires Node.js 20+.
+# Unit tests intentionally avoid loading @kubernetes/client-node (ESM/CJS issues on some Linux Node builds).
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
@@ -11,4 +12,4 @@ exec node --test \
   dist/replication-health.test.js \
   dist/mysql.test.js \
   dist/wait-until.test.js \
-  dist/replication-cluster.test.js
+  dist/pxc-cluster-ready.test.js
