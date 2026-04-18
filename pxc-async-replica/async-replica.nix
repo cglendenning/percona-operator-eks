@@ -61,7 +61,7 @@ let
           apiGroups = [ "" ];
           resources = [ "secrets" ];
           verbs = [ "get" ];
-          resourceNames = [ "seaweedfs-s3-credentials" "pxc-async-replica-mysql" "db-root-users" ];
+          resourceNames = [ "db-root-users" ];
         }
         {
           apiGroups = [ "apps" ];
@@ -150,14 +150,14 @@ let
                   value: ""
                 - name: S3_BACKUP_FOLDER_PREFIX
                   value: "db-"
-                - name: S3_CREDENTIALS_SECRET
-                  value: "seaweedfs-s3-credentials"
+                - name: DB_ROOT_USERS_SECRET
+                  value: "db-root-users"
                 - name: SOURCE_MYSQL_URL
                   value: "mysql://replication@db-haproxy.percona.svc.cluster.local:3306/mysql"
                 - name: REPLICA_MYSQL_URL
                   valueFrom:
                     secretKeyRef:
-                      name: pxc-async-replica-mysql
+                      name: db-root-users
                       key: REPLICA_MYSQL_URL
                 - name: READY_TIMEOUT_SECONDS
                   value: "7200"

@@ -118,7 +118,8 @@ export async function runController(): Promise<void> {
   const S3_BUCKET = envOptional("S3_BACKUP_BUCKET", "pxc-backups");
   const S3_PREFIX = process.env.S3_BACKUP_PREFIX?.trim() ?? "";
   const S3_BACKUP_FOLDER_PREFIX = envOptional("S3_BACKUP_FOLDER_PREFIX", "db-");
-  const S3_SECRET_NAME = env("S3_CREDENTIALS_SECRET");
+  /** Single Secret in DEST_NS: S3 keys (AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY), replication password (`replication`), and optionally REPLICA_MYSQL_URL via env injection. */
+  const DB_ROOT_USERS_SECRET = envOptional("DB_ROOT_USERS_SECRET", "db-root-users");
 
   const MAX_LAG_SECONDS = parseIntEnv("MAX_REPLICATION_LAG_SECONDS", 5);
   const HEALTH_INTERVAL_SEC = parseIntEnv("HEALTHCHECK_INTERVAL_SECONDS", 60);
@@ -126,9 +127,6 @@ export async function runController(): Promise<void> {
 
   const SOURCE_MYSQL_URL_BASE = env("SOURCE_MYSQL_URL");
   const REPLICA_MYSQL_URL = env("REPLICA_MYSQL_URL");
-  /** Destination-namespace Secret holding the `replication` user password (same as PXC async replication). */
-  const SOURCE_DB_USERS_SECRET = envOptional("SOURCE_DB_USERS_SECRET", "db-root-users");
-  const SOURCE_MYSQL_REPLICATION_PASSWORD_KEY = envOptional("SOURCE_MYSQL_REPLICATION_PASSWORD_KEY", "replication");
   const SOURCE_MYSQL_REPLICATION_USER = assertMysqlIdentifier(
     envOptional("SOURCE_MYSQL_REPLICATION_USER", "replication"),
     "SOURCE_MYSQL_REPLICATION_USER"
@@ -141,16 +139,15 @@ export async function runController(): Promise<void> {
   const custom = kc.makeApiClient(k8s.CustomObjectsApi);
   const apps = kc.makeApiClient(k8s.AppsV1Api);
 
-  async function loadReplicationPasswordFromDestSecret(): Promise<string> {
-    const sec = await core.readNamespacedSecret({ namespace: DEST_NS, name: SOURCE_DB_USERS_SECRET });
-    const data = sec.data as Record<string, string> | undefined;
-    return decodeSecretData(data, SOURCE_MYSQL_REPLICATION_PASSWORD_KEY);
-  }
+  const dbRootSecret = await core.readNamespacedSecret({ namespace: DEST_NS, name: DB_ROOT_USERS_SECRET });
+  const dbRootData = dbRootSecret.data as Record<string, string> | undefined;
+  if (!dbRootData) throw new Error(`Secret ${DB_ROOT_USERS_SECRET} has no data`);
 
+  const replicationPassword = decodeSecretData(dbRootData, "replication");
   const sourceMysqlUrl = mergeUserAndPasswordIntoMysqlUrl(
     SOURCE_MYSQL_URL_BASE,
     SOURCE_MYSQL_REPLICATION_USER,
-    await loadReplicationPasswordFromDestSecret()
+    replicationPassword
   );
 
   let shuttingDown = false;
@@ -172,7 +169,7 @@ export async function runController(): Promise<void> {
   log(
     `pxc-async-replica-controller starting destNs=${DEST_NS} cluster=${PXC_CLUSTER} channel=${CHANNEL_NAME} ` +
       `SOURCE_HOSTS(${allHosts.length})=${allHosts.join(",")} replicationHosts(${hostsForReplication.length})=${hostsForReplication.join(",")} ` +
-      `sourceAuth=Secret/${SOURCE_DB_USERS_SECRET}#${SOURCE_MYSQL_REPLICATION_PASSWORD_KEY} user=${SOURCE_MYSQL_REPLICATION_USER} ` +
+      `dbRootSecret=${DB_ROOT_USERS_SECRET} (keys: AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY, replication) user=${SOURCE_MYSQL_REPLICATION_USER} ` +
       `S3_ENDPOINT=${S3_ENDPOINT} S3_BUCKET=${S3_BUCKET} S3_PREFIX=${S3_PREFIX || "<none>"} S3_BACKUP_FOLDER_PREFIX=${S3_BACKUP_FOLDER_PREFIX}`
   );
   if (isLocal && allHosts.length > 1) {
@@ -194,26 +191,13 @@ export async function runController(): Promise<void> {
     throw new Error(`Timed out after ${READY_TIMEOUT_SEC}s waiting for cluster ${PXC_CLUSTER} ready`);
   }
 
-  async function loadS3CfgFromSecret(): Promise<S3ClientConfig> {
-    const sec = await core.readNamespacedSecret({ namespace: DEST_NS, name: S3_SECRET_NAME });
-    const data = sec.data as Record<string, string> | undefined;
-
-    let accessKeyId = "";
-    let secretAccessKey = "";
-    try {
-      accessKeyId = decodeSecretData(data, "AWS_ACCESS_KEY_ID");
-      secretAccessKey = decodeSecretData(data, "AWS_SECRET_ACCESS_KEY");
-    } catch {
-      accessKeyId = decodeSecretData(data, "access_key");
-      secretAccessKey = decodeSecretData(data, "secret_key");
-    }
-
+  function loadS3CfgFromDbRootSecret(): S3ClientConfig {
     return {
       endpoint: S3_ENDPOINT,
       region: S3_REGION,
       forcePathStyle: S3_FORCE_PATH_STYLE,
-      accessKeyId,
-      secretAccessKey,
+      accessKeyId: decodeSecretData(dbRootData, "AWS_ACCESS_KEY_ID"),
+      secretAccessKey: decodeSecretData(dbRootData, "AWS_SECRET_ACCESS_KEY"),
     };
   }
 
@@ -224,7 +208,7 @@ export async function runController(): Promise<void> {
       return;
     }
 
-    const s3cfg = await loadS3CfgFromSecret();
+    const s3cfg = loadS3CfgFromDbRootSecret();
     const listPrefix = `${S3_PREFIX}${S3_BACKUP_FOLDER_PREFIX}`;
     const latest = await findLatestBackupS3Destination({
       cfg: s3cfg,
@@ -242,7 +226,7 @@ export async function runController(): Promise<void> {
       restoreName,
       destination: latest.destination,
       s3: {
-        credentialsSecret: S3_SECRET_NAME,
+        credentialsSecret: DB_ROOT_USERS_SECRET,
         region: S3_REGION,
         endpointUrl: S3_ENDPOINT,
         forcePathStyle: S3_FORCE_PATH_STYLE,
