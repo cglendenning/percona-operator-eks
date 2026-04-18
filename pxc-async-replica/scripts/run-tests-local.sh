@@ -12,4 +12,5 @@ exec node --test \
   dist/replication-health.test.js \
   dist/mysql.test.js \
   dist/wait-until.test.js \
-  dist/pxc-cluster-ready.test.js
+  dist/pxc-cluster-ready.test.js \
+  dist/transient-errors.test.js

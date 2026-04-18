@@ -29,6 +29,7 @@ import {
 import { K8S_PATCH_CONTENT_TYPE_OPTIONS } from "./k8s-patch-options";
 import type { SourceEntry } from "./channel-normalize";
 import { waitUntilTrue } from "./wait-until";
+import { retryWithBackoff } from "./transient-errors";
 
 function env(name: string): string {
   const v = process.env[name];
@@ -133,13 +134,29 @@ export async function runController(): Promise<void> {
   );
   const E2E_DB = assertMysqlIdentifier(envOptional("REPLICATION_E2E_DATABASE", "mysql"), "REPLICATION_E2E_DATABASE");
 
+  let shuttingDown = false;
+  const shutdown = () => {
+    shuttingDown = true;
+    log("SIGTERM/SIGINT received, shutting down gracefully");
+  };
+  process.on("SIGTERM", shutdown);
+  process.on("SIGINT", shutdown);
+
+  try {
   const kc = new k8s.KubeConfig();
   kc.loadFromDefault();
   const core = kc.makeApiClient(k8s.CoreV1Api);
   const custom = kc.makeApiClient(k8s.CustomObjectsApi);
   const apps = kc.makeApiClient(k8s.AppsV1Api);
 
-  const dbRootSecret = await core.readNamespacedSecret({ namespace: DEST_NS, name: DB_ROOT_USERS_SECRET });
+  const dbRootSecret = await retryWithBackoff({
+    label: `readNamespacedSecret(${DB_ROOT_USERS_SECRET})`,
+    fn: () => core.readNamespacedSecret({ namespace: DEST_NS, name: DB_ROOT_USERS_SECRET }),
+    maxAttempts: parseIntEnv("K8S_STARTUP_READ_SECRET_MAX_ATTEMPTS", 60),
+    baseDelayMs: parseIntEnv("K8S_RETRY_BASE_DELAY_MS", 1000),
+    maxDelayMs: parseIntEnv("K8S_RETRY_MAX_DELAY_MS", 60_000),
+    isShuttingDown: () => shuttingDown,
+  });
   const dbRootData = dbRootSecret.data as Record<string, string> | undefined;
   if (!dbRootData) throw new Error(`Secret ${DB_ROOT_USERS_SECRET} has no data`);
 
@@ -149,14 +166,6 @@ export async function runController(): Promise<void> {
     SOURCE_MYSQL_REPLICATION_USER,
     replicationPassword
   );
-
-  let shuttingDown = false;
-  const shutdown = () => {
-    shuttingDown = true;
-    log("SIGTERM/SIGINT received, shutting down gracefully");
-  };
-  process.on("SIGTERM", shutdown);
-  process.on("SIGINT", shutdown);
 
   const sources: SourceEntry[] = hostsForReplication.map((host) => ({
     host,
@@ -493,5 +502,9 @@ export async function runController(): Promise<void> {
     log("Shutdown complete");
   } finally {
     await replicaPool.end().catch(() => {});
+  }
+  } finally {
+    process.off("SIGTERM", shutdown);
+    process.off("SIGINT", shutdown);
   }
 }
