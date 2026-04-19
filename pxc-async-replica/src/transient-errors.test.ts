@@ -45,7 +45,7 @@ test("isDefinitelyFatalError: 401", () => {
 });
 
 test("isDefinitelyFatalError: secret shape", () => {
-  assert.equal(isDefinitelyFatalError(new Error("Secret missing data key: replication")), true);
+  assert.equal(isDefinitelyFatalError(new Error("Secret missing data key: root")), true);
 });
 
 test("isDefinitelyFatalError: unknown runtime error is not fatal", () => {

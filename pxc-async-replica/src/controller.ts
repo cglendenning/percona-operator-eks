@@ -86,6 +86,20 @@ function sqlString(s: string): string {
   return `'${s.replace(/'/g, "''")}'`;
 }
 
+/** Wrap MySQL errors in validateReplication so logs show SOURCE vs REPLICA and which step failed. */
+function e2eFail(endpoint: "SOURCE" | "REPLICA", step: string, err: unknown): Error {
+  const msg = err instanceof Error ? err.message : formatK8sError(err);
+  return new Error(`E2E ${endpoint} failed (${step}): ${msg}`);
+}
+
+async function runE2eStep<T>(endpoint: "SOURCE" | "REPLICA", step: string, fn: () => Promise<T>): Promise<T> {
+  try {
+    return await fn();
+  } catch (e: unknown) {
+    throw e2eFail(endpoint, step, e);
+  }
+}
+
 export async function runController(): Promise<void> {
   const DEST_NS = (() => {
     const explicit = process.env.DEST_NS?.trim() || process.env.PXC_NAMESPACE?.trim();
@@ -120,7 +134,7 @@ export async function runController(): Promise<void> {
   const S3_BUCKET = envOptional("S3_BACKUP_BUCKET", "pxc-backups");
   const S3_PREFIX = process.env.S3_BACKUP_PREFIX?.trim() ?? "";
   const S3_BACKUP_FOLDER_PREFIX = envOptional("S3_BACKUP_FOLDER_PREFIX", "db-");
-  /** Single Secret in DEST_NS: S3 keys (AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY), replication password (`replication`), and optionally REPLICA_MYSQL_URL via env injection. */
+  /** Single Secret in DEST_NS: S3 keys, `root` password for SOURCE MySQL client, REPLICA_MYSQL_URL, etc. */
   const DB_ROOT_USERS_SECRET = envOptional("DB_ROOT_USERS_SECRET", "db-root-users");
 
   const MAX_LAG_SECONDS = parseIntEnv("MAX_REPLICATION_LAG_SECONDS", 5);
@@ -129,10 +143,10 @@ export async function runController(): Promise<void> {
 
   const SOURCE_MYSQL_URL_BASE = env("SOURCE_MYSQL_URL");
   const REPLICA_MYSQL_URL = env("REPLICA_MYSQL_URL");
-  const SOURCE_MYSQL_REPLICATION_USER = assertMysqlIdentifier(
-    envOptional("SOURCE_MYSQL_REPLICATION_USER", "replication"),
-    "SOURCE_MYSQL_REPLICATION_USER"
-  );
+  /** MySQL user for SOURCE (E2E, SOURCE GATE); password from {@link SOURCE_MYSQL_PASSWORD_SECRET_KEY} in {@link DB_ROOT_USERS_SECRET}. Default `root` → account `root`@`%` on server. */
+  const SOURCE_MYSQL_USER = assertMysqlIdentifier(envOptional("SOURCE_MYSQL_USER", "root"), "SOURCE_MYSQL_USER");
+  /** Secret data key holding the SOURCE user password (default `root` for `root`@`%`). */
+  const SOURCE_MYSQL_PASSWORD_SECRET_KEY = envOptional("SOURCE_MYSQL_PASSWORD_SECRET_KEY", "root");
   const E2E_DB = assertMysqlIdentifier(envOptional("REPLICATION_E2E_DATABASE", "mysql"), "REPLICATION_E2E_DATABASE");
 
   let shuttingDown = false;
@@ -161,11 +175,11 @@ export async function runController(): Promise<void> {
   const dbRootData = dbRootSecret.data as Record<string, string> | undefined;
   if (!dbRootData) throw new Error(`Secret ${DB_ROOT_USERS_SECRET} has no data`);
 
-  const replicationPassword = decodeSecretData(dbRootData, "replication");
+  const sourceMysqlPassword = decodeSecretData(dbRootData, SOURCE_MYSQL_PASSWORD_SECRET_KEY);
   const sourceMysqlUrl = mergeUserAndPasswordIntoMysqlUrl(
     SOURCE_MYSQL_URL_BASE,
-    SOURCE_MYSQL_REPLICATION_USER,
-    replicationPassword
+    SOURCE_MYSQL_USER,
+    sourceMysqlPassword
   );
 
   const sources: SourceEntry[] = hostsForReplication.map((host) => ({
@@ -179,7 +193,7 @@ export async function runController(): Promise<void> {
   log(
     `pxc-async-replica-controller starting destNs=${DEST_NS} cluster=${PXC_CLUSTER} channel=${CHANNEL_NAME} ` +
       `SOURCE_HOSTS(${allHosts.length})=${allHosts.join(",")} replicationHosts(${hostsForReplication.length})=${hostsForReplication.join(",")} ` +
-      `dbRootSecret=${DB_ROOT_USERS_SECRET} (keys: AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY, replication) user=${SOURCE_MYSQL_REPLICATION_USER} ` +
+      `dbRootSecret=${DB_ROOT_USERS_SECRET} (SOURCE password key=${SOURCE_MYSQL_PASSWORD_SECRET_KEY}) SOURCE_MYSQL_USER=${SOURCE_MYSQL_USER} ` +
       `S3_ENDPOINT=${S3_ENDPOINT} S3_BUCKET=${S3_BUCKET} S3_PREFIX=${S3_PREFIX || "<none>"} S3_BACKUP_FOLDER_PREFIX=${S3_BACKUP_FOLDER_PREFIX}`
   );
   if (isLocal && allHosts.length > 1) {
@@ -314,27 +328,41 @@ export async function runController(): Promise<void> {
     const fqtn = `\`${E2E_DB}\`.\`${table}\``;
 
     try {
-      log(`E2E: creating table ${fqtn} on SOURCE and inserting a row`);
-      await execSql(sourcePool, `CREATE DATABASE IF NOT EXISTS \`${E2E_DB}\``);
-      await execSql(sourcePool, `CREATE TABLE ${fqtn} (id INT PRIMARY KEY, note VARCHAR(128))`);
+      log(`E2E: creating table ${fqtn} on SOURCE and inserting a row (database=${E2E_DB})`);
+      await runE2eStep("SOURCE", "CREATE DATABASE IF NOT EXISTS", () =>
+        execSql(sourcePool, `CREATE DATABASE IF NOT EXISTS \`${E2E_DB}\``)
+      );
+      await runE2eStep("SOURCE", "CREATE TABLE", () =>
+        execSql(sourcePool, `CREATE TABLE ${fqtn} (id INT PRIMARY KEY, note VARCHAR(128))`)
+      );
       const note = `hello-${Date.now()}`;
-      await execSql(sourcePool, `INSERT INTO ${fqtn} (id, note) VALUES (1, ${sqlString(note)})`);
+      await runE2eStep("SOURCE", "INSERT test row", () =>
+        execSql(sourcePool, `INSERT INTO ${fqtn} (id, note) VALUES (1, ${sqlString(note)})`)
+      );
 
       log("E2E: waiting for row to appear on REPLICA");
       const rowOk = await waitUntilTrue({
         pollMs: 500,
         deadlineMs: READY_TIMEOUT_SEC * 1000,
         isShuttingDown: () => shuttingDown,
-        predicate: async () => (await scalarString(replicaPool, `SELECT note FROM ${fqtn} WHERE id=1`)) === note,
+        predicate: async () => {
+          try {
+            return (await scalarString(replicaPool, `SELECT note FROM ${fqtn} WHERE id=1`)) === note;
+          } catch (e: unknown) {
+            throw e2eFail("REPLICA", "SELECT replicated row (poll)", e);
+          }
+        },
       });
       if (!rowOk) {
-        const got = await scalarString(replicaPool, `SELECT note FROM ${fqtn} WHERE id=1`);
-        throw new Error(`E2E FAILED: expected replicated note=${JSON.stringify(note)} got=${JSON.stringify(got)}`);
+        const got = await runE2eStep("REPLICA", "SELECT replicated row (final read)", () =>
+          scalarString(replicaPool, `SELECT note FROM ${fqtn} WHERE id=1`)
+        );
+        throw new Error(`E2E REPLICA: row did not match after wait (expected note=${JSON.stringify(note)} got=${JSON.stringify(got)})`);
       }
       log("E2E: replicated row verified on REPLICA");
 
       log(`E2E: dropping table ${fqtn} on SOURCE`);
-      await execSql(sourcePool, `DROP TABLE IF EXISTS ${fqtn}`);
+      await runE2eStep("SOURCE", "DROP TABLE", () => execSql(sourcePool, `DROP TABLE IF EXISTS ${fqtn}`));
 
       log("E2E: waiting for DROP to replicate to REPLICA");
       const ischemaWhere = `table_schema='${E2E_DB.replace(/'/g, "''")}' AND table_name='${table.replace(/'/g, "''")}'`;
@@ -343,15 +371,23 @@ export async function runController(): Promise<void> {
         pollMs: 500,
         deadlineMs: READY_TIMEOUT_SEC * 1000,
         isShuttingDown: () => shuttingDown,
-        predicate: async () => (await scalarString(replicaPool, tableCountSql)) === "0",
+        predicate: async () => {
+          try {
+            return (await scalarString(replicaPool, tableCountSql)) === "0";
+          } catch (e: unknown) {
+            throw e2eFail("REPLICA", "information_schema table count after DROP (poll)", e);
+          }
+        },
       });
       if (dropOk) {
         log("E2E: drop replicated; cleanup verified");
         return;
       }
 
-      const cnt2 = await scalarString(replicaPool, tableCountSql);
-      throw new Error(`E2E FAILED: expected table gone on replica, information_schema count=${cnt2}`);
+      const cnt2 = await runE2eStep("REPLICA", "information_schema table count (final read)", () =>
+        scalarString(replicaPool, tableCountSql)
+      );
+      throw new Error(`E2E REPLICA: table still present after DROP wait (information_schema count=${cnt2})`);
     } finally {
       await sourcePool.end().catch(() => {});
       await replicaPool.end().catch(() => {});
@@ -374,13 +410,13 @@ export async function runController(): Promise<void> {
         } finally {
           await p.end().catch(() => {});
         }
-        log(`${logPrefix}: source is reachable (attempt ${attempt})`);
+        log(`${logPrefix}: SOURCE MySQL accepts queries (SELECT 1) (attempt ${attempt})`);
         return;
       } catch (e: unknown) {
         const detail = e instanceof Error ? e.message : formatK8sError(e);
         log(
-          `${logPrefix}: source is unreachable (${detail}). ` +
-            `Not proceeding with restore, bootstrap, or self-heal. Will retry every ${intervalSec}s until the source is reachable. (attempt ${attempt})`
+          `${logPrefix}: SOURCE MySQL not ready (${detail}). ` +
+            `Not proceeding with restore, bootstrap, or self-heal. Will retry every ${intervalSec}s (network, credentials, or privileges may still be wrong). (attempt ${attempt})`
         );
         const total = intervalSec * 1000;
         const step = 1000;
@@ -404,7 +440,7 @@ export async function runController(): Promise<void> {
       return true;
     } catch (e: unknown) {
       const detail = e instanceof Error ? e.message : formatK8sError(e);
-      log(`E2E-first gate did not pass: ${detail}`);
+      log(`E2E-first gate did not pass — ${detail}`);
       return false;
     }
   }
@@ -534,7 +570,7 @@ export async function runController(): Promise<void> {
   const replicaPool = createMysqlPoolFromUrl(REPLICA_MYSQL_URL);
 
   try {
-    log("SOURCE GATE: waiting until source is reachable (no restore/bootstrap until then)");
+    log("SOURCE GATE: waiting until SOURCE MySQL accepts a trivial query (SELECT 1) (no restore/bootstrap until then)");
     await waitUntilSourceReachable();
     if (shuttingDown) {
       log("SOURCE GATE: shutdown requested; exiting before Phase 0");

@@ -48,7 +48,7 @@ let
   ];
   sourcePort = "3306";
   sourceMysqlHost = builtins.elemAt sourceHosts 0;
-  sourceMysqlUrl = "mysql://replication@${sourceMysqlHost}:${sourcePort}/mysql";
+  sourceMysqlUrl = "mysql://root@${sourceMysqlHost}:${sourcePort}/mysql";
   sourceHostsCsv = lib.concatStringsSep "," sourceHosts;
 
   # ServiceAccount + namespaced Role/RoleBinding (not ClusterRole: secrets and apps workloads are namespace-scoped).
