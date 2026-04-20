@@ -225,11 +225,11 @@ export async function runController(): Promise<void> {
     };
   }
 
-  async function restoreFromLatestSeaweedBackup(): Promise<void> {
+  async function restoreFromLatestSeaweedBackup(): Promise<boolean> {
     if (await restoreInProgress(custom, { pxcApiVersion: pxcRef.pxcApiVersion, ns: pxcRef.ns })) {
       log("Restore already in progress in this namespace; waiting for cluster ready (external restore)");
       await waitClusterReadyOrThrow();
-      return;
+      return false;
     }
 
     const s3cfg = loadS3CfgFromDbRootSecret();
@@ -271,6 +271,7 @@ export async function runController(): Promise<void> {
     if (result !== "succeeded") {
       throw new Error(`Restore did not succeed (result=${result}, restore=${restoreName})`);
     }
+    return true;
   }
 
   async function applyReplicationIfNeeded(): Promise<void> {
@@ -445,17 +446,79 @@ export async function runController(): Promise<void> {
     }
   }
 
+  async function waitReseedRetryWindow(): Promise<void> {
+    for (let remaining = 5; remaining >= 1 && !shuttingDown; remaining--) {
+      log(`Last re-seed attempt failed. Will try again in ${remaining} min${remaining === 1 ? "" : "s"}...`);
+      let waited = 0;
+      const delayMs = 60_000;
+      while (!shuttingDown && waited < delayMs) {
+        const step = Math.min(1000, delayMs - waited);
+        await sleep(step);
+        waited += step;
+      }
+    }
+  }
+
+  async function reseedThenValidateWithRetry(args: { pool: Pool; context: "BOOTSTRAP" | "SELF-HEAL" }): Promise<void> {
+    type PostReseedStage =
+      | "cluster_ready"
+      | "apply_replication_channels"
+      | "wait_replication_healthy"
+      | "validate_replication_e2e";
+
+    const stageLabel = (stage: PostReseedStage): string => {
+      switch (stage) {
+        case "cluster_ready":
+          return "wait cluster ready";
+        case "apply_replication_channels":
+          return "apply replicationChannels";
+        case "wait_replication_healthy":
+          return "wait replication healthy";
+        case "validate_replication_e2e":
+          return "validate replication e2e";
+      }
+    };
+
+    while (!shuttingDown) {
+      if (args.context === "BOOTSTRAP") log("Phase A: restore latest backup from Seaweed S3 (if needed)");
+      const reseedPerformed = await restoreFromLatestSeaweedBackup();
+
+      let stage: PostReseedStage = "cluster_ready";
+      try {
+        if (args.context === "BOOTSTRAP") log("Phase B: wait for PXC cluster ready after restore/bootstrap");
+        stage = "cluster_ready";
+        await waitClusterReadyOrThrow();
+        if (args.context === "BOOTSTRAP") log("Phase C: apply replicationChannels after restore + ready");
+        stage = "apply_replication_channels";
+        await applyReplicationIfNeeded();
+        if (args.context === "BOOTSTRAP") log(`Phase D: wait for async replication health (lag<=${MAX_LAG_SECONDS}s)`);
+        stage = "wait_replication_healthy";
+        await waitMysqlReplicationHealthy(args.pool);
+        if (args.context === "BOOTSTRAP") log("Phase E: replication validation (source->replica->drop)");
+        stage = "validate_replication_e2e";
+        await validateReplication();
+        return;
+      } catch (e: unknown) {
+        if (!reseedPerformed) throw e;
+        const detail = e instanceof Error ? e.message : formatK8sError(e);
+        if (stage === "validate_replication_e2e") {
+          log(
+            `${args.context}: replication validation failed despite a full re-seed: ${detail}. ` +
+              "Entering 5-minute retry window before attempting another re-seed."
+          );
+        } else {
+          log(
+            `${args.context}: post-reseed step failed before replication validation ` +
+              `(stage=${stageLabel(stage)}): ${detail}. Entering 5-minute retry window before attempting another re-seed.`
+          );
+        }
+        await waitReseedRetryWindow();
+      }
+    }
+  }
+
   async function runFullBootstrapPhases(pool: Pool): Promise<void> {
-    log("Phase A: restore latest backup from Seaweed S3 (if needed)");
-    await restoreFromLatestSeaweedBackup();
-    log("Phase B: wait for PXC cluster ready after restore/bootstrap");
-    await waitClusterReadyOrThrow();
-    log("Phase C: apply replicationChannels after restore + ready");
-    await applyReplicationIfNeeded();
-    log(`Phase D: wait for async replication health (lag<=${MAX_LAG_SECONDS}s)`);
-    await waitMysqlReplicationHealthy(pool);
-    log("Phase E: replication validation (source->replica->drop)");
-    await validateReplication();
+    await reseedThenValidateWithRetry({ pool, context: "BOOTSTRAP" });
   }
 
   async function tryRestartWorkloadByLabels(args: { appLabel: string; component: string; object: "statefulset" | "deployment" }): Promise<boolean> {
@@ -559,10 +622,7 @@ export async function runController(): Promise<void> {
         if (recovered) return;
       }
       log("SELF-HEAL: escalating to full restore-from-latest-backup");
-      await restoreFromLatestSeaweedBackup();
-      await waitClusterReadyOrThrow();
-      await applyReplicationIfNeeded();
-      await waitMysqlReplicationHealthy(args.replicaPool);
+      await reseedThenValidateWithRetry({ pool: args.replicaPool, context: "SELF-HEAL" });
     }
   }
 
