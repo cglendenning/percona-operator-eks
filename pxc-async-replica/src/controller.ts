@@ -21,7 +21,14 @@ import {
   patchReplicationChannels,
   verifyReplicationChannels,
 } from "./replication";
-import { formatSlaveStatusLogLine, replicationBroken, slaveLooksHealthy } from "./replication-health";
+import {
+  appliedCoordsFromSlave,
+  formatSlaveStatusLogLine,
+  isCatchingUpLag,
+  replicationBroken,
+  slaveLooksHealthy,
+  type AppliedExecCoords,
+} from "./replication-health";
 import {
   createRestoreFromS3Destination,
   restoreInProgress,
@@ -650,6 +657,7 @@ export async function runController(): Promise<void> {
 
     log(`Phase F: periodic replication health checks every ${HEALTH_INTERVAL_SEC}s`);
     let failStreak = 0;
+    let previousAppliedCoords: AppliedExecCoords | null = null;
 
     while (!shuttingDown) {
       const s = await readReplicaSlaveStatus(replicaPool, CHANNEL_NAME);
@@ -659,9 +667,17 @@ export async function runController(): Promise<void> {
         log(`HEALTH: ${formatSlaveStatusLogLine(s)}`);
       }
 
+      const catchingUp = !!s && isCatchingUpLag(s, MAX_LAG_SECONDS, previousAppliedCoords);
+
       const healthy = !!s && slaveLooksHealthy(s, MAX_LAG_SECONDS) && !replicationBroken(s);
       if (healthy) {
         failStreak = 0;
+      } else if (catchingUp) {
+        failStreak = 0;
+        log(
+          `HEALTH: replica is behind (Seconds_Behind_Master=${s!.secondsBehind ?? "null"}s) but IO/SQL threads are running ` +
+            `and applied position has advanced since the last check; no recovery action (next check in ${HEALTH_INTERVAL_SEC}s)`
+        );
       } else {
         log("HEALTH: replication unhealthy — waiting for source reachability before any recovery action");
         await waitUntilSourceReachable("SOURCE GATE (replication unhealthy)");
@@ -676,6 +692,12 @@ export async function runController(): Promise<void> {
           log(`HEALTH: still unhealthy after source reachability gate (failStreak=${failStreak}); running self-heal`);
           await selfHealReplication({ replicaPool, attempt: failStreak });
         }
+      }
+
+      if (s) {
+        previousAppliedCoords = appliedCoordsFromSlave(s);
+      } else {
+        previousAppliedCoords = null;
       }
 
       // Sleep in small chunks so SIGTERM is responsive.

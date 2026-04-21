@@ -5,6 +5,10 @@ export type SlaveStatus = {
   ioRunning: string;
   sqlRunning: string;
   secondsBehind: number | null;
+  /** `Relay_Master_Log_File` — master binlog file the SQL thread has executed through. */
+  relayMasterLogFile: string;
+  /** `Exec_Master_Log_Pos` — position within `relayMasterLogFile` last applied by the SQL thread. */
+  execMasterLogPos: number | null;
   lastIoError: string;
   lastSqlError: string;
   lastErrno: number | null;
@@ -117,6 +121,8 @@ export async function readReplicaSlaveStatus(pool: Pool, replicationChannelName:
     ioRunning: io,
     sqlRunning,
     secondsBehind: sbm,
+    relayMasterLogFile: asString(r["Relay_Master_Log_File"] ?? r["relay_master_log_file"]),
+    execMasterLogPos: asNumberOrNull(r["Exec_Master_Log_Pos"] ?? r["exec_master_log_pos"]),
     lastIoError: asString(r["Last_IO_Error"] ?? r["last_io_error"]),
     lastSqlError: asString(r["Last_SQL_Error"] ?? r["last_sql_error"]),
     lastErrno: asNumberOrNull(r["Last_SQL_Errno"] ?? r["last_sql_errno"]),

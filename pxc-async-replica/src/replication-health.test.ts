@@ -2,7 +2,9 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import type { SlaveStatus } from "./mysql";
 import {
+  appliedCoordsAdvanced,
   formatSlaveStatusLogLine,
+  isCatchingUpLag,
   replicationBroken,
   slaveIoSqlRunning,
   slaveLooksHealthy,
@@ -13,6 +15,8 @@ function s(partial: Partial<SlaveStatus>): SlaveStatus {
     ioRunning: partial.ioRunning ?? "No",
     sqlRunning: partial.sqlRunning ?? "No",
     secondsBehind: partial.secondsBehind ?? null,
+    relayMasterLogFile: partial.relayMasterLogFile ?? "",
+    execMasterLogPos: partial.execMasterLogPos ?? null,
     lastIoError: partial.lastIoError ?? "",
     lastSqlError: partial.lastSqlError ?? "",
     lastErrno: partial.lastErrno ?? null,
@@ -56,6 +60,82 @@ describe("replicationBroken", () => {
   });
 });
 
+describe("appliedCoordsAdvanced", () => {
+  it("detects forward progress on the same file", () => {
+    assert.equal(
+      appliedCoordsAdvanced({ file: "mysql-bin.000001", pos: 100 }, { file: "mysql-bin.000001", pos: 200 }),
+      true
+    );
+    assert.equal(
+      appliedCoordsAdvanced({ file: "mysql-bin.000001", pos: 100 }, { file: "mysql-bin.000001", pos: 100 }),
+      false
+    );
+  });
+
+  it("detects forward progress after binlog rotation", () => {
+    assert.equal(
+      appliedCoordsAdvanced({ file: "mysql-bin.000009", pos: 9999 }, { file: "mysql-bin.000010", pos: 4 }),
+      true
+    );
+  });
+});
+
+describe("isCatchingUpLag", () => {
+  const prev = { file: "mysql-bin.000001", pos: 100 };
+  const maxLag = 5;
+
+  it("is false without a previous sample", () => {
+    assert.equal(
+      isCatchingUpLag(
+        s({
+          ioRunning: "Yes",
+          sqlRunning: "Yes",
+          secondsBehind: 99,
+          relayMasterLogFile: "mysql-bin.000001",
+          execMasterLogPos: 200,
+        }),
+        maxLag,
+        null
+      ),
+      false
+    );
+  });
+
+  it("is true when lag is high, threads are up, not broken, and apply position advanced", () => {
+    assert.equal(
+      isCatchingUpLag(
+        s({
+          ioRunning: "Yes",
+          sqlRunning: "Yes",
+          secondsBehind: 99,
+          relayMasterLogFile: "mysql-bin.000001",
+          execMasterLogPos: 200,
+        }),
+        maxLag,
+        prev
+      ),
+      true
+    );
+  });
+
+  it("is false when apply position did not advance", () => {
+    assert.equal(
+      isCatchingUpLag(
+        s({
+          ioRunning: "Yes",
+          sqlRunning: "Yes",
+          secondsBehind: 99,
+          relayMasterLogFile: "mysql-bin.000001",
+          execMasterLogPos: 100,
+        }),
+        maxLag,
+        prev
+      ),
+      false
+    );
+  });
+});
+
 describe("formatSlaveStatusLogLine", () => {
   it("includes IO, SQL, lag, and JSON-escaped errors", () => {
     const line = formatSlaveStatusLogLine(
@@ -71,6 +151,19 @@ describe("formatSlaveStatusLogLine", () => {
     assert.match(line, /SQL=Yes/);
     assert.match(line, /lag=3s/);
     assert.match(line, /ioErr="tls timeout"/);
+  });
+
+  it("includes applied coordinates when present", () => {
+    const line = formatSlaveStatusLogLine(
+      s({
+        ioRunning: "Yes",
+        sqlRunning: "Yes",
+        secondsBehind: 12,
+        relayMasterLogFile: "mysql-bin.000003",
+        execMasterLogPos: 444,
+      })
+    );
+    assert.match(line, /applied=mysql-bin\.000003:444/);
   });
 
   it("renders null lag as the string null", () => {
