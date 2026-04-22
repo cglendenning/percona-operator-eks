@@ -1,28 +1,25 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import {
-  buildShowSlaveStatusForChannelSql,
+  buildShowReplicaStatusForChannelSql,
   mergePasswordIntoMysqlUrl,
   mergeUserAndPasswordIntoMysqlUrl,
 } from "./mysql";
 
-describe("buildShowSlaveStatusForChannelSql", () => {
-  it("builds SHOW SLAVE STATUS FOR CHANNEL with quoted name", () => {
+describe("buildShowReplicaStatusForChannelSql", () => {
+  it("builds SHOW REPLICA STATUS FOR CHANNEL with quoted name", () => {
     assert.equal(
-      buildShowSlaveStatusForChannelSql("wookie_primary_to_replica"),
-      "SHOW SLAVE STATUS FOR CHANNEL 'wookie_primary_to_replica'"
+      buildShowReplicaStatusForChannelSql("wookie_primary_to_replica"),
+      "SHOW REPLICA STATUS FOR CHANNEL 'wookie_primary_to_replica'"
     );
   });
 
   it("escapes single quotes in channel name", () => {
-    assert.equal(
-      buildShowSlaveStatusForChannelSql("ch'1"),
-      "SHOW SLAVE STATUS FOR CHANNEL 'ch''1'"
-    );
+    assert.equal(buildShowReplicaStatusForChannelSql("ch'1"), "SHOW REPLICA STATUS FOR CHANNEL 'ch''1'");
   });
 
   it("rejects empty channel after trim", () => {
-    assert.throws(() => buildShowSlaveStatusForChannelSql("   "), /non-empty/);
+    assert.throws(() => buildShowReplicaStatusForChannelSql("   "), /non-empty/);
   });
 });
 

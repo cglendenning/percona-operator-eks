@@ -5,9 +5,13 @@ export type SlaveStatus = {
   ioRunning: string;
   sqlRunning: string;
   secondsBehind: number | null;
-  /** `Relay_Master_Log_File` — master binlog file the SQL thread has executed through. */
+  /**
+   * Source binlog file the SQL thread has applied through (`Relay_Master_Log_File` or MySQL 8.4+ `Relay_Source_Log_File`).
+   */
   relayMasterLogFile: string;
-  /** `Exec_Master_Log_Pos` — position within `relayMasterLogFile` last applied by the SQL thread. */
+  /**
+   * Position within `relayMasterLogFile` (`Exec_Master_Log_Pos` or MySQL 8.4+ `Exec_Source_Log_Pos`).
+   */
   execMasterLogPos: number | null;
   lastIoError: string;
   lastSqlError: string;
@@ -98,35 +102,62 @@ function sqlStringLiteral(s: string): string {
 }
 
 /**
- * SQL for `SHOW SLAVE STATUS` scoped to a named replication channel (matches `REPLICATION_CHANNEL_NAME` / CR channel).
- * Percona/MySQL 8 still accept this form; newer MySQL may prefer `SHOW REPLICA STATUS FOR CHANNEL` if you hit deprecation.
+ * SQL for `SHOW REPLICA STATUS` scoped to a named replication channel (MySQL 8.0.22+).
  */
-export function buildShowSlaveStatusForChannelSql(replicationChannelName: string): string {
+export function buildShowReplicaStatusForChannelSql(replicationChannelName: string): string {
   const ch = replicationChannelName.trim();
   if (!ch) throw new Error("replicationChannelName must be non-empty");
-  return `SHOW SLAVE STATUS FOR CHANNEL ${sqlStringLiteral(ch)}`;
+  return `SHOW REPLICA STATUS FOR CHANNEL ${sqlStringLiteral(ch)}`;
 }
 
-export async function readReplicaSlaveStatus(pool: Pool, replicationChannelName: string): Promise<SlaveStatus | null> {
-  const [rows] = await pool.query(buildShowSlaveStatusForChannelSql(replicationChannelName));
-  if (!Array.isArray(rows) || rows.length === 0) return null;
-  const r = rows[0] as Record<string, unknown>;
-
-  // mysql2 returns column names as returned by server; keep tolerant access.
-  const io = asString(r["Slave_IO_Running"] ?? r["slave_io_running"]);
-  const sqlRunning = asString(r["Slave_SQL_Running"] ?? r["slave_sql_running"]);
-  const sbm = asNumberOrNull(r["Seconds_Behind_Master"] ?? r["seconds_behind_master"]);
+function slaveStatusFromShowStatusRow(r: Record<string, unknown>): SlaveStatus {
+  const io = asString(
+    r["Replica_IO_Running"] ??
+      r["replica_io_running"] ??
+      r["Slave_IO_Running"] ??
+      r["slave_io_running"]
+  );
+  const sqlRunning = asString(
+    r["Replica_SQL_Running"] ??
+      r["replica_sql_running"] ??
+      r["Slave_SQL_Running"] ??
+      r["slave_sql_running"]
+  );
+  const sbm = asNumberOrNull(
+    r["Seconds_Behind_Source"] ??
+      r["seconds_behind_source"] ??
+      r["Seconds_Behind_Master"] ??
+      r["seconds_behind_master"]
+  );
+  const relayFile = asString(
+    r["Relay_Source_Log_File"] ??
+      r["relay_source_log_file"] ??
+      r["Relay_Master_Log_File"] ??
+      r["relay_master_log_file"]
+  );
+  const execPos = asNumberOrNull(
+    r["Exec_Source_Log_Pos"] ??
+      r["exec_source_log_pos"] ??
+      r["Exec_Master_Log_Pos"] ??
+      r["exec_master_log_pos"]
+  );
 
   return {
     ioRunning: io,
     sqlRunning,
     secondsBehind: sbm,
-    relayMasterLogFile: asString(r["Relay_Master_Log_File"] ?? r["relay_master_log_file"]),
-    execMasterLogPos: asNumberOrNull(r["Exec_Master_Log_Pos"] ?? r["exec_master_log_pos"]),
+    relayMasterLogFile: relayFile,
+    execMasterLogPos: execPos,
     lastIoError: asString(r["Last_IO_Error"] ?? r["last_io_error"]),
     lastSqlError: asString(r["Last_SQL_Error"] ?? r["last_sql_error"]),
     lastErrno: asNumberOrNull(r["Last_SQL_Errno"] ?? r["last_sql_errno"]),
   };
+}
+
+export async function readReplicaSlaveStatus(pool: Pool, replicationChannelName: string): Promise<SlaveStatus | null> {
+  const [rows] = await pool.query(buildShowReplicaStatusForChannelSql(replicationChannelName));
+  if (!Array.isArray(rows) || rows.length === 0) return null;
+  return slaveStatusFromShowStatusRow(rows[0] as Record<string, unknown>);
 }
 
 export async function execSql(pool: Pool, sql: string): Promise<void> {

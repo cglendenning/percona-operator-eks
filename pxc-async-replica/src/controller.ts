@@ -325,7 +325,7 @@ export async function runController(): Promise<void> {
     while (!shuttingDown && Date.now() < deadline) {
       const s = await readReplicaSlaveStatus(pool, CHANNEL_NAME);
       if (!s) {
-        log("Replication check: SHOW SLAVE STATUS returned no rows (replication not configured yet?)");
+        log("Replication check: SHOW REPLICA STATUS returned no rows (replication not configured yet?)");
       } else {
         log(`Replication check: ${formatSlaveStatusLogLine(s)}`);
         if (slaveLooksHealthy(s, MAX_LAG_SECONDS)) return;
@@ -673,7 +673,7 @@ export async function runController(): Promise<void> {
     while (!shuttingDown) {
       const s = await readReplicaSlaveStatus(replicaPool, CHANNEL_NAME);
       if (!s) {
-        log("HEALTH: SHOW SLAVE STATUS returned no rows");
+        log("HEALTH: SHOW REPLICA STATUS returned no rows");
       } else {
         log(`HEALTH: ${formatSlaveStatusLogLine(s)}`);
       }
