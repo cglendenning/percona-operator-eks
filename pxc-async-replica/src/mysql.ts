@@ -64,10 +64,10 @@ export function mergePasswordIntoMysqlUrl(urlStr: string, password: string): str
   try {
     u = new URL(urlStr);
   } catch {
-    throw new Error(`SOURCE_MYSQL_URL is not a valid URL`);
+    throw new Error(`MySQL URL is not a valid URL`);
   }
   if (u.protocol !== "mysql:" && u.protocol !== "mysql2:") {
-    throw new Error(`SOURCE_MYSQL_URL must use mysql:// or mysql2:// (got ${JSON.stringify(u.protocol)})`);
+    throw new Error(`MySQL URL must use mysql:// or mysql2:// (got ${JSON.stringify(u.protocol)})`);
   }
   u.password = password;
   return u.toString();
@@ -83,10 +83,10 @@ export function mergeUserAndPasswordIntoMysqlUrl(urlStr: string, user: string, p
   try {
     u = new URL(urlStr);
   } catch {
-    throw new Error(`SOURCE_MYSQL_URL is not a valid URL`);
+    throw new Error(`MySQL URL is not a valid URL`);
   }
   if (u.protocol !== "mysql:" && u.protocol !== "mysql2:") {
-    throw new Error(`SOURCE_MYSQL_URL must use mysql:// or mysql2:// (got ${JSON.stringify(u.protocol)})`);
+    throw new Error(`MySQL URL must use mysql:// or mysql2:// (got ${JSON.stringify(u.protocol)})`);
   }
   u.username = user;
   u.password = password;

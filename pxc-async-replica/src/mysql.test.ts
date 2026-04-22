@@ -69,7 +69,7 @@ describe("mergePasswordIntoMysqlUrl", () => {
   });
 
   it("rejects invalid URL", () => {
-    assert.throws(() => mergePasswordIntoMysqlUrl("not-a-url", "x"), /not a valid URL/);
+    assert.throws(() => mergePasswordIntoMysqlUrl("not-a-url", "x"), /MySQL URL is not a valid URL/);
   });
 
   it("rejects non-mysql protocols", () => {

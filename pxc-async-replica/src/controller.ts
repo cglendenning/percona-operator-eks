@@ -141,7 +141,7 @@ export async function runController(): Promise<void> {
   const S3_BUCKET = envOptional("S3_BACKUP_BUCKET", "pxc-backups");
   const S3_PREFIX = process.env.S3_BACKUP_PREFIX?.trim() ?? "";
   const S3_BACKUP_FOLDER_PREFIX = envOptional("S3_BACKUP_FOLDER_PREFIX", "db-");
-  /** Single Secret in DEST_NS: S3 keys, `root` password for SOURCE MySQL client, REPLICA_MYSQL_URL, etc. */
+  /** Single Secret in DEST_NS: S3 keys, SOURCE/REPLICA MySQL passwords, REPLICA_MYSQL_URL (base), etc. */
   const DB_ROOT_USERS_SECRET = envOptional("DB_ROOT_USERS_SECRET", "db-root-users");
 
   const MAX_LAG_SECONDS = parseIntEnv("MAX_REPLICATION_LAG_SECONDS", 5);
@@ -149,11 +149,15 @@ export async function runController(): Promise<void> {
   const SELF_HEAL_FAILURE_THRESHOLD = parseIntEnv("SELF_HEAL_FAILURE_THRESHOLD", 3);
 
   const SOURCE_MYSQL_URL_BASE = env("SOURCE_MYSQL_URL");
-  const REPLICA_MYSQL_URL = env("REPLICA_MYSQL_URL");
+  const REPLICA_MYSQL_URL_BASE = env("REPLICA_MYSQL_URL");
   /** MySQL user for SOURCE (E2E, SOURCE GATE); password from {@link SOURCE_MYSQL_PASSWORD_SECRET_KEY} in {@link DB_ROOT_USERS_SECRET}. Default `root` → account `root`@`%` on server. */
   const SOURCE_MYSQL_USER = assertMysqlIdentifier(envOptional("SOURCE_MYSQL_USER", "root"), "SOURCE_MYSQL_USER");
   /** Secret data key holding the SOURCE user password (default `root` for `root`@`%`). */
   const SOURCE_MYSQL_PASSWORD_SECRET_KEY = envOptional("SOURCE_MYSQL_PASSWORD_SECRET_KEY", "root");
+  /** MySQL user for REPLICA (health loop, E2E); password from {@link REPLICA_MYSQL_PASSWORD_SECRET_KEY} in {@link DB_ROOT_USERS_SECRET}. Default `root`. */
+  const REPLICA_MYSQL_USER = assertMysqlIdentifier(envOptional("REPLICA_MYSQL_USER", "root"), "REPLICA_MYSQL_USER");
+  /** Secret data key holding the REPLICA user password (default `root`). */
+  const REPLICA_MYSQL_PASSWORD_SECRET_KEY = envOptional("REPLICA_MYSQL_PASSWORD_SECRET_KEY", "root");
   const E2E_DB = assertMysqlIdentifier(envOptional("REPLICATION_E2E_DATABASE", "mysql"), "REPLICATION_E2E_DATABASE");
 
   let shuttingDown = false;
@@ -188,6 +192,12 @@ export async function runController(): Promise<void> {
     SOURCE_MYSQL_USER,
     sourceMysqlPassword
   );
+  const replicaMysqlPassword = decodeSecretData(dbRootData, REPLICA_MYSQL_PASSWORD_SECRET_KEY);
+  const replicaMysqlUrl = mergeUserAndPasswordIntoMysqlUrl(
+    REPLICA_MYSQL_URL_BASE,
+    REPLICA_MYSQL_USER,
+    replicaMysqlPassword
+  );
 
   const sources: SourceEntry[] = hostsForReplication.map((host) => ({
     host,
@@ -201,6 +211,7 @@ export async function runController(): Promise<void> {
     `pxc-async-replica-controller starting destNs=${DEST_NS} cluster=${PXC_CLUSTER} channel=${CHANNEL_NAME} ` +
       `SOURCE_HOSTS(${allHosts.length})=${allHosts.join(",")} replicationHosts(${hostsForReplication.length})=${hostsForReplication.join(",")} ` +
       `dbRootSecret=${DB_ROOT_USERS_SECRET} (SOURCE password key=${SOURCE_MYSQL_PASSWORD_SECRET_KEY}) SOURCE_MYSQL_USER=${SOURCE_MYSQL_USER} ` +
+      `(REPLICA password key=${REPLICA_MYSQL_PASSWORD_SECRET_KEY}) REPLICA_MYSQL_USER=${REPLICA_MYSQL_USER} ` +
       `S3_ENDPOINT=${S3_ENDPOINT} S3_BUCKET=${S3_BUCKET} S3_PREFIX=${S3_PREFIX || "<none>"} S3_BACKUP_FOLDER_PREFIX=${S3_BACKUP_FOLDER_PREFIX}`
   );
   if (isLocal && allHosts.length > 1) {
@@ -330,7 +341,7 @@ export async function runController(): Promise<void> {
    */
   async function validateReplication(): Promise<void> {
     const sourcePool = createMysqlPoolFromUrl(sourceMysqlUrl);
-    const replicaPool = createMysqlPoolFromUrl(REPLICA_MYSQL_URL);
+    const replicaPool = createMysqlPoolFromUrl(replicaMysqlUrl);
 
     const table = randomIdent("async_rep_e2e");
     const fqtn = `\`${E2E_DB}\`.\`${table}\``;
@@ -634,7 +645,7 @@ export async function runController(): Promise<void> {
   }
 
   // --- Main orchestration ---
-  const replicaPool = createMysqlPoolFromUrl(REPLICA_MYSQL_URL);
+  const replicaPool = createMysqlPoolFromUrl(replicaMysqlUrl);
 
   try {
     log("SOURCE GATE: waiting until SOURCE MySQL accepts a trivial query (SELECT 1) (no restore/bootstrap until then)");

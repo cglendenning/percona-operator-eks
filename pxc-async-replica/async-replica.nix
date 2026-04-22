@@ -171,6 +171,11 @@ let
                     secretKeyRef:
                       name: db-root-users
                       key: REPLICA_MYSQL_URL
+                # User/password for replica client: same pattern as SOURCE_MYSQL_* (defaults: root, secret key "root")
+                - name: REPLICA_MYSQL_USER
+                  value: "root"
+                - name: REPLICA_MYSQL_PASSWORD_SECRET_KEY
+                  value: "root"
                 - name: READY_TIMEOUT_SECONDS
                   value: "7200"
                 - name: POLL_INTERVAL_MS
