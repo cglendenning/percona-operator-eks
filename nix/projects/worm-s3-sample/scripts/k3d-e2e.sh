@@ -65,14 +65,15 @@ if [[ "${WORM_K8S_QUIET_DISCOVERY:-1}" == "1" ]]; then
   worm_helm() { command "$HELM" "$@" 2> >(grep -vE 'memcache\.go:(287|121)' >&2 || true); }
   helm_timeout() {
     local t=$1; shift
-    timeout "$t" command "$HELM" "$@" 2> >(grep -vE 'memcache\.go:(287|121)' >&2 || true)
+    # `timeout` must run $HELM directly, not an external `command` binary (WSL can lack it).
+    timeout "$t" "$HELM" "$@" 2> >(grep -vE 'memcache\.go:(287|121)' >&2 || true)
   }
 else
   kubectl() { "$_worm_kubectl" "$@"; }
   worm_helm() { command "$HELM" "$@"; }
   helm_timeout() {
     local t=$1; shift
-    timeout "$t" command "$HELM" "$@"
+    timeout "$t" "$HELM" "$@"
   }
 fi
 
