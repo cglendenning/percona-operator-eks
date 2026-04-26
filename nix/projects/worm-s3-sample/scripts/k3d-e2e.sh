@@ -246,6 +246,15 @@ fi
 echo "Filer pod: $FILER_POD"
 kubectl wait --for=condition=ready "pod/$FILER_POD" -n "$NS" --timeout="$FILER_POD_WAIT"
 
+echo "==> Verify S3 audit config is mounted in filer (seaweedfs container; without it, no events reach Fluentd)"
+if ! kubectl exec -n "$NS" "pod/$FILER_POD" -c seaweedfs -- test -r /etc/sw/filer_s3_auditLogConfig.json 2>/dev/null; then
+  echo "ERROR: /etc/sw/filer_s3_auditLogConfig.json not readable. The chart mounts /etc/sw only when filer.s3.enableAuth is true; check rendered values and: kubectl describe pod -n $NS $FILER_POD" >&2
+  exit 1
+fi
+_fh="$(kubectl exec -n "$NS" "pod/$FILER_POD" -c seaweedfs -- cat /etc/sw/filer_s3_auditLogConfig.json 2>/dev/null | jq -r '.fluent_host // "missing"')"
+_fport="$(kubectl exec -n "$NS" "pod/$FILER_POD" -c seaweedfs -- cat /etc/sw/filer_s3_auditLogConfig.json 2>/dev/null | jq -r '.fluent_port // 0')"
+echo "   filer_s3_auditLogConfig.json: fluent_host=${_fh} fluent_port=${_fport} (e2e receiver: worm-s3-audit-fluent:24224)"
+
 # SeaweedFS Helm: /etc/sw (S3 config + filer_s3_auditLogConfig.json) is only mounted when filer.s3.enableAuth
 # (see filer statefulset). WORM sample values set enableAuth + auditLogConfig; use chart-generated admin keys.
 if kubectl get secret seaweedfs-s3-secret -n "$NS" -o name &>/dev/null; then
