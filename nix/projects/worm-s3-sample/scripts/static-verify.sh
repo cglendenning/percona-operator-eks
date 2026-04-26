@@ -13,6 +13,8 @@ echo "==> Values: filer S3 enableAuth (required for /etc/sw mount) + auditLogCon
 yq -e '(.filer.s3.enableAuth // false) == true' "$VALUES"
 yq -e '(.filer.s3.auditLogConfig.fluent_port // 0) == 24224' "$VALUES"
 yq -e '(.filer.s3.auditLogConfig.fluent_host // "") == "worm-s3-audit-fluent"' "$VALUES"
+# fluent-logger-golang: timeout is time.Duration; JSON int is nanoseconds (3e9 = 3s, not 3000).
+yq -e '((.filer.s3.auditLogConfig.timeout // 0) | tonumber) > 1000000' "$VALUES"
 
 echo "==> IAM: Deny includes delete and lock tampering"
 jq -e '

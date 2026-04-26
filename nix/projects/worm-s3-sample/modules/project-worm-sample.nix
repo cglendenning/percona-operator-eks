@@ -65,7 +65,9 @@ in
                 fluent_host = "worm-s3-audit-fluent";
                 fluent_port = 24224;
                 fluent_network = "tcp";
-                timeout = 3000;
+                # fluent-logger-golang: json numbers unmarshal to time.Duration as **nanoseconds** (NOT ms).
+                # 3000 would be 3µs and breaks the fluent client; wiki "3000" meant ms; use 3s as 3e9 ns.
+                timeout = 3 * 1000 * 1000 * 1000;
                 write_timeout = 0;
                 buffer_limit = 8192;
                 retry_wait = 500;
