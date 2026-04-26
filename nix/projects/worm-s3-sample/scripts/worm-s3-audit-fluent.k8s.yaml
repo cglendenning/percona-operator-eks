@@ -1,23 +1,22 @@
-# Fluent Bit forward (24224) for SeaweedFS S3 filer.s3.auditLogConfig (k3d e2e only).
-# Namespace is replaced by k3d-e2e.sh (s/__WORM_E2E_NAMESPACE__/<ns>/g).
+# Fluentd in_forward (24224) for SeaweedFS S3 filer.s3.auditLogConfig (k3d e2e only).
+# SeaweedFS sends the same wire format the wiki documents for Logstash (codec => fluent);
+# Fluent Bit's forward input often does not accept that stream, so we use official Fluentd.
+# Namespace: k3d-e2e.sh s/__WORM_E2E_NAMESPACE__/<ns>/g
 apiVersion: v1
 kind: ConfigMap
 metadata:
-  name: worm-s3-audit-fluent-bit
+  name: worm-s3-audit-fluentd-config
   namespace: __WORM_E2E_NAMESPACE__
 data:
-  fluent-bit.conf: |
-    [SERVICE]
-        Flush         1
-        Log_Level     info
-    [INPUT]
-        Name        forward
-        Listen      0.0.0.0
-        Port        24224
-    [OUTPUT]
-        Name        stdout
-        Format      json_lines
-        json_date_key _time
+  fluent.conf: |
+    <source>
+      @type forward
+      port 24224
+      bind 0.0.0.0
+    </source>
+    <match **>
+      @type stdout
+    </match>
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -37,24 +36,28 @@ spec:
         app: worm-s3-audit-fluent
     spec:
       containers:
-        - name: fluent-bit
-          image: fluent/fluent-bit:2.2.0
-          args: ["-c", "/fluent-bit/etc/fluent-bit.conf"]
+        - name: fluentd
+          image: fluent/fluentd:v1.16-debian-1
+          # K8s must invoke fluentd directly; the image default CMD/ENTRYPOINT would mangle args.
+          command: [ "fluentd" ]
+          args: [ "-c", "/fluentd/etc/fluent.conf", "-v" ]
           ports:
             - name: forward
               containerPort: 24224
           resources:
             requests:
-              cpu: 10m
-              memory: 32Mi
+              cpu: 50m
+              memory: 256Mi
+            limits:
+              memory: 512Mi
           volumeMounts:
             - name: config
-              mountPath: /fluent-bit/etc/fluent-bit.conf
-              subPath: fluent-bit.conf
+              mountPath: /fluentd/etc/fluent.conf
+              subPath: fluent.conf
       volumes:
         - name: config
           configMap:
-            name: worm-s3-audit-fluent-bit
+            name: worm-s3-audit-fluentd-config
 ---
 apiVersion: v1
 kind: Service

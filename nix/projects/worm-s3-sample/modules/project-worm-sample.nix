@@ -56,7 +56,7 @@ in
           filer = {
             enabled = true;
             replicas = 1;
-            # S3 API audit: forward JSON to worm-s3-audit-fluent:24224 (k3d e2e deploys Fluent Bit before Helm).
+            # S3 API audit: forward to worm-s3-audit-fluent:24224 (k3d e2e deploys Fluentd in_forward before Helm).
             # filer.s3.enableAuth must be true or the SeaweedFS Helm chart does not mount /etc/sw, so
             # -s3.auditLogConfig=/etc/sw/filer_s3_auditLogConfig.json is missing and no audit is emitted.
             s3 = recursiveUpdate (s3w.seaweedHelmFilerS3For cfg.bucketName) {

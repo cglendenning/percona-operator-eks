@@ -13,7 +13,7 @@ This directory is a **standalone Flake** that demonstrates how **platform** rule
 | `modules/project-worm-sample.nix` | Project: bucket name + merged SeaweedFS Helm values + rendered YAML path. |
 | `eval-config.nix` | Evaluates modules for the bundled sample (`worm-compliance-sample` bucket). |
 | `scripts/static-verify.sh` | No cluster: validates YAML + IAM policy shape (includes a **negative** check: writer must not `Allow` `s3:DeleteObject`). |
-| `scripts/k3d-e2e.sh` | k3d + Helm SeaweedFS 4.0.406: Fluent Bit S3 [audit](https://github.com/seaweedfs/seaweedfs/wiki/S3-API-Audit-log) receiver + **positive** put/retention/get; **negative** `delete-object --version-id` (AWS: denied under COMPLIANCE; SeaweedFS may allow — **warns** by default, `WORM_S3_E2E_STRICT_VERSION_DELETE`). |
+| `scripts/k3d-e2e.sh` | k3d + Helm SeaweedFS 4.0.406: Fluentd S3 [audit](https://github.com/seaweedfs/seaweedfs/wiki/S3-API-Audit-log) forward receiver + **positive** put/retention/get; **negative** `delete-object --version-id` (AWS: denied under COMPLIANCE; SeaweedFS may allow — **warns** by default, `WORM_S3_E2E_STRICT_VERSION_DELETE`). |
 
 ## Prerequisites
 
@@ -75,7 +75,7 @@ nix run .#worm-show-writer-iam
 
 ### k3d + SeaweedFS end-to-end
 
-Creates a throwaway cluster `worm-s3-sample`, applies a small [Fluent Bit](https://fluentbit.io/) deployment that listens for SeaweedFS’s [S3 API audit](https://github.com/seaweedfs/seaweedfs/wiki/S3-API-Audit-log) **forward** stream (`filer.s3.auditLogConfig` in generated values: host `worm-s3-audit-fluent` port `24224`), installs `seaweedfs/seaweedfs` chart **4.0.406**, port-forwards the filer S3 port, then:
+Creates a throwaway cluster `worm-s3-sample`, applies a small [Fluentd](https://www.fluentd.org/) `in_forward` deployment (port **24224**) that matches the [S3 API audit](https://github.com/seaweedfs/seaweedfs/wiki/S3-API-Audit-log) / Logstash `codec => fluent` story; **Fluent Bit** often does not accept SeaweedFS’s forward wire format. Generated values: `filer.s3.auditLogConfig` host `worm-s3-audit-fluent`, port `24224`. Then installs `seaweedfs/seaweedfs` chart **4.0.406**, port-forwards the filer S3 port, then:
 
 1. **Positive:** `put-object`, `put-object-retention` (COMPLIANCE), `get-object-retention`, `get-object` with `--version-id`.
 2. **Negative (AWS S3):** `delete-object --version-id` on a COMPLIANCE-protected version is **AccessDenied**. **SeaweedFS** has historically differed; the e2e **warns** and exits 0 if delete succeeds, unless you set `WORM_S3_E2E_STRICT_VERSION_DELETE=1` (CI / parity gate). See [seaweedfs#8350](https://github.com/seaweedfs/seaweedfs/issues/8350) and [PR#8351](https://github.com/seaweedfs/seaweedfs/pull/8351) for upstream discussion.

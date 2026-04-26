@@ -182,8 +182,8 @@ else
   fi
 fi
 
-# Fluent Bit (forward) receives SeaweedFS S3 filer.s3.auditLogConfig; must be Ready before the filer starts.
-echo "==> S3 API audit: Fluent forward receiver in namespace $NS (SeaweedFS filer.s3.auditLogConfig)"
+# Fluentd in_forward (Go fluent-logger / Logstash “codec fluent” compatible); must be Ready before the filer starts.
+echo "==> S3 API audit: Fluentd forward receiver in namespace $NS (SeaweedFS filer.s3.auditLogConfig)"
 if [[ ! -f "$WORM_AUDIT_FLUENT_MANIFEST" ]]; then
   echo "ERROR: WORM_AUDIT_FLUENT_MANIFEST not found: $WORM_AUDIT_FLUENT_MANIFEST" >&2
   exit 1
@@ -421,15 +421,16 @@ else
   echo "WARN: WORM_S3_E2E_STRICT_VERSION_DELETE=1 would fail this run. The version may now be removed; skipping post-delete get." >&2
 fi
 
-echo "==> S3 API audit (Fluent forward → Fluent Bit stdout; see https://github.com/seaweedfs/seaweedfs/wiki/S3-API-Audit-log )"
+echo "==> S3 API audit (Fluent forward → Fluentd stdout; see https://github.com/seaweedfs/seaweedfs/wiki/S3-API-Audit-log )"
 if kubectl -n "$NS" get "deployment/${AUDIT_DEPLOY_NAME}" &>/dev/null; then
   _al="$(kubectl logs -n "$NS" "deployment/${AUDIT_DEPLOY_NAME}" --tail=2000 2>&1 || true)"
-  if echo "$_al" | grep -q '"operation"'; then
-    echo "---- SeaweedFS S3 access lines (filter: lines containing operation) ----"
-    echo "$_al" | grep '"operation"' || true
+  # SeaweedFS go-fluent-logger: JSON with "operation" (e.g. REST.PUT.OBJECT). Receiver is Fluentd (not Fluent Bit) for wire compatibility.
+  if echo "$_al" | grep -qE '"operation"|REST\.(GET|PUT|POST|DELETE|HEAD)'; then
+    echo "---- SeaweedFS S3 access (lines matching operation or REST.*) ----"
+    echo "$_al" | grep -E '"operation"|REST\.(GET|PUT|POST|DELETE|HEAD)' || true
   else
     echo "$_al"
-    echo "WARN: no JSON audit events (no '\"operation\"' in receiver logs). Filer must mount /etc/sw/filer_s3_auditLogConfig.json (set filer.s3.enableAuth in Helm; see e2e + README)." >&2
+    echo "WARN: no SeaweedFS audit lines detected. Filer must mount /etc/sw/filer_s3_auditLogConfig.json (filer.s3.enableAuth); receiver must be Fluentd-compatible in_forward (this e2e uses fluent/fluentd, not Fluent Bit)." >&2
   fi
 else
   echo "WARN: audit receiver deployment/${AUDIT_DEPLOY_NAME} not found in $NS" >&2
