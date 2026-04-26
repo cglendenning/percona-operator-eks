@@ -1,0 +1,43 @@
+# Sample Fleet config for PXC: ignore spec.pxc.replicationChannels in drift.
+#
+# The pxc async replica controller merge-patches replicationChannels on the
+# live PerconaXtraDBCluster; Git (Fleet desired state) does not include that
+# field, so Rancher reports the bundle as Modified. comparePatches drops that
+# path from the comparison so the bundle stays Ready.
+#
+# Copy what you need into the fleet.yaml your Nix platform renders, or use
+# `fleet bundlediff --fleet-yaml --bundle-deployment <name> -n <ns>` to
+# generate a matching diff block from observed drift.
+#
+# Adjust: defaultNamespace, helm.*, targetCustomizations, and the comparePatches
+# name/namespace to match your PXC object.
+---
+defaultNamespace: percona
+
+helm:
+  chart: "https://example.com/helm/pxc-operator.tgz" # or repo/chart
+  releaseName: pxc-cluster
+  valuesFiles:
+    - values/base.yaml
+
+# Optional: env-specific values (same as testing/on-prem README)
+targetCustomizations:
+  - name: k8s-dev
+    clusterSelector:
+      matchLabels:
+        env: dev
+    helm:
+      valuesFiles:
+        - values/dev.yaml
+
+# Strip runtime-managed field before Fleet compares live vs desired.
+# Path is JSON Pointer (RFC 6901); see Fleet bundle-diffs docs.
+diff:
+  comparePatches:
+    - apiVersion: pxc.percona.com/v1
+      kind: PerconaXtraDBCluster
+      name: pxc-cluster
+      namespace: percona
+      operations:
+        - op: remove
+          path: /spec/pxc/replicationChannels
