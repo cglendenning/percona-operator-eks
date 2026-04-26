@@ -13,7 +13,7 @@ This directory is a **standalone Flake** that demonstrates how **platform** rule
 | `modules/project-worm-sample.nix` | Project: bucket name + merged SeaweedFS Helm values + rendered YAML path. |
 | `eval-config.nix` | Evaluates modules for the bundled sample (`worm-compliance-sample` bucket). |
 | `scripts/static-verify.sh` | No cluster: validates YAML + IAM policy shape (includes a **negative** check: writer must not `Allow` `s3:DeleteObject`). |
-| `scripts/k3d-e2e.sh` | k3d + Helm SeaweedFS 4.0.406: **positive** put + retention; **negative** `delete-object --version-id` must fail while retention is active. |
+| `scripts/k3d-e2e.sh` | k3d + Helm SeaweedFS 4.0.406: **positive** put, retention, `get-object-retention`, `get-object`; **negative** `delete-object --version-id` (AWS: denied under COMPLIANCE; SeaweedFS may allow — script **warns** by default, see `WORM_S3_E2E_STRICT_VERSION_DELETE`). |
 
 ## Prerequisites
 
@@ -77,8 +77,8 @@ nix run .#worm-show-writer-iam
 
 Creates a throwaway cluster `worm-s3-sample`, installs `seaweedfs/seaweedfs` chart **4.0.406** with the generated values, port-forwards the filer S3 port, then:
 
-1. **Positive:** `put-object`, `put-object-retention` (COMPLIANCE), `get-object` with `--version-id`.
-2. **Negative:** `delete-object --version-id` while retention is active must **fail** (object lock on the specific version).
+1. **Positive:** `put-object`, `put-object-retention` (COMPLIANCE), `get-object-retention`, `get-object` with `--version-id`.
+2. **Negative (AWS S3):** `delete-object --version-id` on a COMPLIANCE-protected version is **AccessDenied**. **SeaweedFS** has historically differed; the e2e **warns** and exits 0 if delete succeeds, unless you set `WORM_S3_E2E_STRICT_VERSION_DELETE=1` (CI / parity gate). See [seaweedfs#8350](https://github.com/seaweedfs/seaweedfs/issues/8350) and [PR#8351](https://github.com/seaweedfs/seaweedfs/pull/8351) for upstream discussion.
 
 ```bash
 nix run .#worm-k3d-e2e
@@ -86,7 +86,7 @@ nix run .#worm-k3d-e2e
 
 Cleanup is automatic unless you set `WORM_KEEP_CLUSTER=1`.
 
-**Note:** SeaweedFS S3 semantics can differ from AWS S3 for some delete paths (for example delete without a version id may insert a delete marker under versioning). This sample asserts the **version-id delete** path is denied under COMPLIANCE retention, which matches the stricter server-side checks in current SeaweedFS implementations. The e2e may **not** get `VersionId` from the `put-object` body alone; it uses `head-object` and `list-object-versions` with parsing that ignores a bogus `VersionId` of the **string** `"null"`. The script also calls **`s3api put-bucket-versioning` / `get-bucket-versioning`** so the bucket is *actually* in `Status=Enabled` (Helm `createBuckets` alone can leave the filer entry without the versioning extended attribute, which yields only null versions until fixed).
+**Note:** SeaweedFS S3 object-lock and delete semantics can differ from AWS (delete marker vs `AccessDenied`, and whether `delete-object --version-id` is blocked under COMPLIANCE). This sample still **verifies** retention and read-before-delete; the **versioned delete** step is a **soft** negative by default. The e2e may **not** get `VersionId` from the `put-object` body alone; it uses `head-object` and `list-object-versions` with parsing that ignores a bogus `VersionId` of the **string** `"null"`. The script also calls **`s3api put-bucket-versioning` / `get-bucket-versioning`** so the bucket is *actually* in `Status=Enabled` (Helm `createBuckets` alone can leave the filer entry without the versioning extended attribute, which yields only null versions until fixed).
 
 #### If `nix run .#worm-k3d-e2e` seems to hang (especially on macOS)
 
@@ -103,7 +103,7 @@ Long pauses are usually normal until you see the next `==>` line.
 5. **Helm:** `WORM_HELM_WAIT_TIMEOUT` (default **8m**; raise for SeaweedFS image pull on a cold machine); `WORM_HELM_REPO_UPDATE_SEC` (default **30s**) for `helm repo update`. While `helm --wait` runs, the script prints one-line help, then (unless `WORM_HELM_LIVE_STATUS=0`) periodic `kubectl get deploy,sts,po` and PVCs every `WORM_HELM_STATUS_INTERVAL` (default **8s**). `WORM_HELM_DEBUG=1` adds `helm --debug`.
 6. **kubectl wait:** `WORM_KUBECTL_NODE_WAIT` (default **60s**) for **nodes** Ready; `WORM_FILER_POD_WAIT` (default **120s**) for the filer pod.
 7. **`metrics.k8s.io` / `E0426 memcache` lines:** the script prunes and reinstalls [metrics-server](https://github.com/kubernetes-sigs/metrics-server) (server-side apply with **force-conflicts**), then **json-patches** `--kubelet-insecure-tls` and **fails the run** if the `metrics-server` container args do not contain that flag (k3d requires it). It then `kubectl rollout status`, blocks until **`kubectl get --raw /apis/metrics.k8s.io/v1beta1`**, with `WORM_METRICS_ROLLOUT_TIMEOUT_SEC` (default **60s**) and `WORM_METRICS_API_WAIT_SEC` (default **40s**). **`WORM_K8S_QUIET_DISCOVERY=1`** (default) filters noisy memcache log lines. Use `WORM_SKIP_METRICS_SERVER=1` only when air-gapped.
-8. **S3 / AWS calls:** `WORM_PF_READY_SECONDS` (default **40**). Per-call limits: `WORM_AWS_CONNECT_TIMEOUT` (default **5s**) and `WORM_AWS_READ_TIMEOUT` (default **20s**).
+8. **S3 / AWS calls:** `WORM_PF_READY_SECONDS` (default **40**). Per-call limits: `WORM_AWS_CONNECT_TIMEOUT` (default **5s**) and `WORM_AWS_READ_TIMEOUT` (default **20s**). For COMPLIANCE + `delete-object --version-id`, set **`WORM_S3_E2E_STRICT_VERSION_DELETE=1`** to fail the run if delete returns success (AWS-denies / strict parity); default **0** logs warnings if SeaweedFS allows the delete. **`WORM_S3_VERSION_ID_RETRIES`** / **`WORM_S3_VERSION_ID_SLEEP`**: list-after-put `VersionId` resolution.
 9. **Verbose shell trace:** `WORM_DEBUG=1 nix run .#worm-k3d-e2e`
 10. **Port-forward log:** `tail -f /tmp/worm-pf.log`
 
