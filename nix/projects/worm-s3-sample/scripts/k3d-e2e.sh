@@ -40,6 +40,10 @@ S3_VID_RETRY_SLEEP_SEC="${WORM_S3_VERSION_ID_SLEEP:-2}"
 # If 1, fail the run when delete-object --version-id succeeds under COMPLIANCE (AWS S3 does not allow that).
 # Default 0: SeaweedFS has historically allowed the delete; we WARN and still exit 0. See README / SeaweedFS S3 parity.
 WORM_S3_E2E_STRICT_VERSION_DELETE="${WORM_S3_E2E_STRICT_VERSION_DELETE:-0}"
+# Set by flake; when running this script from a git clone, default to a manifest next to this file.
+: "${WORM_AUDIT_FLUENT_MANIFEST:=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/worm-s3-audit-fluent.k8s.yaml}"
+AUDIT_DEPLOY_NAME="${WORM_S3_AUDIT_FLUENT_DEPLOY:-worm-s3-audit-fluent}"
+AUDIT_WAIT="${WORM_S3_AUDIT_FLUENT_WAIT:-120s}"
 
 export AWS_RETRY_MODE=standard
 export AWS_MAX_ATTEMPTS=2
@@ -178,6 +182,17 @@ else
   fi
 fi
 
+# Fluent Bit (forward) receives SeaweedFS S3 filer.s3.auditLogConfig; must be Ready before the filer starts.
+echo "==> S3 API audit: Fluent forward receiver in namespace $NS (SeaweedFS filer.s3.auditLogConfig)"
+if [[ ! -f "$WORM_AUDIT_FLUENT_MANIFEST" ]]; then
+  echo "ERROR: WORM_AUDIT_FLUENT_MANIFEST not found: $WORM_AUDIT_FLUENT_MANIFEST" >&2
+  exit 1
+fi
+kubectl create namespace "$NS" --dry-run=client -o yaml | kubectl apply -f -
+sed "s/__WORM_E2E_NAMESPACE__/${NS}/g" "$WORM_AUDIT_FLUENT_MANIFEST" | kubectl apply -f -
+echo "   Waiting for ${AUDIT_DEPLOY_NAME} (max ${AUDIT_WAIT})"
+kubectl wait --for=condition=available "deployment/${AUDIT_DEPLOY_NAME}" -n "$NS" --timeout="$AUDIT_WAIT"
+
 echo "==> Helm: add/update repo, then install SeaweedFS chart ${CHART_VERSION} (release $RELEASE) into namespace $NS"
 echo "   Actions: load chart, render with values, create namespace, create workloads, then --wait (cap ${HELM_WAIT_TIMEOUT}):"
 echo "   pull container images, start pods, wait for schedulers/CNI/PVC, readiness, hooks."
@@ -231,10 +246,22 @@ fi
 echo "Filer pod: $FILER_POD"
 kubectl wait --for=condition=ready "pod/$FILER_POD" -n "$NS" --timeout="$FILER_POD_WAIT"
 
+# SeaweedFS Helm: /etc/sw (S3 config + filer_s3_auditLogConfig.json) is only mounted when filer.s3.enableAuth
+# (see filer statefulset). WORM sample values set enableAuth + auditLogConfig; use chart-generated admin keys.
+if kubectl get secret seaweedfs-s3-secret -n "$NS" -o name &>/dev/null; then
+  AWS_ACCESS_KEY_ID="$(kubectl get secret seaweedfs-s3-secret -n "$NS" -o json | jq -r '.data.admin_access_key_id | @base64d')"
+  AWS_SECRET_ACCESS_KEY="$(kubectl get secret seaweedfs-s3-secret -n "$NS" -o json | jq -r '.data.admin_secret_access_key | @base64d')"
+  export AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY
+  echo "S3: credentials from secret seaweedfs-s3-secret (admin; enableAuth + audit file mount per Helm chart)."
+else
+  export AWS_ACCESS_KEY_ID="${AWS_ACCESS_KEY_ID:-dummy}" AWS_SECRET_ACCESS_KEY="${AWS_SECRET_ACCESS_KEY:-dummy}"
+  echo "WARN: no seaweedfs-s3-secret; using AWS_ACCESS_KEY_ID dummy (S3 with enableAuth will fail)" >&2
+fi
+export AWS_DEFAULT_REGION="${AWS_DEFAULT_REGION:-us-east-1}"
+
 kubectl port-forward -n "$NS" "pod/$FILER_POD" "$PF_LOCAL:8333" >/tmp/worm-pf.log 2>&1 &
 PF_PID=$!
 ENDPOINT="http://127.0.0.1:${PF_LOCAL}"
-export AWS_ACCESS_KEY_ID=dummy AWS_SECRET_ACCESS_KEY=dummy AWS_DEFAULT_REGION=us-east-1
 
 echo "==> Waiting for S3 on 127.0.0.1:${PF_LOCAL} (up to ${PF_READY_SECONDS}s; tail -f /tmp/worm-pf.log in another terminal if unsure)"
 pf_start="$(date +%s)"
@@ -392,6 +419,20 @@ else
   echo "WARN: delete-object --version-id returned success; AWS S3 would deny a COMPLIANCE-protected version." >&2
   echo "WARN: SeaweedFS S3 parity: https://github.com/seaweedfs/seaweedfs/issues/8350 and related object-lock threads." >&2
   echo "WARN: WORM_S3_E2E_STRICT_VERSION_DELETE=1 would fail this run. The version may now be removed; skipping post-delete get." >&2
+fi
+
+echo "==> S3 API audit (Fluent forward → Fluent Bit stdout; see https://github.com/seaweedfs/seaweedfs/wiki/S3-API-Audit-log )"
+if kubectl -n "$NS" get "deployment/${AUDIT_DEPLOY_NAME}" &>/dev/null; then
+  _al="$(kubectl logs -n "$NS" "deployment/${AUDIT_DEPLOY_NAME}" --tail=2000 2>&1 || true)"
+  if echo "$_al" | grep -q '"operation"'; then
+    echo "---- SeaweedFS S3 access lines (filter: lines containing operation) ----"
+    echo "$_al" | grep '"operation"' || true
+  else
+    echo "$_al"
+    echo "WARN: no JSON audit events (no '\"operation\"' in receiver logs). Filer must mount /etc/sw/filer_s3_auditLogConfig.json (set filer.s3.enableAuth in Helm; see e2e + README)." >&2
+  fi
+else
+  echo "WARN: audit receiver deployment/${AUDIT_DEPLOY_NAME} not found in $NS" >&2
 fi
 
 kill "$PF_PID" 2>/dev/null || true

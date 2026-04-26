@@ -1,0 +1,70 @@
+# Fluent Bit forward (24224) for SeaweedFS S3 filer.s3.auditLogConfig (k3d e2e only).
+# Namespace is replaced by k3d-e2e.sh (s/__WORM_E2E_NAMESPACE__/<ns>/g).
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: worm-s3-audit-fluent-bit
+  namespace: __WORM_E2E_NAMESPACE__
+data:
+  fluent-bit.conf: |
+    [SERVICE]
+        Flush         1
+        Log_Level     info
+    [INPUT]
+        Name        forward
+        Listen      0.0.0.0
+        Port        24224
+    [OUTPUT]
+        Name        stdout
+        Format      json_lines
+        json_date_key _time
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: worm-s3-audit-fluent
+  namespace: __WORM_E2E_NAMESPACE__
+  labels:
+    app: worm-s3-audit-fluent
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: worm-s3-audit-fluent
+  template:
+    metadata:
+      labels:
+        app: worm-s3-audit-fluent
+    spec:
+      containers:
+        - name: fluent-bit
+          image: fluent/fluent-bit:2.2.0
+          args: ["-c", "/fluent-bit/etc/fluent-bit.conf"]
+          ports:
+            - name: forward
+              containerPort: 24224
+          resources:
+            requests:
+              cpu: 10m
+              memory: 32Mi
+          volumeMounts:
+            - name: config
+              mountPath: /fluent-bit/etc/fluent-bit.conf
+              subPath: fluent-bit.conf
+      volumes:
+        - name: config
+          configMap:
+            name: worm-s3-audit-fluent-bit
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: worm-s3-audit-fluent
+  namespace: __WORM_E2E_NAMESPACE__
+spec:
+  selector:
+    app: worm-s3-audit-fluent
+  ports:
+    - name: forward
+      port: 24224
+      targetPort: 24224

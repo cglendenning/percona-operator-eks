@@ -62,6 +62,7 @@
               export WORM_SEAWEED_VALUES="${wormHelmValuesDir}/values.yaml"
               # Pin Helm from this flake so a Homebrew/system `helm` (<3.16) cannot win on PATH (missing `fromToml`).
               export WORM_HELM="${pkgs.kubernetes-helm}/bin/helm"
+              export WORM_AUDIT_FLUENT_MANIFEST="${./scripts/worm-s3-audit-fluent.k8s.yaml}"
               bash ${./scripts/k3d-e2e.sh}
             '';
           };

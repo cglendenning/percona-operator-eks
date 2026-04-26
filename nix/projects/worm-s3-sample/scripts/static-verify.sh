@@ -9,6 +9,11 @@ echo "==> Values: objectLock + versioning on first createBuckets entry"
 yq -e '.filer.s3.createBuckets[0].objectLock == true' "$VALUES"
 yq -e '(.filer.s3.createBuckets[0].versioning == "Enabled") or (.filer.s3.createBuckets[0].versioning == true)' "$VALUES"
 
+echo "==> Values: filer S3 enableAuth (required for /etc/sw mount) + auditLogConfig (fluent forward for k3d e2e)"
+yq -e '(.filer.s3.enableAuth // false) == true' "$VALUES"
+yq -e '(.filer.s3.auditLogConfig.fluent_port // 0) == 24224' "$VALUES"
+yq -e '(.filer.s3.auditLogConfig.fluent_host // "") == "worm-s3-audit-fluent"' "$VALUES"
+
 echo "==> IAM: Deny includes delete and lock tampering"
 jq -e '
   [.Statement[]

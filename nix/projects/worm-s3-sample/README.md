@@ -13,7 +13,7 @@ This directory is a **standalone Flake** that demonstrates how **platform** rule
 | `modules/project-worm-sample.nix` | Project: bucket name + merged SeaweedFS Helm values + rendered YAML path. |
 | `eval-config.nix` | Evaluates modules for the bundled sample (`worm-compliance-sample` bucket). |
 | `scripts/static-verify.sh` | No cluster: validates YAML + IAM policy shape (includes a **negative** check: writer must not `Allow` `s3:DeleteObject`). |
-| `scripts/k3d-e2e.sh` | k3d + Helm SeaweedFS 4.0.406: **positive** put, retention, `get-object-retention`, `get-object`; **negative** `delete-object --version-id` (AWS: denied under COMPLIANCE; SeaweedFS may allow — script **warns** by default, see `WORM_S3_E2E_STRICT_VERSION_DELETE`). |
+| `scripts/k3d-e2e.sh` | k3d + Helm SeaweedFS 4.0.406: Fluent Bit S3 [audit](https://github.com/seaweedfs/seaweedfs/wiki/S3-API-Audit-log) receiver + **positive** put/retention/get; **negative** `delete-object --version-id` (AWS: denied under COMPLIANCE; SeaweedFS may allow — **warns** by default, `WORM_S3_E2E_STRICT_VERSION_DELETE`). |
 
 ## Prerequisites
 
@@ -75,7 +75,7 @@ nix run .#worm-show-writer-iam
 
 ### k3d + SeaweedFS end-to-end
 
-Creates a throwaway cluster `worm-s3-sample`, installs `seaweedfs/seaweedfs` chart **4.0.406** with the generated values, port-forwards the filer S3 port, then:
+Creates a throwaway cluster `worm-s3-sample`, applies a small [Fluent Bit](https://fluentbit.io/) deployment that listens for SeaweedFS’s [S3 API audit](https://github.com/seaweedfs/seaweedfs/wiki/S3-API-Audit-log) **forward** stream (`filer.s3.auditLogConfig` in generated values: host `worm-s3-audit-fluent` port `24224`), installs `seaweedfs/seaweedfs` chart **4.0.406**, port-forwards the filer S3 port, then:
 
 1. **Positive:** `put-object`, `put-object-retention` (COMPLIANCE), `get-object-retention`, `get-object` with `--version-id`.
 2. **Negative (AWS S3):** `delete-object --version-id` on a COMPLIANCE-protected version is **AccessDenied**. **SeaweedFS** has historically differed; the e2e **warns** and exits 0 if delete succeeds, unless you set `WORM_S3_E2E_STRICT_VERSION_DELETE=1` (CI / parity gate). See [seaweedfs#8350](https://github.com/seaweedfs/seaweedfs/issues/8350) and [PR#8351](https://github.com/seaweedfs/seaweedfs/pull/8351) for upstream discussion.
@@ -84,7 +84,9 @@ Creates a throwaway cluster `worm-s3-sample`, installs `seaweedfs/seaweedfs` cha
 nix run .#worm-k3d-e2e
 ```
 
-Cleanup is automatic unless you set `WORM_KEEP_CLUSTER=1`.
+Cleanup is automatic unless you set `WORM_KEEP_CLUSTER=1`. At the end of the S3 tests, the script prints **`kubectl logs`** from the `worm-s3-audit-fluent` deployment (up to 2000 lines) so the run shows a sample audit trail. Override manifest path with **`WORM_AUDIT_FLUENT_MANIFEST`** (the flake points at `scripts/worm-s3-audit-fluent.k8s.yaml`); override wait with **`WORM_S3_AUDIT_FLUENT_WAIT`**.
+
+**S3 auth + audit file:** the sample sets **`filer.s3.enableAuth: true`**. The SeaweedFS Helm chart only mounts `/etc/sw` (including `filer_s3_auditLogConfig.json` from the `seaweedfs-s3-secret` hook) when `enableAuth` is true, so the filer can load S3 auth config and the audit forward JSON. The e2e loads **admin** keys from that secret for `aws` (dummy creds are invalid once auth is on). If you set **`auditLogConfig` without `enableAuth`**, the chart does not mount the file while the filer is still given `-s3.auditLogConfig=...`, so no audit events reach Fluent.
 
 **Note:** SeaweedFS S3 object-lock and delete semantics can differ from AWS (delete marker vs `AccessDenied`, and whether `delete-object --version-id` is blocked under COMPLIANCE). This sample still **verifies** retention and read-before-delete; the **versioned delete** step is a **soft** negative by default. The e2e may **not** get `VersionId` from the `put-object` body alone; it uses `head-object` and `list-object-versions` with parsing that ignores a bogus `VersionId` of the **string** `"null"`. The script also calls **`s3api put-bucket-versioning` / `get-bucket-versioning`** so the bucket is *actually* in `Status=Enabled` (Helm `createBuckets` alone can leave the filer entry without the versioning extended attribute, which yields only null versions until fixed).
 
