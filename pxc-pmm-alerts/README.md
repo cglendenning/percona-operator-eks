@@ -7,7 +7,7 @@ Daemon that reads alert rule JSON from a `ConfigMap`, resolves the Grafana **MyS
 1. **`template_name` present** (e.g. `pmm_mysql_down`): **`POST /v1/alerting/rules`** (requires `folder_uid`). These land in the Grafana rule group named by the JSON `group` field (default **`pxc-pmm`**).
 2. **Custom PromQL (`expr`)** rules: PMM rejects these on `/v1/alerting/rules` without a template; they are provisioned like `projects/pmm/default.nix`: **`POST /graph/api/ruler/grafana/api/v1/rules/{folderUid}`** with one Grafana rule group per alert name.
 
-Each apply **`DELETE`s** the shared template group (`RULE_GROUP_NAME`, default `pxc-pmm`), then **`DELETE`s** each expr rule’s old group (same name as the alert), then reposts everything. Skips when `rules.json` bytes are unchanged (SHA-256) unless **`FORCE_SYNC_EVERY_CYCLE=true`**.
+Each apply **`DELETE`s** the shared template group (`RULE_GROUP_NAME`, default `pxc-pmm`), then **`DELETE`s** each expr rule’s old group (same name as the alert), then reposts everything. By default **`FORCE_SYNC_EVERY_CYCLE=true`**: the controller cannot list existing rules in PMM, so it re-applies on every interval to match the ConfigMap (overwriting UI changes). Set **`FORCE_SYNC_EVERY_CYCLE=false`** to skip when `rules.json` bytes are unchanged (SHA-256) and the last apply for that digest succeeded (saves API load; PMM drift is not repaired).
 
 ## Environment
 
@@ -15,7 +15,7 @@ Each apply **`DELETE`s** the shared template group (`RULE_GROUP_NAME`, default `
 |----------|---------|---------|
 | `PMM_URL` | `https://monitoring-service.pmm.svc.cluster.local` | PMM / Grafana base URL (no trailing slash). The `percona/pmm` chart names the Service `monitoring-service` (not `pmm`). |
 | `RULE_GROUP_NAME` | `pxc-pmm` | Must match the `group` field in every rule in `rules.json` (Grafana rule group; used for ruler `DELETE` before reposting). |
-| `FORCE_SYNC_EVERY_CYCLE` | `false` | If `true`, re-applies rules every loop even when `rules.json` is unchanged (repair PMM drift; noisier). |
+| `FORCE_SYNC_EVERY_CYCLE` | `true` | If `true`, re-applies every loop when `rules.json` is unchanged so **UI edits/deletes** are overwritten (PMM has no reliable rules list API). Set `false` to skip until the ConfigMap changes (less API load; drift is not healed). |
 | `PMM_USER` | (prompt if unset) | Basic auth user; chart default is `admin`. |
 | `PMM_PASSWORD` | (prompt if unset) | Basic auth password. |
 | `PMM_INSECURE_TLS` | `true` | When `true`, TLS certificate verification is skipped (typical for in-cluster PMM TLS). |

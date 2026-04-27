@@ -356,6 +356,7 @@ export async function runController(): Promise<void> {
   const requestTimeoutMs = parseIntEnv("PMM_REQUEST_TIMEOUT_MS", 15_000);
   const insecureTls = parseBoolEnv("PMM_INSECURE_TLS", true);
   const reqOpts = { timeoutMs: requestTimeoutMs, insecureTls };
+  const forceSyncEveryCycle = parseBoolEnv("FORCE_SYNC_EVERY_CYCLE", true);
 
   let stopping = false;
   const onStop = () => {
@@ -374,7 +375,8 @@ export async function runController(): Promise<void> {
 
     logLine(
       `pxc-pmm-alerts-controller started pmmUrl=${pmmBaseUrl} ns=${namespace} cm=${configMapName}/${configMapKey} ` +
-        `ruleGroup=${ruleGroupName} exprBatchGroup=${exprRuleBatchGroupName} syncIntervalMs=${syncIntervalMs} requestTimeoutMs=${requestTimeoutMs} insecureTls=${insecureTls}`
+        `ruleGroup=${ruleGroupName} exprBatchGroup=${exprRuleBatchGroupName} syncIntervalMs=${syncIntervalMs} ` +
+        `requestTimeoutMs=${requestTimeoutMs} insecureTls=${insecureTls} forceSyncEveryCycle=${forceSyncEveryCycle}`
     );
 
     let lastRulesSha256 = "";
@@ -386,8 +388,8 @@ export async function runController(): Promise<void> {
         const rawRulesPeek = cfg.data?.[configMapKey];
         if (!rawRulesPeek) throw new Error(`ConfigMap ${namespace}/${configMapName} missing key ${configMapKey}`);
         const rulesDigest = sha256Hex(rawRulesPeek);
-        const forceEveryCycle = parseBoolEnv("FORCE_SYNC_EVERY_CYCLE", false);
-        if (!forceEveryCycle && rulesDigest === lastRulesSha256) {
+        /* When forceSyncEveryCycle is false, we skip if rules.json bytes match last successful apply (cannot detect PMM UI drift). Default is true so every cycle reconciles. */
+        if (!forceSyncEveryCycle && rulesDigest === lastRulesSha256) {
           logLine(`sync skipped: rules.json unchanged digest=${rulesDigest.slice(0, 12)}…`);
           await sleep(syncIntervalMs);
           continue;

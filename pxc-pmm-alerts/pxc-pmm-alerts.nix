@@ -246,6 +246,7 @@ let
                   { name = "RULE_GROUP_NAME"; value = "pxc-pmm"; }
                   { name = "EXPR_RULE_BATCH_GROUP"; value = "pxc-pmm-expr"; }
                   { name = "SYNC_INTERVAL_MS"; value = "60000"; }
+                  { name = "FORCE_SYNC_EVERY_CYCLE"; value = "true"; }
                   { name = "PMM_REQUEST_TIMEOUT_MS"; value = "15000"; }
                   { name = "PMM_INSECURE_TLS"; value = "true"; }
                   { name = "PMM_USER"; value = "admin"; }
