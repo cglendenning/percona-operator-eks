@@ -116,9 +116,26 @@ print_pxc_style_summary() {
     python3 - "$json_4k" "$json_16k" "${RWMIXREAD}" <<'PY'
 import json, sys
 
+
 def load(path):
+    """fio may concatenate JSON roots or tack on lines after the first object — json.loads() rejects that ('Extra data')."""
     with open(path, "r", encoding="utf-8", errors="replace") as f:
-        return json.load(f)
+        raw = f.read()
+    stripped = raw.strip()
+    if not stripped:
+        raise ValueError("empty file")
+    try:
+        return json.loads(stripped)
+    except json.JSONDecodeError as first_exc:
+        start = stripped.find("{")
+        if start < 0:
+            raise first_exc from None
+        decoder = json.JSONDecoder()
+        try:
+            obj, _end = decoder.raw_decode(stripped, start)
+            return obj
+        except json.JSONDecodeError:
+            raise first_exc from None
 
 def ns_to_us(x):
     if x is None:
@@ -167,8 +184,8 @@ def aggregate(data):
 def fmt_block(label, path):
     try:
         data = load(path)
-    except OSError as e:
-        print(f"  {label}: (could not read JSON: {e})")
+    except (OSError, ValueError, json.JSONDecodeError) as e:
+        print(f"  {label}: (could not parse JSON: {e})")
         return
     agg = aggregate(data)
     if agg is None:
