@@ -22,7 +22,8 @@ Optional:
   --iodepth              Fio iodepth (default: 32)
   --numjobs              Fio numjobs (default: 4)
   --rw-mix-read          Fio rwmixread percentage (default: 70)
-  --node-selector        Node selector key=value (repeatable)
+  --node-selector        Node selector key=value (repeatable); not the same as NODE NAME below
+  --node NAME            Pin the benchmark Pod to this Node (.metadata.name — same NAME as kubectl get nodes)
   --keep                 Keep resources after completion (default: false)
   --yes, -y              Proceed without prompting (danger; for automation only)
   --help, -h             Show this help
@@ -30,7 +31,10 @@ Optional:
 Examples:
   ./percona/scripts/pxc-pvc-fio-benchmark.sh -n pxc -s gp3
   ./percona/scripts/pxc-pvc-fio-benchmark.sh -n pxc -s vsphere-csi --runtime 240 --size 16G
-  ./percona/scripts/pxc-pvc-fio-benchmark.sh -n pxc -s vsphere-csi --node-selector nodepool=database
+  ./percona/scripts/pxc-pvc-fio-benchmark.sh -n pxc -s vsphere-csi --node my-worker-01
+
+  Note: Labels like rke.cattle.io/machine=<id> are Rancher provisioning IDs — they differ from kubectl get nodes NAME.
+        Use --node NAME to match nodes by name; use labels only if your workloads use those keys.
 EOF
 }
 
@@ -105,6 +109,7 @@ SKIP_CONFIRM="0"
 KUBECTL_BIN=""
 KUBECONFIG_PATH="${KUBECONFIG:-}"
 NODE_SELECTORS=()
+NODE_NAME=""
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -156,6 +161,10 @@ while [[ $# -gt 0 ]]; do
       NODE_SELECTORS+=("${2:-}")
       shift 2
       ;;
+    --node)
+      NODE_NAME="${2:-}"
+      shift 2
+      ;;
     --keep)
       KEEP_RESOURCES="1"
       shift
@@ -193,6 +202,10 @@ for selector in "${NODE_SELECTORS[@]}"; do
     exit 1
   fi
 done
+if [[ -n "$NODE_NAME" ]] && [[ "${#NODE_SELECTORS[@]}" -gt 0 ]]; then
+  echo "[pxc-fio] use either --node or --node-selector, not both" >&2
+  exit 2
+fi
 
 KUBECTL_BIN="$(detect_kubectl_bin)"
 if [[ -z "$KUBECONFIG_PATH" ]]; then
@@ -203,7 +216,16 @@ kubectl() {
   command "$KUBECTL_BIN" --kubeconfig="$KUBECONFIG_PATH" "$@"
 }
 
-build_node_selector_yaml() {
+escape_yaml_double_quote() {
+  printf '%s' "$1" | sed 's/\\/\\\\/g;s/"/\\"/g'
+}
+
+# Pod scheduling: either spec.nodeName (matches kubectl get nodes NAME) or nodeSelector labels.
+build_pod_placement_yaml() {
+  if [[ -n "$NODE_NAME" ]]; then
+    echo "  nodeName: \"$(escape_yaml_double_quote "$NODE_NAME")\""
+    return 0
+  fi
   if [[ "${#NODE_SELECTORS[@]}" -eq 0 ]]; then
     return 0
   fi
@@ -212,8 +234,29 @@ build_node_selector_yaml() {
   for pair in "${NODE_SELECTORS[@]}"; do
     key="${pair%%=*}"
     value="${pair#*=}"
-    echo "    ${key}: \"${value}\""
+    echo "    ${key}: \"$(escape_yaml_double_quote "$value")\""
   done
+}
+
+filter_label_selector_candidates() {
+  awk '
+    /^kubernetes\.io\/hostname=/ { next }
+    /^kubernetes\.io\/os=/ { next }
+    /^kubernetes\.io\/arch=/ { next }
+    /^beta\.kubernetes\.io\// { next }
+    /^node\.kubernetes\.io\// { next }
+    /^topology\.kubernetes\.io\// { next }
+    /^node-role\.kubernetes\.io\// { next }
+    /^kubelet\.kubernetes\.io\// { next }
+    /^storage\.kubernetes\.io\// { next }
+    /^kubernetes\.azure\.com\// { next }
+    # Rancher / fleet internals — IDs here are not kubectl get nodes NAME
+    /^rke\.cattle\.io\// { next }
+    /^cattle\.io\/cluster-/ { next }
+    /^fleet\.cattle\.io\// { next }
+    /^field\.cattle\.io\// { next }
+    { print }
+  '
 }
 
 pick_storage_class_if_missing() {
@@ -231,39 +274,91 @@ pick_storage_class_if_missing() {
   echo "[pxc-fio] selected storage class: ${STORAGE_CLASS}"
 }
 
-pick_node_selector_if_missing() {
+pick_node_placement_if_missing() {
+  if [[ -n "$NODE_NAME" ]]; then
+    return 0
+  fi
   if [[ "${#NODE_SELECTORS[@]}" -gt 0 ]]; then
     return 0
   fi
 
-  echo "[pxc-fio] no --node-selector provided; querying cluster node labels..."
-  mapfile -t selector_candidates < <(
-    kubectl get nodes --show-labels --no-headers --request-timeout=30s \
-      | awk -F'  +' '
-        {
-          labels = $NF
-          n = split(labels, arr, ",")
-          for (i = 1; i <= n; i++) {
-            if (arr[i] ~ /=/) {
-              print arr[i]
+  cat >&2 <<'PLACEMENT_HELP'
+
+[pxc-fio] Node placement — how this differs from kubectl get nodes NAME
+  • kubectl get nodes prints NAME = Node .metadata.name (Kubernetes node object name).
+  • Labels like rke.cattle.io/machine=<uuid> are Rancher/machine IDs — they identify a machine,
+    not necessarily the NODE column string you see. Use NODE NAME pinning when you want a 1:1 match.
+
+PLACEMENT_HELP
+
+  local mode=""
+  echo "[pxc-fio] where should the benchmark Pod run?" >&2
+  echo "  1) Pin to a NODE by NAME (same names as kubectl get nodes NAME — recommended)" >&2
+  echo "  2) Use a label nodeSelector key=value (match your StatefulSet/podTemplate if applicable)" >&2
+  echo "  3) No preference — let the scheduler decide" >&2
+  while true; do
+    read -r -p "[pxc-fio] Enter choice [1-3]: " mode >&2
+    mode="$(printf '%s' "$mode" | tr -d '[:space:]')"
+    if [[ "$mode" =~ ^[123]$ ]]; then
+      break
+    fi
+    echo "[pxc-fio] invalid choice (expected 1, 2, or 3)" >&2
+  done
+
+  case "$mode" in
+    3)
+      echo "[pxc-fio] no node placement constraint"
+      return 0
+      ;;
+    1)
+      echo "[pxc-fio] querying node names..."
+      mapfile -t node_names < <(
+        kubectl get nodes -o jsonpath='{range .items[*]}{.metadata.name}{"\n"}{end}' --request-timeout=30s | sed '/^$/d' | sort -u
+      )
+      if [[ "${#node_names[@]}" -eq 0 ]]; then
+        echo "[pxc-fio] no Nodes returned from cluster" >&2
+        exit 1
+      fi
+      NODE_NAME="$(prompt_select "[pxc-fio] choose a NODE NAME (kubectl get nodes NAME):" "${node_names[@]}")"
+      echo "[pxc-fio] selected node name: ${NODE_NAME}"
+      return 0
+      ;;
+    2)
+      echo "[pxc-fio] querying node labels (Rancher internal IDs filtered out of this list)..."
+      mapfile -t selector_candidates < <(
+        kubectl get nodes --show-labels --no-headers --request-timeout=30s \
+          | awk -F'  +' '
+            {
+              labels = $NF
+              n = split(labels, arr, ",")
+              for (i = 1; i <= n; i++) {
+                if (arr[i] ~ /=/) {
+                  print arr[i]
+                }
+              }
             }
-          }
-        }
-      ' \
-      | awk '!/^(kubernetes\.io\/hostname=|beta\.kubernetes\.io\/|node\.kubernetes\.io\/|kubernetes\.io\/os=|kubernetes\.io\/arch=|topology\.kubernetes\.io\/|node-role\.kubernetes\.io\/|kubelet\.kubernetes\.io\/|storage\.kubernetes\.io\/)/' \
-      | sed '/^$/d' \
-      | sort -u
-  )
+          ' \
+          | filter_label_selector_candidates \
+          | sed '/^$/d' \
+          | sort -u
+      )
 
-  if [[ "${#selector_candidates[@]}" -eq 0 ]]; then
-    echo "[pxc-fio] no suitable custom node labels found; running without nodeSelector"
-    return 0
-  fi
+      if [[ "${#selector_candidates[@]}" -eq 0 ]]; then
+        echo "[pxc-fio] no suitable labels remain after filtering; run without nodeSelector or re-run with --node NAME"
+        return 0
+      fi
 
-  local chosen
-  chosen="$(prompt_select "[pxc-fio] choose a node selector (or Ctrl-C to skip):" "${selector_candidates[@]}")"
-  NODE_SELECTORS+=("$chosen")
-  echo "[pxc-fio] selected node selector: ${chosen}"
+      local chosen
+      chosen="$(prompt_select "[pxc-fio] choose a label nodeSelector:" "${selector_candidates[@]}")"
+      NODE_SELECTORS+=("$chosen")
+      echo "[pxc-fio] selected node selector: ${chosen}"
+      return 0
+      ;;
+    *)
+      echo "[pxc-fio] internal error: bad mode=${mode}" >&2
+      exit 1
+      ;;
+  esac
 }
 
 print_execution_plan() {
@@ -288,14 +383,17 @@ This script will CONNECT to your cluster and then:
        mounts that PVC at /data
 PLAN_EOF
 
-  if [[ "${#NODE_SELECTORS[@]}" -gt 0 ]]; then
-    echo "       nodeSelector (placement):" >&2
+  if [[ -n "$NODE_NAME" ]]; then
+    echo "       nodeName (pin to this NODE — same NAME as kubectl get nodes):" >&2
+    echo "         ${NODE_NAME}" >&2
+  elif [[ "${#NODE_SELECTORS[@]}" -gt 0 ]]; then
+    echo "       nodeSelector:" >&2
     local sel
     for sel in "${NODE_SELECTORS[@]}"; do
       echo "         ${sel}" >&2
     done
   else
-    echo "       nodeSelector: (none — scheduler chooses any qualifying node)" >&2
+    echo "       Placement: (none — scheduler chooses any qualifying node)" >&2
   fi
 
   cat >&2 <<PLAN_EOF2
@@ -373,14 +471,18 @@ trap cleanup EXIT INT TERM
 echo "[pxc-fio] verifying namespace exists: ${NAMESPACE}"
 kubectl get ns "$NAMESPACE" --request-timeout=30s >/dev/null
 pick_storage_class_if_missing
-pick_node_selector_if_missing
+pick_node_placement_if_missing
+if [[ -n "$NODE_NAME" ]]; then
+  echo "[pxc-fio] verifying Node exists: ${NODE_NAME}"
+  kubectl get node "$NODE_NAME" --request-timeout=30s >/dev/null
+fi
 echo "[pxc-fio] verifying storageclass exists: ${STORAGE_CLASS}"
 kubectl get sc "$STORAGE_CLASS" --request-timeout=30s >/dev/null
 
 confirm_proceed
 
 echo "[pxc-fio] creating test pvc + pod in namespace ${NAMESPACE}"
-NODE_SELECTOR_YAML="$(build_node_selector_yaml)"
+POD_PLACEMENT_YAML="$(build_pod_placement_yaml)"
 cat <<EOF | kubectl -n "$NAMESPACE" apply -f -
 apiVersion: v1
 kind: PersistentVolumeClaim
@@ -400,7 +502,7 @@ metadata:
   name: ${POD_NAME}
 spec:
   restartPolicy: Never
-${NODE_SELECTOR_YAML}
+${POD_PLACEMENT_YAML}
   containers:
     - name: fio
       image: ${IMAGE}
