@@ -1,7 +1,7 @@
 # Kubernetes objects for ConfigMap-driven PMM alert provisioning for PXC clusters.
 #
 # Build/app image separately with Dockerfile in this directory:
-#   docker build -t pxc-pmm-alerts-controller:latest .
+#   docker buildx build --load -t pxc-pmm-alerts-controller:latest .
 # Apply manifests (pure Nix, no nixpkgs: avoids multi-GiB Darwin stdenv on nix-build):
 #   nix-build pxc-pmm-alerts.nix -A k8sManifest && kubectl apply -f result  # result is a v1/List JSON
 
@@ -23,7 +23,7 @@ let
       folder_uid = "__MYSQL_FOLDER_UID__";
       template_name = "pmm_mysql_down";
       name = "MySQL Instance Down";
-      group = "pxc-pmm";
+      group = "template";
       params = [ ];
       for = "60s";
       severity = "SEVERITY_CRITICAL";
@@ -36,7 +36,7 @@ let
     }
     {
       name = "No MySQL Instances Monitored";
-      group = "pxc-pmm";
+      group = "expression";
       expr = "absent(mysql_global_status_uptime)";
       for = "120s";
       no_data_state = "OK";
@@ -50,7 +50,7 @@ let
     }
     {
       name = "PXC Disk Usage Warning";
-      group = "pxc-pmm";
+      group = "expression";
       expr = "(1 - (node_filesystem_avail_bytes{mountpoint=~\"/var/lib/mysql|/data\"} / node_filesystem_size_bytes{mountpoint=~\"/var/lib/mysql|/data\"})) * 100 > 75";
       for = "10m";
       no_data_state = "OK";
@@ -63,7 +63,7 @@ let
     }
     {
       name = "PXC Disk Usage Critical";
-      group = "pxc-pmm";
+      group = "expression";
       expr = "(1 - (node_filesystem_avail_bytes{mountpoint=~\"/var/lib/mysql|/data\"} / node_filesystem_size_bytes{mountpoint=~\"/var/lib/mysql|/data\"})) * 100 > 90";
       for = "5m";
       no_data_state = "OK";
@@ -76,7 +76,7 @@ let
     }
     {
       name = "PXC mysql_up Warning";
-      group = "pxc-pmm";
+      group = "expression";
       expr = "sum by (service_name)(mysql_up == 0) > 0";
       for = "3m";
       no_data_state = "OK";
@@ -89,7 +89,7 @@ let
     }
     {
       name = "PXC mysql_up Critical";
-      group = "pxc-pmm";
+      group = "expression";
       expr = "sum by (service_name)(mysql_up == 0) > 0";
       for = "10m";
       no_data_state = "OK";
@@ -102,7 +102,7 @@ let
     }
     {
       name = "PXC Cluster Size Warning";
-      group = "pxc-pmm";
+      group = "expression";
       expr = "max by (service_name)(mysql_global_status_wsrep_cluster_size) < 3";
       for = "5m";
       no_data_state = "OK";
@@ -115,7 +115,7 @@ let
     }
     {
       name = "PXC Cluster Size Critical";
-      group = "pxc-pmm";
+      group = "expression";
       expr = "max by (service_name)(mysql_global_status_wsrep_cluster_size) < 2";
       for = "2m";
       no_data_state = "OK";
@@ -128,7 +128,7 @@ let
     }
     {
       name = "Galera Flow Control Warning";
-      group = "pxc-pmm";
+      group = "expression";
       expr = "avg by (service_name)(mysql_global_status_wsrep_flow_control_paused_ns / 1e9) > 0.1";
       for = "10m";
       no_data_state = "OK";
@@ -141,7 +141,7 @@ let
     }
     {
       name = "Galera Flow Control Critical";
-      group = "pxc-pmm";
+      group = "expression";
       expr = "avg by (service_name)(mysql_global_status_wsrep_flow_control_paused_ns / 1e9) > 0.3";
       for = "5m";
       no_data_state = "OK";
@@ -243,10 +243,9 @@ let
                   { name = "ALERT_RULES_CONFIGMAP"; value = rulesConfigMapName; }
                   { name = "ALERT_RULES_KEY"; value = "rules.json"; }
                   { name = "PMM_URL"; value = "https://monitoring-service.pmm.svc.cluster.local"; }
-                  { name = "RULE_GROUP_NAME"; value = "pxc-pmm"; }
-                  { name = "EXPR_RULE_BATCH_GROUP"; value = "pxc-pmm-expr"; }
+                  { name = "RULE_GROUP_NAME"; value = "template"; }
+                  { name = "EXPR_RULE_BATCH_GROUP"; value = "expression"; }
                   { name = "SYNC_INTERVAL_MS"; value = "60000"; }
-                  { name = "FORCE_SYNC_EVERY_CYCLE"; value = "true"; }
                   { name = "PMM_REQUEST_TIMEOUT_MS"; value = "15000"; }
                   { name = "PMM_INSECURE_TLS"; value = "true"; }
                   { name = "PMM_USER"; value = "admin"; }

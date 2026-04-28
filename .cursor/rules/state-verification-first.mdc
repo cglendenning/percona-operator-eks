@@ -1,0 +1,19 @@
+---
+description: Verify runtime state and requirements before attempting environment changes
+alwaysApply: true
+---
+
+# State Verification First
+
+- For local environment work (Colima, Docker, k3d, kubectl, helm, nix, scripts), do not assume state.
+- Define the minimum contract up front: required tools, required runtime health, required contexts/resources, and success criteria.
+- Verify each contract condition before mutation (`start`, `create`, `apply`, `install`, `rollout`, `port-forward`).
+- Use bounded checks with explicit timeouts; never allow indefinite waits.
+- If a check fails, attempt an in-scope automated repair once, then re-verify.
+- If repair fails, stop with a precise unmet-condition message and the single next action.
+- Prefer facts from command output over inference; diagnose from observed state first.
+- Own execution end-to-end: when the user asks to run/fix, the agent runs commands and applies fixes directly instead of delegating steps back to the user.
+- Verify that a repair actually changed state (for example, resource size, context, readiness), not just that the command returned success.
+- Do not continue long retry loops on repeated identical errors; promote repeated failures to a root-cause diagnosis checkpoint immediately.
+- When a failure class changes (for example, from connectivity to OOM), pivot to the new primary blocker and re-plan around that blocker.
+- Keep updates concise and operational: current stage, observed blocker, action in progress, and outcome.

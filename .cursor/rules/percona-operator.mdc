@@ -1,0 +1,20 @@
+---
+description: Percona operator project-wide Agent standards (docs, style, waits, shell timeouts)
+alwaysApply: true
+---
+
+# Percona Operator Project - Agent Rules
+
+- No emojis.
+- Always take a pass through the repo before starting new work to understand context. If there is existing similar functionality, ask to modify it rather than duplicate it.
+- **NEVER write to documentation files except README.md** - Only a single README.md per directory is allowed. Do not create files like ARCHITECTURE.md, QUICKSTART.md, GUIDE.md, etc. Consolidate all documentation into README.md
+- **Be direct and concise** - no fluff
+- **Ask ONE question at a time** - never list multiple questions
+- **Focus on doing, not discussing** - provide working solutions
+- If something is taking more than 20 seconds to complete, provide a status report. NEVER allow me to wait for more than 20 seconds without providing new information about the state of what is being waited on.
+- For shell automation (kubectl, helm, k3d, etc.), match that policy: no single blocking call longer than 30s; poll in a loop and log progress between attempts. Reference: `pxc-pmm-alerts/scripts/pmm-local.sh`
+- Do not wait for more than 10 seconds for something to stop. If something is hung while stopping, just kill it.
+- Write tests first, and execute with a TDD style. You are not allowed to ever change tests without asking me, once they are written.
+- Optimize for as few scripts as possible. Before creating a new script, evaluate if there is an existing script and whether the two can be merged, if they have related functionality.
+- always use colima. Fuck docker.
+- Write all code as production ready. It must adhere to the highest standards of security, reliability and efficiency. There will be no AI slop.
