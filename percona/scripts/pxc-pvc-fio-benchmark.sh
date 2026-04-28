@@ -101,6 +101,7 @@ NUMJOBS="4"
 RWMIXREAD="70"
 KEEP_RESOURCES="0"
 KUBECTL_BIN=""
+KUBECONFIG_PATH="${KUBECONFIG:-}"
 NODE_SELECTORS=()
 
 while [[ $# -gt 0 ]]; do
@@ -188,8 +189,12 @@ for selector in "${NODE_SELECTORS[@]}"; do
 done
 
 KUBECTL_BIN="$(detect_kubectl_bin)"
+if [[ -z "$KUBECONFIG_PATH" ]]; then
+  echo "[pxc-fio] KUBECONFIG is required and must point to a kubeconfig file" >&2
+  exit 2
+fi
 kubectl() {
-  command "$KUBECTL_BIN" "$@"
+  command "$KUBECTL_BIN" --kubeconfig="$KUBECONFIG_PATH" "$@"
 }
 
 build_node_selector_yaml() {
