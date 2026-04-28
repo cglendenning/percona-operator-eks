@@ -18,12 +18,13 @@ Optional:
   --pod-name             Pod name (default: fio-pxc-sc-test)
   --pvc-name             PVC name (default: fio-pxc-sc-test)
   --runtime              Fio runtime seconds per profile (default: 180)
-  --size                 Fio test file size (default: 8G)
+  --size                 Fio test file size (default: 1G)
   --iodepth              Fio iodepth (default: 32)
   --numjobs              Fio numjobs (default: 4)
   --rw-mix-read          Fio rwmixread percentage (default: 70)
   --node-selector        Node selector key=value (repeatable)
   --keep                 Keep resources after completion (default: false)
+  --yes, -y              Proceed without prompting (danger; for automation only)
   --help, -h             Show this help
 
 Examples:
@@ -95,11 +96,12 @@ IMAGE="alpine:3.20"
 POD_NAME="fio-pxc-sc-test"
 PVC_NAME="fio-pxc-sc-test"
 RUNTIME="180"
-FIO_SIZE="8G"
+FIO_SIZE="1G"
 IODEPTH="32"
 NUMJOBS="4"
 RWMIXREAD="70"
 KEEP_RESOURCES="0"
+SKIP_CONFIRM="0"
 KUBECTL_BIN=""
 KUBECONFIG_PATH="${KUBECONFIG:-}"
 NODE_SELECTORS=()
@@ -156,6 +158,10 @@ while [[ $# -gt 0 ]]; do
       ;;
     --keep)
       KEEP_RESOURCES="1"
+      shift
+      ;;
+    --yes|-y)
+      SKIP_CONFIRM="1"
       shift
       ;;
     --help|-h)
@@ -232,8 +238,20 @@ pick_node_selector_if_missing() {
 
   echo "[pxc-fio] no --node-selector provided; querying cluster node labels..."
   mapfile -t selector_candidates < <(
-    kubectl get nodes -o jsonpath='{range .items[*]}{range $k,$v := .metadata.labels}{$k}={$v}{"\n"}{end}{end}' --request-timeout=30s \
+    kubectl get nodes --show-labels --no-headers --request-timeout=30s \
+      | awk -F'  +' '
+        {
+          labels = $NF
+          n = split(labels, arr, ",")
+          for (i = 1; i <= n; i++) {
+            if (arr[i] ~ /=/) {
+              print arr[i]
+            }
+          }
+        }
+      ' \
       | awk '!/^(kubernetes\.io\/hostname=|beta\.kubernetes\.io\/|node\.kubernetes\.io\/|kubernetes\.io\/os=|kubernetes\.io\/arch=|topology\.kubernetes\.io\/|node-role\.kubernetes\.io\/|kubelet\.kubernetes\.io\/|storage\.kubernetes\.io\/)/' \
+      | sed '/^$/d' \
       | sort -u
   )
 
@@ -246,6 +264,81 @@ pick_node_selector_if_missing() {
   chosen="$(prompt_select "[pxc-fio] choose a node selector (or Ctrl-C to skip):" "${selector_candidates[@]}")"
   NODE_SELECTORS+=("$chosen")
   echo "[pxc-fio] selected node selector: ${chosen}"
+}
+
+print_execution_plan() {
+  local kubecfg_display="${KUBECONFIG_PATH}"
+  [[ -z "$kubecfg_display" ]] && kubecfg_display="(empty)"
+
+  cat >&2 <<PLAN_EOF
+
+================================================================================
+ PXc PVC / fio benchmark — ABOUT TO RUN
+================================================================================
+This script will CONNECT to your cluster and then:
+
+  1) CREATE a PersistentVolumeClaim in namespace "${NAMESPACE}":
+       name: ${PVC_NAME}
+       storageClassName: ${STORAGE_CLASS}
+       requested size: ${PVC_SIZE}
+
+  2) CREATE a Pod in namespace "${NAMESPACE}":
+       name: ${POD_NAME}
+       image: ${IMAGE}
+       mounts that PVC at /data
+PLAN_EOF
+
+  if [[ "${#NODE_SELECTORS[@]}" -gt 0 ]]; then
+    echo "       nodeSelector (placement):" >&2
+    local sel
+    for sel in "${NODE_SELECTORS[@]}"; do
+      echo "         ${sel}" >&2
+    done
+  else
+    echo "       nodeSelector: (none — scheduler chooses any qualifying node)" >&2
+  fi
+
+  cat >&2 <<PLAN_EOF2
+
+  3) INSTALL fio inside the pod (apk) and WRITE a test file on the volume:
+       path: /data/fio.test  size: ${FIO_SIZE}
+
+  4) RUN two sequential fio benchmarks (heavy random read/write IO):
+       workload: randrw, rwmixread=${RWMIXREAD}% read
+       profiles: bs=4k, then bs=16k
+       per-job settings: runtime=${RUNTIME}s, iodepth=${IODEPTH}, numjobs=${NUMJOBS}
+       (--eta=always --status-interval=10)
+
+  5) CLEAN UP (--keep not set): delete Pod "${POD_NAME}" and PVC "${PVC_NAME}".
+       With --keep: leave Pod/PVC in the cluster for inspection.
+
+CLUSTER CONNECTION:
+  kubectl: ${KUBECTL_BIN}
+  kubeconfig (--kubeconfig): ${kubecfg_display}
+
+WARNINGS:
+  • This consumes real storage I/O and may contend with workloads on shared storage.
+  • If this namespace or names collide with existing objects, APPLY may update them.
+================================================================================
+PLAN_EOF2
+}
+
+confirm_proceed() {
+  if [[ "$SKIP_CONFIRM" == "1" ]]; then
+    echo "[pxc-fio] continuing without confirmation (--yes)" >&2
+    return 0
+  fi
+  print_execution_plan
+
+  local answer=""
+  read -r -p "[pxc-fio] Type 'yes' to proceed with the steps above (anything else aborts): " answer >&2
+  answer="$(printf '%s' "$answer" | tr '[:upper:]' '[:lower:]' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
+  if [[ "$answer" == "yes" ]]; then
+    echo "[pxc-fio] confirmed — proceeding." >&2
+    return 0
+  fi
+  echo "[pxc-fio] aborted (no PVC/Pod created after this point)." >&2
+  exit 0
 }
 
 cleanup() {
@@ -283,6 +376,8 @@ pick_storage_class_if_missing
 pick_node_selector_if_missing
 echo "[pxc-fio] verifying storageclass exists: ${STORAGE_CLASS}"
 kubectl get sc "$STORAGE_CLASS" --request-timeout=30s >/dev/null
+
+confirm_proceed
 
 echo "[pxc-fio] creating test pvc + pod in namespace ${NAMESPACE}"
 NODE_SELECTOR_YAML="$(build_node_selector_yaml)"
@@ -340,7 +435,8 @@ run_fio() {
   local name="$1"
   local bs="$2"
 
-  echo "[pxc-fio] running fio profile: ${name}"
+  echo "[pxc-fio] running fio profile: ${name} (bs=${bs}, size=${FIO_SIZE}, runtime=${RUNTIME}s)"
+  echo "[pxc-fio] progress updates every 10s..."
   kubectl -n "$NAMESPACE" exec "$POD_NAME" -- \
     fio --name="$name" \
       --filename=/data/fio.test \
@@ -354,7 +450,10 @@ run_fio() {
       --direct=1 \
       --runtime="$RUNTIME" \
       --time_based \
+      --eta=always \
+      --status-interval=10 \
       --group_reporting
+  echo "[pxc-fio] completed fio profile: ${name}"
 }
 
 run_fio "randrw4k" "4k"
