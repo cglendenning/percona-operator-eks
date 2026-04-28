@@ -1,6 +1,10 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# MySQL 8.4.x InnoDB default page size (bytes). Same as MySQL 8.0 Reference Manual: innodb_page_size default 16384 (16 KiB).
+# If your PXC instance was initialized with a non-default page size, compare the fio profile whose --bs matches that size.
+readonly MYSQL_INNODB_DEFAULT_PAGE_BYTES="16384"
+
 usage() {
   cat <<'EOF'
 Usage: pxc-pvc-fio-benchmark.sh --namespace <ns> --storage-class <sc> [options]
@@ -91,6 +95,109 @@ require_positive_int() {
     echo "[pxc-fio] invalid ${name}: ${value}" >&2
     exit 1
   fi
+}
+
+# Summarize fio JSON (written in-pod) for PXC/MySQL-oriented reporting. Prefers python3; prints a short fallback if unavailable.
+print_pxc_style_summary() {
+  local json_4k="$1"
+  local json_16k="$2"
+
+  echo ""
+  echo "================================================================================"
+  echo " PXC / MySQL datadir I/O — concise summary (storage benchmark, not query load)"
+  echo "================================================================================"
+  echo "InnoDB (MySQL 8.4.x): default @@innodb_page_size = ${MYSQL_INNODB_DEFAULT_PAGE_BYTES} bytes (16 KiB)."
+  echo "  • Primary comparison for default PXC/MySQL: fio block size 16k (16384 B) ≈ one InnoDB page per I/O unit (rule of thumb)."
+  echo "  • fio 4k profile: extra data point (e.g. smaller device blocks / metadata); not the InnoDB default page size."
+  echo "Workload: randrw, rwmixread=${RWMIXREAD}%, direct=1, runtime=${RUNTIME}s per profile, iodepth=${IODEPTH}, numjobs=${NUMJOBS}."
+  echo ""
+
+  if command -v python3 >/dev/null 2>&1; then
+    python3 - "$json_4k" "$json_16k" "${RWMIXREAD}" <<'PY'
+import json, sys
+
+def load(path):
+    with open(path, "r", encoding="utf-8", errors="replace") as f:
+        return json.load(f)
+
+def ns_to_us(x):
+    if x is None:
+        return None
+    try:
+        return float(x) / 1000.0
+    except (TypeError, ValueError):
+        return None
+
+def job_lines(job):
+    r = job.get("read") or {}
+    w = job.get("write") or {}
+    ri = r.get("iops")
+    wi = w.get("iops")
+    rb = r.get("bw")  # KiB/s
+    wb = w.get("bw")
+    rlat = (r.get("lat_ns") or {}).get("mean")
+    wlat = (w.get("lat_ns") or {}).get("mean")
+    return ri, wi, rb, wb, ns_to_us(rlat), ns_to_us(wlat)
+
+def aggregate(data):
+    jobs = data.get("jobs") or []
+    if not jobs:
+        return None
+    tr = tw = 0.0
+    trb = twb = 0.0
+    rls, wls = [], []
+    for j in jobs:
+        ri, wi, rb, wb, rlu, wlu = job_lines(j)
+        if ri is not None:
+            tr += float(ri)
+        if wi is not None:
+            tw += float(wi)
+        if rb is not None:
+            trb += float(rb)
+        if wb is not None:
+            twb += float(wb)
+        if rlu is not None:
+            rls.append(rlu)
+        if wlu is not None:
+            wls.append(wlu)
+    rlat_m = sum(rls) / len(rls) if rls else None
+    wlat_m = sum(wls) / len(wls) if wls else None
+    return tr, tw, trb, twb, rlat_m, wlat_m
+
+def fmt_block(label, path):
+    try:
+        data = load(path)
+    except OSError as e:
+        print(f"  {label}: (could not read JSON: {e})")
+        return
+    agg = aggregate(data)
+    if agg is None:
+        print(f"  {label}: (no jobs in JSON)")
+        return
+    tr, tw, trb, twb, rlu, wlu = agg
+    try:
+        mix = int(sys.argv[3]) if len(sys.argv) > 3 else 70
+    except (ValueError, IndexError):
+        mix = 70
+    print(f"  {label}:")
+    print(f"    mixed randrw (rwmixread {mix}% read): read ~{tr:.0f} IOPS, write ~{tw:.0f} IOPS")
+    print(f"    bandwidth (fio): read ~{trb:.1f} KiB/s, write ~{twb:.1f} KiB/s")
+    if rlu is not None and wlu is not None:
+        print(f"    mean latency (fio job mean): read ~{rlu:.1f} µs, write ~{wlu:.1f} µs")
+
+p4, p16 = sys.argv[1], sys.argv[2]
+fmt_block("Profile randrw4k  (bs=4 KiB — not default InnoDB page size)", p4)
+print("")
+fmt_block("Profile randrw16k (bs=16 KiB — matches default InnoDB 16384 B page size)", p16)
+print("")
+print("Use the 16k row as the first-order match to default PXC/MySQL 8.4 InnoDB page I/O; validate @@innodb_page_size in your live cluster if unsure.")
+PY
+  else
+    echo "  (Install python3 on this host to print parsed IOPS/latency from fio JSON files in the pod.)"
+    echo "  JSON paths: ${json_4k}, ${json_16k}"
+  fi
+  echo "================================================================================"
+  echo ""
 }
 
 NAMESPACE=""
@@ -536,6 +643,7 @@ done
 run_fio() {
   local name="$1"
   local bs="$2"
+  local json_path="/data/fio-${name}.json"
 
   echo "[pxc-fio] running fio profile: ${name} (bs=${bs}, size=${FIO_SIZE}, runtime=${RUNTIME}s)"
   echo "[pxc-fio] progress updates every 10s..."
@@ -554,7 +662,9 @@ run_fio() {
       --time_based \
       --eta=always \
       --status-interval=10 \
-      --group_reporting
+      --group_reporting \
+      --output-format=json \
+      --output="$json_path"
   echo "[pxc-fio] completed fio profile: ${name}"
 }
 
@@ -562,3 +672,17 @@ run_fio "randrw4k" "4k"
 run_fio "randrw16k" "16k"
 
 echo "[pxc-fio] completed benchmarks successfully"
+
+readonly FIO_JSON_4K="/data/fio-randrw4k.json"
+readonly FIO_JSON_16K="/data/fio-randrw16k.json"
+
+# Pull JSON to host temp files for python summary (avoid requiring python inside the benchmark container).
+_summ_4=""
+_summ_16=""
+_summ_4="$(mktemp "${TMPDIR:-/tmp}/pxc-fio-randrw4k.XXXXXX.json")"
+_summ_16="$(mktemp "${TMPDIR:-/tmp}/pxc-fio-randrw16k.XXXXXX.json")"
+echo "[pxc-fio] copying fio JSON from pod for summary..."
+kubectl -n "$NAMESPACE" cp "${POD_NAME}:${FIO_JSON_4K}" "${_summ_4}"
+kubectl -n "$NAMESPACE" cp "${POD_NAME}:${FIO_JSON_16K}" "${_summ_16}"
+print_pxc_style_summary "${_summ_4}" "${_summ_16}"
+rm -f "${_summ_4}" "${_summ_16}" 2>/dev/null || true
