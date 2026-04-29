@@ -283,6 +283,97 @@ let
       folder_uid = "__MYSQL_FOLDER_UID__";
     }
     {
+      name = "PXC Binlog Disabled Critical";
+      group = "expression";
+      expr = "max by (service_name) (mysql_global_variables_log_bin) < 1";
+      for = "5m";
+      no_data_state = "OK";
+      custom_labels = {
+        severity = "critical";
+        route = "pagerduty";
+        managed_by = "pxc-pmm-alerts-controller";
+      };
+      folder_uid = "__MYSQL_FOLDER_UID__";
+    }
+    {
+      name = "PXC Binlog Cache Disk Spill Warning";
+      group = "expression";
+      expr = "(sum by (service_name) (rate(mysql_global_status_binlog_cache_disk_use[15m])) / clamp_min(sum by (service_name) (rate(mysql_global_status_binlog_cache_use[15m])), 1)) > 0.05";
+      for = "15m";
+      no_data_state = "OK";
+      custom_labels = {
+        severity = "warning";
+        route = "default";
+        managed_by = "pxc-pmm-alerts-controller";
+      };
+      folder_uid = "__MYSQL_FOLDER_UID__";
+    }
+    {
+      name = "PXC Binlog Cache Disk Spill Critical";
+      group = "expression";
+      expr = "(sum by (service_name) (rate(mysql_global_status_binlog_cache_disk_use[15m])) / clamp_min(sum by (service_name) (rate(mysql_global_status_binlog_cache_use[15m])), 1)) > 0.2";
+      for = "15m";
+      no_data_state = "OK";
+      custom_labels = {
+        severity = "critical";
+        route = "pagerduty";
+        managed_by = "pxc-pmm-alerts-controller";
+      };
+      folder_uid = "__MYSQL_FOLDER_UID__";
+    }
+    {
+      name = "PXC Binlog Statement Cache Disk Spill Warning";
+      group = "expression";
+      expr = "(sum by (service_name) (rate(mysql_global_status_binlog_stmt_cache_disk_use[15m])) / clamp_min(sum by (service_name) (rate(mysql_global_status_binlog_stmt_cache_use[15m])), 1)) > 0.05";
+      for = "15m";
+      no_data_state = "OK";
+      custom_labels = {
+        severity = "warning";
+        route = "default";
+        managed_by = "pxc-pmm-alerts-controller";
+      };
+      folder_uid = "__MYSQL_FOLDER_UID__";
+    }
+    {
+      name = "PXC Binlog Statement Cache Disk Spill Critical";
+      group = "expression";
+      expr = "(sum by (service_name) (rate(mysql_global_status_binlog_stmt_cache_disk_use[15m])) / clamp_min(sum by (service_name) (rate(mysql_global_status_binlog_stmt_cache_use[15m])), 1)) > 0.2";
+      for = "15m";
+      no_data_state = "OK";
+      custom_labels = {
+        severity = "critical";
+        route = "pagerduty";
+        managed_by = "pxc-pmm-alerts-controller";
+      };
+      folder_uid = "__MYSQL_FOLDER_UID__";
+    }
+    {
+      name = "PXC Binlog Volume Space Warning";
+      group = "expression";
+      expr = "min by (service_name) ((node_filesystem_avail_bytes{mountpoint=~\"/var/lib/mysql|/data\"} / node_filesystem_size_bytes{mountpoint=~\"/var/lib/mysql|/data\"}) * 100) < 30";
+      for = "10m";
+      no_data_state = "OK";
+      custom_labels = {
+        severity = "warning";
+        route = "default";
+        managed_by = "pxc-pmm-alerts-controller";
+      };
+      folder_uid = "__MYSQL_FOLDER_UID__";
+    }
+    {
+      name = "PXC Binlog Volume Space Critical";
+      group = "expression";
+      expr = "min by (service_name) ((node_filesystem_avail_bytes{mountpoint=~\"/var/lib/mysql|/data\"} / node_filesystem_size_bytes{mountpoint=~\"/var/lib/mysql|/data\"}) * 100) < 20";
+      for = "10m";
+      no_data_state = "OK";
+      custom_labels = {
+        severity = "critical";
+        route = "pagerduty";
+        managed_by = "pxc-pmm-alerts-controller";
+      };
+      folder_uid = "__MYSQL_FOLDER_UID__";
+    }
+    {
       name = "Galera Flow Control Warning";
       group = "expression";
       expr = "avg by (service_name)(rate(mysql_global_status_wsrep_flow_control_paused_ns[5m]) / 1e9) > 0.3";
