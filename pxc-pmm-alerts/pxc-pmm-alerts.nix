@@ -181,7 +181,7 @@ let
     {
       name = "PXC Memory Available Warning";
       group = "expression";
-      expr = "(100 * min by (service_name) (node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes) < 8) and ((sum by (service_name) (rate(node_vmstat_pswpin[5m]) + rate(node_vmstat_pswpout[5m])) > 10) or (sum by (service_name) (rate(node_vmstat_pgmajfault[5m])) > 50))";
+      expr = "((100 * (node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes)) < 8) and (((rate(node_vmstat_pswpin[5m]) + rate(node_vmstat_pswpout[5m])) > 10) or (rate(node_vmstat_pgmajfault[5m]) > 50))";
       for = "10m";
       no_data_state = "OK";
       custom_labels = {
@@ -194,7 +194,7 @@ let
     {
       name = "PXC Memory Available Critical";
       group = "expression";
-      expr = "(100 * min by (service_name) (node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes) < 5) and ((sum by (service_name) (rate(node_vmstat_pswpin[5m]) + rate(node_vmstat_pswpout[5m])) > 25) or (sum by (service_name) (rate(node_vmstat_pgmajfault[5m])) > 200))";
+      expr = "((100 * (node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes)) < 5) and (((rate(node_vmstat_pswpin[5m]) + rate(node_vmstat_pswpout[5m])) > 25) or (rate(node_vmstat_pgmajfault[5m]) > 200))";
       for = "10m";
       no_data_state = "OK";
       custom_labels = {
@@ -350,7 +350,7 @@ let
     {
       name = "PXC Binlog Volume Space Warning";
       group = "expression";
-      expr = "min by (service_name) ((node_filesystem_avail_bytes{mountpoint=~\"/var/lib/mysql|/data\"} / node_filesystem_size_bytes{mountpoint=~\"/var/lib/mysql|/data\"}) * 100) < 30";
+      expr = "(node_filesystem_avail_bytes{mountpoint=~\"/var/lib/mysql|/data\"} / node_filesystem_size_bytes{mountpoint=~\"/var/lib/mysql|/data\"}) * 100 < 30";
       for = "10m";
       no_data_state = "OK";
       custom_labels = {
@@ -363,7 +363,7 @@ let
     {
       name = "PXC Binlog Volume Space Critical";
       group = "expression";
-      expr = "min by (service_name) ((node_filesystem_avail_bytes{mountpoint=~\"/var/lib/mysql|/data\"} / node_filesystem_size_bytes{mountpoint=~\"/var/lib/mysql|/data\"}) * 100) < 20";
+      expr = "(node_filesystem_avail_bytes{mountpoint=~\"/var/lib/mysql|/data\"} / node_filesystem_size_bytes{mountpoint=~\"/var/lib/mysql|/data\"}) * 100 < 20";
       for = "10m";
       no_data_state = "OK";
       custom_labels = {
