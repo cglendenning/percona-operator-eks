@@ -51,7 +51,7 @@ let
     {
       name = "PXC Disk Usage Warning";
       group = "expression";
-      expr = "(1 - (node_filesystem_avail_bytes{mountpoint=~\"/var/lib/mysql|/data\"} / node_filesystem_size_bytes{mountpoint=~\"/var/lib/mysql|/data\"})) * 100 > 75";
+      expr = "(node_filesystem_avail_bytes{mountpoint=~\"/var/lib/mysql|/data\"} / node_filesystem_size_bytes{mountpoint=~\"/var/lib/mysql|/data\"}) * 100 < 30";
       for = "10m";
       no_data_state = "OK";
       custom_labels = {
@@ -64,7 +64,7 @@ let
     {
       name = "PXC Disk Usage Critical";
       group = "expression";
-      expr = "(1 - (node_filesystem_avail_bytes{mountpoint=~\"/var/lib/mysql|/data\"} / node_filesystem_size_bytes{mountpoint=~\"/var/lib/mysql|/data\"})) * 100 > 90";
+      expr = "(node_filesystem_avail_bytes{mountpoint=~\"/var/lib/mysql|/data\"} / node_filesystem_size_bytes{mountpoint=~\"/var/lib/mysql|/data\"}) * 100 < 20";
       for = "5m";
       no_data_state = "OK";
       custom_labels = {
@@ -127,9 +127,165 @@ let
       folder_uid = "__MYSQL_FOLDER_UID__";
     }
     {
+      name = "PXC CPU Busy Warning";
+      group = "expression";
+      expr = "100 * (1 - avg by (service_name) (rate(node_cpu_seconds_total{mode=\"idle\"}[5m]))) > 85";
+      for = "10m";
+      no_data_state = "OK";
+      custom_labels = {
+        severity = "warning";
+        route = "default";
+        managed_by = "pxc-pmm-alerts-controller";
+      };
+      folder_uid = "__MYSQL_FOLDER_UID__";
+    }
+    {
+      name = "PXC CPU Busy Critical";
+      group = "expression";
+      expr = "100 * (1 - avg by (service_name) (rate(node_cpu_seconds_total{mode=\"idle\"}[5m]))) > 95";
+      for = "10m";
+      no_data_state = "OK";
+      custom_labels = {
+        severity = "critical";
+        route = "pagerduty";
+        managed_by = "pxc-pmm-alerts-controller";
+      };
+      folder_uid = "__MYSQL_FOLDER_UID__";
+    }
+    {
+      name = "PXC CPU Steal Warning";
+      group = "expression";
+      expr = "100 * avg by (service_name) (rate(node_cpu_seconds_total{mode=\"steal\"}[5m])) > 5";
+      for = "10m";
+      no_data_state = "OK";
+      custom_labels = {
+        severity = "warning";
+        route = "default";
+        managed_by = "pxc-pmm-alerts-controller";
+      };
+      folder_uid = "__MYSQL_FOLDER_UID__";
+    }
+    {
+      name = "PXC CPU Steal Critical";
+      group = "expression";
+      expr = "100 * avg by (service_name) (rate(node_cpu_seconds_total{mode=\"steal\"}[5m])) > 10";
+      for = "10m";
+      no_data_state = "OK";
+      custom_labels = {
+        severity = "critical";
+        route = "pagerduty";
+        managed_by = "pxc-pmm-alerts-controller";
+      };
+      folder_uid = "__MYSQL_FOLDER_UID__";
+    }
+    {
+      name = "PXC Memory Available Warning";
+      group = "expression";
+      expr = "(100 * min by (service_name) (node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes) < 8) and ((sum by (service_name) (rate(node_vmstat_pswpin[5m]) + rate(node_vmstat_pswpout[5m])) > 10) or (sum by (service_name) (rate(node_vmstat_pgmajfault[5m])) > 50))";
+      for = "10m";
+      no_data_state = "OK";
+      custom_labels = {
+        severity = "warning";
+        route = "default";
+        managed_by = "pxc-pmm-alerts-controller";
+      };
+      folder_uid = "__MYSQL_FOLDER_UID__";
+    }
+    {
+      name = "PXC Memory Available Critical";
+      group = "expression";
+      expr = "(100 * min by (service_name) (node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes) < 5) and ((sum by (service_name) (rate(node_vmstat_pswpin[5m]) + rate(node_vmstat_pswpout[5m])) > 25) or (sum by (service_name) (rate(node_vmstat_pgmajfault[5m])) > 200))";
+      for = "10m";
+      no_data_state = "OK";
+      custom_labels = {
+        severity = "critical";
+        route = "pagerduty";
+        managed_by = "pxc-pmm-alerts-controller";
+      };
+      folder_uid = "__MYSQL_FOLDER_UID__";
+    }
+    {
+      name = "PXC Swap Activity Warning";
+      group = "expression";
+      expr = "sum by (service_name) (rate(node_vmstat_pswpin[5m]) + rate(node_vmstat_pswpout[5m])) > 10";
+      for = "10m";
+      no_data_state = "OK";
+      custom_labels = {
+        severity = "warning";
+        route = "default";
+        managed_by = "pxc-pmm-alerts-controller";
+      };
+      folder_uid = "__MYSQL_FOLDER_UID__";
+    }
+    {
+      name = "PXC Swap Activity Critical";
+      group = "expression";
+      expr = "sum by (service_name) (rate(node_vmstat_pswpin[5m]) + rate(node_vmstat_pswpout[5m])) > 50";
+      for = "10m";
+      no_data_state = "OK";
+      custom_labels = {
+        severity = "critical";
+        route = "pagerduty";
+        managed_by = "pxc-pmm-alerts-controller";
+      };
+      folder_uid = "__MYSQL_FOLDER_UID__";
+    }
+    {
+      name = "PXC Host OOM Kills Critical";
+      group = "expression";
+      expr = "sum by (service_name) (increase(node_vmstat_oom_kill[10m])) > 0";
+      for = "1m";
+      no_data_state = "OK";
+      custom_labels = {
+        severity = "critical";
+        route = "pagerduty";
+        managed_by = "pxc-pmm-alerts-controller";
+      };
+      folder_uid = "__MYSQL_FOLDER_UID__";
+    }
+    {
+      name = "HAProxy Down Critical";
+      group = "expression";
+      expr = "min by (service_name) (haproxy_up) < 1";
+      for = "2m";
+      no_data_state = "OK";
+      custom_labels = {
+        severity = "critical";
+        route = "pagerduty";
+        managed_by = "pxc-pmm-alerts-controller";
+      };
+      folder_uid = "__MYSQL_FOLDER_UID__";
+    }
+    {
+      name = "HAProxy Backends Down Critical";
+      group = "expression";
+      expr = "sum by (service_name, proxy) (haproxy_server_up) == 0";
+      for = "1m";
+      no_data_state = "OK";
+      custom_labels = {
+        severity = "critical";
+        route = "pagerduty";
+        managed_by = "pxc-pmm-alerts-controller";
+      };
+      folder_uid = "__MYSQL_FOLDER_UID__";
+    }
+    {
+      name = "HAProxy Backend Capacity Degraded Warning";
+      group = "expression";
+      expr = "sum by (service_name, proxy) (haproxy_server_up) < 2";
+      for = "5m";
+      no_data_state = "OK";
+      custom_labels = {
+        severity = "warning";
+        route = "default";
+        managed_by = "pxc-pmm-alerts-controller";
+      };
+      folder_uid = "__MYSQL_FOLDER_UID__";
+    }
+    {
       name = "Galera Flow Control Warning";
       group = "expression";
-      expr = "avg by (service_name)(mysql_global_status_wsrep_flow_control_paused_ns / 1e9) > 0.1";
+      expr = "avg by (service_name)(rate(mysql_global_status_wsrep_flow_control_paused_ns[5m]) / 1e9) > 0.3";
       for = "10m";
       no_data_state = "OK";
       custom_labels = {
@@ -142,8 +298,8 @@ let
     {
       name = "Galera Flow Control Critical";
       group = "expression";
-      expr = "avg by (service_name)(mysql_global_status_wsrep_flow_control_paused_ns / 1e9) > 0.3";
-      for = "5m";
+      expr = "avg by (service_name)(rate(mysql_global_status_wsrep_flow_control_paused_ns[5m]) / 1e9) > 0.6";
+      for = "10m";
       no_data_state = "OK";
       custom_labels = {
         severity = "critical";
