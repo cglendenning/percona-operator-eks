@@ -51,7 +51,7 @@ let
     {
       name = "PXC Disk Usage Warning";
       group = "expression";
-      expr = "(node_filesystem_avail_bytes{mountpoint=~\"/var/lib/mysql|/data\"} / node_filesystem_size_bytes{mountpoint=~\"/var/lib/mysql|/data\"}) * 100 < 30";
+      expr = "((node_filesystem_avail_bytes{mountpoint=\"/var/lib/mysql\"} / node_filesystem_size_bytes{mountpoint=\"/var/lib/mysql\"}) * 100 < 30) and on(service_name) (max by (service_name) (mysql_global_status_uptime) > 0)";
       for = "10m";
       no_data_state = "OK";
       custom_labels = {
@@ -64,7 +64,7 @@ let
     {
       name = "PXC Disk Usage Critical";
       group = "expression";
-      expr = "(node_filesystem_avail_bytes{mountpoint=~\"/var/lib/mysql|/data\"} / node_filesystem_size_bytes{mountpoint=~\"/var/lib/mysql|/data\"}) * 100 < 20";
+      expr = "((node_filesystem_avail_bytes{mountpoint=\"/var/lib/mysql\"} / node_filesystem_size_bytes{mountpoint=\"/var/lib/mysql\"}) * 100 < 20) and on(service_name) (max by (service_name) (mysql_global_status_uptime) > 0)";
       for = "5m";
       no_data_state = "OK";
       custom_labels = {
@@ -90,8 +90,8 @@ let
     {
       name = "PXC mysql_up Critical";
       group = "expression";
-      expr = "sum by (service_name)(mysql_up == 0) > 0";
-      for = "10m";
+      expr = "sum by (service_name)(mysql_up == 0) >= 2";
+      for = "5m";
       no_data_state = "OK";
       custom_labels = {
         severity = "critical";
@@ -129,7 +129,7 @@ let
     {
       name = "PXC CPU Busy Warning";
       group = "expression";
-      expr = "100 * (1 - avg by (service_name) (rate(node_cpu_seconds_total{mode=\"idle\"}[5m]))) > 85";
+      expr = "(100 * (1 - avg by (service_name) (rate(node_cpu_seconds_total{mode=\"idle\"}[5m]))) > 85) and on(service_name) (max by (service_name) (mysql_global_status_uptime) > 0)";
       for = "10m";
       no_data_state = "OK";
       custom_labels = {
@@ -142,7 +142,7 @@ let
     {
       name = "PXC CPU Busy Critical";
       group = "expression";
-      expr = "100 * (1 - avg by (service_name) (rate(node_cpu_seconds_total{mode=\"idle\"}[5m]))) > 95";
+      expr = "(100 * (1 - avg by (service_name) (rate(node_cpu_seconds_total{mode=\"idle\"}[5m]))) > 95) and on(service_name) (max by (service_name) (mysql_global_status_uptime) > 0)";
       for = "10m";
       no_data_state = "OK";
       custom_labels = {
@@ -155,7 +155,7 @@ let
     {
       name = "PXC CPU Steal Warning";
       group = "expression";
-      expr = "100 * avg by (service_name) (rate(node_cpu_seconds_total{mode=\"steal\"}[5m])) > 5";
+      expr = "(100 * avg by (service_name) (rate(node_cpu_seconds_total{mode=\"steal\"}[5m])) > 5) and on(service_name) (max by (service_name) (mysql_global_status_uptime) > 0)";
       for = "10m";
       no_data_state = "OK";
       custom_labels = {
@@ -168,7 +168,7 @@ let
     {
       name = "PXC CPU Steal Critical";
       group = "expression";
-      expr = "100 * avg by (service_name) (rate(node_cpu_seconds_total{mode=\"steal\"}[5m])) > 10";
+      expr = "(100 * avg by (service_name) (rate(node_cpu_seconds_total{mode=\"steal\"}[5m])) > 10) and on(service_name) (max by (service_name) (mysql_global_status_uptime) > 0)";
       for = "10m";
       no_data_state = "OK";
       custom_labels = {
@@ -181,7 +181,7 @@ let
     {
       name = "PXC Memory Available Warning";
       group = "expression";
-      expr = "((100 * (node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes)) < 8) and (((rate(node_vmstat_pswpin[5m]) + rate(node_vmstat_pswpout[5m])) > 10) or (rate(node_vmstat_pgmajfault[5m]) > 50))";
+      expr = "(((100 * (node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes)) < 8) and (((rate(node_vmstat_pswpin[5m]) + rate(node_vmstat_pswpout[5m])) > 10) or (rate(node_vmstat_pgmajfault[5m]) > 50))) and on(service_name) (max by (service_name) (mysql_global_status_uptime) > 0)";
       for = "10m";
       no_data_state = "OK";
       custom_labels = {
@@ -194,7 +194,7 @@ let
     {
       name = "PXC Memory Available Critical";
       group = "expression";
-      expr = "((100 * (node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes)) < 5) and (((rate(node_vmstat_pswpin[5m]) + rate(node_vmstat_pswpout[5m])) > 25) or (rate(node_vmstat_pgmajfault[5m]) > 200))";
+      expr = "(((100 * (node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes)) < 5) and (((rate(node_vmstat_pswpin[5m]) + rate(node_vmstat_pswpout[5m])) > 25) or (rate(node_vmstat_pgmajfault[5m]) > 200))) and on(service_name) (max by (service_name) (mysql_global_status_uptime) > 0)";
       for = "10m";
       no_data_state = "OK";
       custom_labels = {
@@ -207,7 +207,7 @@ let
     {
       name = "PXC Swap Activity Warning";
       group = "expression";
-      expr = "sum by (service_name) (rate(node_vmstat_pswpin[5m]) + rate(node_vmstat_pswpout[5m])) > 10";
+      expr = "(sum by (service_name) (rate(node_vmstat_pswpin[5m]) + rate(node_vmstat_pswpout[5m])) > 10) and on(service_name) (max by (service_name) (mysql_global_status_uptime) > 0)";
       for = "10m";
       no_data_state = "OK";
       custom_labels = {
@@ -220,7 +220,7 @@ let
     {
       name = "PXC Swap Activity Critical";
       group = "expression";
-      expr = "sum by (service_name) (rate(node_vmstat_pswpin[5m]) + rate(node_vmstat_pswpout[5m])) > 50";
+      expr = "(sum by (service_name) (rate(node_vmstat_pswpin[5m]) + rate(node_vmstat_pswpout[5m])) > 50) and on(service_name) (max by (service_name) (mysql_global_status_uptime) > 0)";
       for = "10m";
       no_data_state = "OK";
       custom_labels = {
@@ -233,7 +233,7 @@ let
     {
       name = "PXC Host OOM Kills Critical";
       group = "expression";
-      expr = "sum by (service_name) (increase(node_vmstat_oom_kill[10m])) > 0";
+      expr = "(sum by (service_name) (increase(node_vmstat_oom_kill[10m])) > 0) and on(service_name) (max by (service_name) (mysql_global_status_uptime) > 0)";
       for = "1m";
       no_data_state = "OK";
       custom_labels = {
@@ -272,7 +272,7 @@ let
     {
       name = "HAProxy Backend Capacity Degraded Warning";
       group = "expression";
-      expr = "sum by (service_name, proxy) (haproxy_server_up) < 2";
+      expr = "(sum by (service_name, proxy) (haproxy_server_up) / clamp_min(count by (service_name, proxy) (haproxy_server_up), 1)) < 1";
       for = "5m";
       no_data_state = "OK";
       custom_labels = {
@@ -324,7 +324,7 @@ let
     {
       name = "PXC Binlog Statement Cache Disk Spill Warning";
       group = "expression";
-      expr = "(sum by (service_name) (rate(mysql_global_status_binlog_stmt_cache_disk_use[15m])) / clamp_min(sum by (service_name) (rate(mysql_global_status_binlog_stmt_cache_use[15m])), 1)) > 0.05";
+      expr = "(sum by (service_name) (rate(mysql_global_status_binlog_stmt_cache_disk_use[15m])) / clamp_min(sum by (service_name) (rate(mysql_global_status_binlog_stmt_cache_use[15m])), 1)) > 0.1";
       for = "15m";
       no_data_state = "OK";
       custom_labels = {
@@ -337,7 +337,7 @@ let
     {
       name = "PXC Binlog Statement Cache Disk Spill Critical";
       group = "expression";
-      expr = "(sum by (service_name) (rate(mysql_global_status_binlog_stmt_cache_disk_use[15m])) / clamp_min(sum by (service_name) (rate(mysql_global_status_binlog_stmt_cache_use[15m])), 1)) > 0.2";
+      expr = "(sum by (service_name) (rate(mysql_global_status_binlog_stmt_cache_disk_use[15m])) / clamp_min(sum by (service_name) (rate(mysql_global_status_binlog_stmt_cache_use[15m])), 1)) > 0.3";
       for = "15m";
       no_data_state = "OK";
       custom_labels = {
