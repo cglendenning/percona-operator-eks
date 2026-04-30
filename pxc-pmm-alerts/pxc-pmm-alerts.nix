@@ -348,32 +348,6 @@ let
       folder_uid = "__MYSQL_FOLDER_UID__";
     }
     {
-      name = "PXC Binlog Volume Space Warning";
-      group = "expression";
-      expr = "((node_filesystem_avail_bytes{mountpoint=~\"/var/lib/mysql|/data\"} / node_filesystem_size_bytes{mountpoint=~\"/var/lib/mysql|/data\"}) * 100 < 30) and on(service_name) (max by (service_name) (mysql_global_variables_log_bin) >= 1)";
-      for = "10m";
-      no_data_state = "OK";
-      custom_labels = {
-        severity = "warning";
-        route = "default";
-        managed_by = "pxc-pmm-alerts-controller";
-      };
-      folder_uid = "__MYSQL_FOLDER_UID__";
-    }
-    {
-      name = "PXC Binlog Volume Space Critical";
-      group = "expression";
-      expr = "((node_filesystem_avail_bytes{mountpoint=~\"/var/lib/mysql|/data\"} / node_filesystem_size_bytes{mountpoint=~\"/var/lib/mysql|/data\"}) * 100 < 20) and on(service_name) (max by (service_name) (mysql_global_variables_log_bin) >= 1)";
-      for = "10m";
-      no_data_state = "OK";
-      custom_labels = {
-        severity = "critical";
-        route = "pagerduty";
-        managed_by = "pxc-pmm-alerts-controller";
-      };
-      folder_uid = "__MYSQL_FOLDER_UID__";
-    }
-    {
       name = "Galera Flow Control Warning";
       group = "expression";
       expr = "avg by (service_name)(rate(mysql_global_status_wsrep_flow_control_paused_ns[5m]) / 1e9) > 0.3";
