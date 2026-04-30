@@ -350,7 +350,7 @@ let
     {
       name = "PXC Binlog Volume Space Warning";
       group = "expression";
-      expr = "(node_filesystem_avail_bytes{mountpoint=~\"/var/lib/mysql|/data\"} / node_filesystem_size_bytes{mountpoint=~\"/var/lib/mysql|/data\"}) * 100 < 30";
+      expr = "((node_filesystem_avail_bytes{mountpoint=~\"/var/lib/mysql|/data\"} / node_filesystem_size_bytes{mountpoint=~\"/var/lib/mysql|/data\"}) * 100 < 30) and on(service_name) (max by (service_name) (mysql_global_variables_log_bin) >= 1)";
       for = "10m";
       no_data_state = "OK";
       custom_labels = {
@@ -363,7 +363,7 @@ let
     {
       name = "PXC Binlog Volume Space Critical";
       group = "expression";
-      expr = "(node_filesystem_avail_bytes{mountpoint=~\"/var/lib/mysql|/data\"} / node_filesystem_size_bytes{mountpoint=~\"/var/lib/mysql|/data\"}) * 100 < 20";
+      expr = "((node_filesystem_avail_bytes{mountpoint=~\"/var/lib/mysql|/data\"} / node_filesystem_size_bytes{mountpoint=~\"/var/lib/mysql|/data\"}) * 100 < 20) and on(service_name) (max by (service_name) (mysql_global_variables_log_bin) >= 1)";
       for = "10m";
       no_data_state = "OK";
       custom_labels = {
