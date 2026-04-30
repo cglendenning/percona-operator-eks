@@ -20,21 +20,6 @@ let
      Placeholder `__MYSQL_FOLDER_UID__` is replaced at runtime by the controller if present in JSON strings. */
   alertRules = [
     {
-      folder_uid = "__MYSQL_FOLDER_UID__";
-      template_name = "pmm_mysql_down";
-      name = "MySQL Instance Down";
-      group = "template";
-      params = [ ];
-      for = "60s";
-      severity = "SEVERITY_CRITICAL";
-      custom_labels = {
-        source = "pxc-pmm";
-        route = "pagerduty";
-        managed_by = "pxc-pmm-alerts-controller";
-      };
-      filters = [ ];
-    }
-    {
       name = "No MySQL Instances Monitored";
       group = "expression";
       expr = "absent(mysql_global_status_uptime)";
