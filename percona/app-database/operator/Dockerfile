@@ -1,4 +1,6 @@
-FROM python:3.11-slim
+ARG BUILDPLATFORM
+ARG TARGETPLATFORM
+FROM --platform=$BUILDPLATFORM python:3.11-slim AS builder
 
 WORKDIR /app
 
@@ -9,6 +11,11 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Copy operator code
 COPY operator.py .
 COPY handlers/ ./handlers/
+
+FROM --platform=$TARGETPLATFORM python:3.11-slim
+WORKDIR /app
+COPY --from=builder /usr/local /usr/local
+COPY --from=builder /app /app
 
 # Run as non-root user
 RUN adduser --disabled-password --gecos "" dbconcierge && \

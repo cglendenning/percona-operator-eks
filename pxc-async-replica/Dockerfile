@@ -3,7 +3,9 @@
 #        kind load docker-image pxc-async-replica-controller:latest --name …
 #        (image name must match Deployment image)
 
-FROM node:20-bookworm-slim AS builder
+ARG BUILDPLATFORM
+ARG TARGETPLATFORM
+FROM --platform=$BUILDPLATFORM node:20-bookworm-slim AS builder
 WORKDIR /build
 
 COPY package.json package-lock.json ./
@@ -16,7 +18,7 @@ RUN npm run build \
     --bundle --platform=node --target=node20 --format=cjs \
     --outfile=/build/bundle.cjs
 
-FROM node:20-bookworm-slim AS runtime
+FROM --platform=$TARGETPLATFORM node:20-bookworm-slim AS runtime
 WORKDIR /
 ENV NODE_ENV=production
 # Debian image: system CA bundle path (matches prior Nix image env hint)

@@ -4,7 +4,11 @@
 #   docker build -f dr-dashboard/eks/Dockerfile -t dr-dashboard-eks .
 
 # Build stage
-FROM golang:1.21-alpine AS builder
+ARG BUILDPLATFORM
+ARG TARGETPLATFORM
+ARG TARGETOS
+ARG TARGETARCH
+FROM --platform=$BUILDPLATFORM golang:1.21-alpine AS builder
 
 WORKDIR /build
 
@@ -14,10 +18,10 @@ COPY dr-dashboard/eks/go.mod ./
 RUN go mod download 2>/dev/null || true
 
 COPY dr-dashboard/eks/main.go ./
-RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags="-w -s" -o dr-dashboard main.go
+RUN CGO_ENABLED=0 GOOS=${TARGETOS:-linux} GOARCH=${TARGETARCH} go build -ldflags="-w -s" -o dr-dashboard main.go
 
 # Runtime stage
-FROM alpine:3.19
+FROM --platform=$TARGETPLATFORM alpine:3.19
 
 RUN apk add --no-cache ca-certificates tzdata
 RUN addgroup -S appgroup && adduser -S appuser -G appgroup
