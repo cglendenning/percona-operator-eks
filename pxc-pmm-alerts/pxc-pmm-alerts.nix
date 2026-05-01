@@ -34,6 +34,32 @@ let
       folder_uid = "__MYSQL_FOLDER_UID__";
     }
     {
+      name = "PMM Server Data Volume Space Warning";
+      group = "expression";
+      expr = "(node_filesystem_avail_bytes{mountpoint=\"/srv\"} / node_filesystem_size_bytes{mountpoint=\"/srv\"}) * 100 < 30";
+      for = "10m";
+      no_data_state = "OK";
+      custom_labels = {
+        severity = "warning";
+        route = "default";
+        managed_by = "pxc-pmm-alerts-controller";
+      };
+      folder_uid = "__MYSQL_FOLDER_UID__";
+    }
+    {
+      name = "PMM Server Data Volume Space Critical";
+      group = "expression";
+      expr = "(node_filesystem_avail_bytes{mountpoint=\"/srv\"} / node_filesystem_size_bytes{mountpoint=\"/srv\"}) * 100 < 20";
+      for = "5m";
+      no_data_state = "OK";
+      custom_labels = {
+        severity = "critical";
+        route = "pagerduty";
+        managed_by = "pxc-pmm-alerts-controller";
+      };
+      folder_uid = "__MYSQL_FOLDER_UID__";
+    }
+    {
       name = "PXC Disk Usage Warning";
       group = "expression";
       expr = "((node_filesystem_avail_bytes{mountpoint=\"/var/lib/mysql\"} / node_filesystem_size_bytes{mountpoint=\"/var/lib/mysql\"}) * 100 < 30) and on(service_name) (max by (service_name) (mysql_global_status_uptime) > 0)";
