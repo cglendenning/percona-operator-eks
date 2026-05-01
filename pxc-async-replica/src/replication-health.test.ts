@@ -6,6 +6,7 @@ import {
   formatSlaveStatusLogLine,
   isCatchingUpLag,
   replicationBroken,
+  slaveErrorsSuggestMissingSourceBinlogs,
   slaveIoSqlRunning,
   slaveLooksHealthy,
 } from "./replication-health";
@@ -17,6 +18,8 @@ function s(partial: Partial<SlaveStatus>): SlaveStatus {
     secondsBehind: partial.secondsBehind ?? null,
     relayMasterLogFile: partial.relayMasterLogFile ?? "",
     execMasterLogPos: partial.execMasterLogPos ?? null,
+    sourceLogFile: partial.sourceLogFile ?? "",
+    readSourceLogPos: partial.readSourceLogPos ?? null,
     lastIoError: partial.lastIoError ?? "",
     lastSqlError: partial.lastSqlError ?? "",
     lastErrno: partial.lastErrno ?? null,
@@ -169,5 +172,36 @@ describe("formatSlaveStatusLogLine", () => {
   it("renders null lag as the string null", () => {
     const line = formatSlaveStatusLogLine(s({ ioRunning: "Yes", sqlRunning: "Yes", secondsBehind: null }));
     assert.match(line, /lag=nulls/);
+  });
+
+  it("includes IO read coordinates when present", () => {
+    const line = formatSlaveStatusLogLine(
+      s({
+        ioRunning: "Connecting",
+        sqlRunning: "Yes",
+        secondsBehind: null,
+        relayMasterLogFile: "mysql-bin.000010",
+        execMasterLogPos: 99,
+        sourceLogFile: "mysql-bin.000011",
+        readSourceLogPos: 4,
+      })
+    );
+    assert.match(line, /ioRead=mysql-bin\.000011:4/);
+  });
+});
+
+describe("slaveErrorsSuggestMissingSourceBinlogs", () => {
+  it("is true for common binlog / purge wording", () => {
+    assert.equal(
+      slaveErrorsSuggestMissingSourceBinlogs(
+        s({ lastIoError: "binlog file mysql-bin.000042 not found", lastSqlError: "" })
+      ),
+      true
+    );
+    assert.equal(slaveErrorsSuggestMissingSourceBinlogs(s({ lastIoError: "", lastSqlError: "Error 1236" })), true);
+  });
+
+  it("is false for unrelated errors", () => {
+    assert.equal(slaveErrorsSuggestMissingSourceBinlogs(s({ lastIoError: "Access denied", lastSqlError: "" })), false);
   });
 });

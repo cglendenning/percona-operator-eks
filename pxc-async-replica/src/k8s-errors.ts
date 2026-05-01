@@ -2,6 +2,21 @@ function truncate(s: string, n: number): string {
   return s.length > n ? `${s.slice(0, n)}…(truncated ${s.length - n} chars)` : s;
 }
 
+function httpStatusFromUnknown(err: unknown): number | undefined {
+  const e = err as { code?: number; statusCode?: number; response?: { statusCode?: number } };
+  return e.code ?? e.statusCode ?? e.response?.statusCode;
+}
+
+/** Namespaced GET returned 404. */
+export function isK8sNotFound(err: unknown): boolean {
+  return httpStatusFromUnknown(err) === 404;
+}
+
+/** Create returned 409 AlreadyExists. */
+export function isK8sConflict(err: unknown): boolean {
+  return httpStatusFromUnknown(err) === 409;
+}
+
 export function formatK8sError(err: unknown): string {
   const maybeApi = err as { code?: number; body?: unknown; message?: string; headers?: Record<string, string> };
   if (typeof maybeApi?.code === "number" && "body" in maybeApi) {

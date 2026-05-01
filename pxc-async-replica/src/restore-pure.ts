@@ -11,3 +11,7 @@ export function parseS3Bucket(destination: string): string {
 export function matchesRunningRestoreState(state: string | undefined): boolean {
   return state === "Starting" || state === "Running";
 }
+
+export function isTerminalRestoreFailureState(state: string | undefined): boolean {
+  return state === "Failed" || state === "Error";
+}

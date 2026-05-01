@@ -186,6 +186,10 @@ let
                   value: "60"
                 - name: MAX_REPLICATION_LAG_SECONDS
                   value: "5"
+                - name: REPLICATION_SOURCE_RETRY_COUNT
+                  value: "100000"
+                - name: REPLICATION_SOURCE_CONNECT_RETRY
+                  value: "10"
                 - name: SELF_HEAL_FAILURE_THRESHOLD
                   value: "3"
   '';

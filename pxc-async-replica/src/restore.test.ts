@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { matchesRunningRestoreState, parseS3Bucket } from "./restore-pure";
+import { isTerminalRestoreFailureState, matchesRunningRestoreState, parseS3Bucket } from "./restore-pure";
 
 describe("parseS3Bucket", () => {
   it("extracts bucket from s3:// URL", () => {
@@ -20,5 +20,14 @@ describe("matchesRunningRestoreState", () => {
     assert.equal(matchesRunningRestoreState("Running"), true);
     assert.equal(matchesRunningRestoreState("Succeeded"), false);
     assert.equal(matchesRunningRestoreState(undefined), false);
+  });
+});
+
+describe("isTerminalRestoreFailureState", () => {
+  it("matches Failed and Error", () => {
+    assert.equal(isTerminalRestoreFailureState("Failed"), true);
+    assert.equal(isTerminalRestoreFailureState("Error"), true);
+    assert.equal(isTerminalRestoreFailureState("Running"), false);
+    assert.equal(isTerminalRestoreFailureState(undefined), false);
   });
 });

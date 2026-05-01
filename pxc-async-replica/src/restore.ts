@@ -1,12 +1,12 @@
 import type * as k8s from "@kubernetes/client-node";
 import type { Obj } from "./types";
-import { formatK8sError } from "./k8s-errors";
+import { formatK8sError, isK8sNotFound } from "./k8s-errors";
 import { log, sleep } from "./log";
 import { getPxcSpec } from "./replication";
 import { isPxcClusterReadyBody } from "./pxc-cluster-ready";
 import { matchesRunningRestoreState, parseS3Bucket } from "./restore-pure";
 
-export { matchesRunningRestoreState, parseS3Bucket } from "./restore-pure";
+export { isTerminalRestoreFailureState, matchesRunningRestoreState, parseS3Bucket } from "./restore-pure";
 
 export async function restoreInProgress(custom: k8s.CustomObjectsApi, args: { pxcApiVersion: string; ns: string }): Promise<boolean> {
   const resp = (await custom.listNamespacedCustomObject({
@@ -22,6 +22,68 @@ export async function restoreInProgress(custom: k8s.CustomObjectsApi, args: { px
     if (matchesRunningRestoreState(state)) return true;
   }
   return false;
+}
+
+/** Full restore object, or null if the CR does not exist. */
+export async function getRestoreCr(
+  custom: k8s.CustomObjectsApi,
+  args: { pxcApiVersion: string; ns: string; restoreName: string }
+): Promise<Obj | null> {
+  try {
+    const resp = (await custom.getNamespacedCustomObject({
+      group: "pxc.percona.com",
+      version: args.pxcApiVersion,
+      namespace: args.ns,
+      plural: "perconaxtradbclusterrestores",
+      name: args.restoreName,
+    })) as Obj;
+    return resp;
+  } catch (e: unknown) {
+    if (isK8sNotFound(e)) return null;
+    throw e;
+  }
+}
+
+export async function deleteRestoreCr(
+  custom: k8s.CustomObjectsApi,
+  args: { pxcApiVersion: string; ns: string; restoreName: string }
+): Promise<void> {
+  try {
+    await custom.deleteNamespacedCustomObject({
+      group: "pxc.percona.com",
+      version: args.pxcApiVersion,
+      namespace: args.ns,
+      plural: "perconaxtradbclusterrestores",
+      name: args.restoreName,
+    });
+    log(`Deleted restore CR ${args.restoreName} in ns=${args.ns}`);
+  } catch (e: unknown) {
+    if (isK8sNotFound(e)) return;
+    throw e;
+  }
+}
+
+export async function waitUntilRestoreCrAbsent(args: {
+  custom: k8s.CustomObjectsApi;
+  pxcApiVersion: string;
+  ns: string;
+  restoreName: string;
+  timeoutMs: number;
+  pollMs: number;
+  isShuttingDown: () => boolean;
+}): Promise<void> {
+  const start = Date.now();
+  while (!args.isShuttingDown() && Date.now() - start < args.timeoutMs) {
+    const still = await getRestoreCr(args.custom, {
+      pxcApiVersion: args.pxcApiVersion,
+      ns: args.ns,
+      restoreName: args.restoreName,
+    });
+    if (!still) return;
+    await sleep(args.pollMs);
+  }
+  if (args.isShuttingDown()) throw new Error("Shutdown while waiting for restore CR deletion");
+  throw new Error(`Timed out after ${args.timeoutMs}ms waiting for restore CR ${args.restoreName} to be removed`);
 }
 
 export async function createRestoreFromS3Destination(

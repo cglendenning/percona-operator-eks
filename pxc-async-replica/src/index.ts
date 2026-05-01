@@ -23,9 +23,12 @@ async function main(): Promise<void> {
         process.exit(1);
       }
       recoverableAttempt += 1;
-      const delay = Math.min(60_000, Math.round(2000 * Math.pow(1.35, Math.min(recoverableAttempt, 14))));
+      const errText = formatK8sError(e);
+      const baseDelay = Math.min(60_000, Math.round(2000 * Math.pow(1.35, Math.min(recoverableAttempt, 14))));
+      /** Restore failures must not use the short outer backoff (they bypass in-loop re-seed cooldown if thrown unexpectedly). */
+      const delay = /Restore did not succeed/i.test(errText) ? Math.max(baseDelay, 300_000) : baseDelay;
       log(
-        `Recoverable error; restarting controller after backoff (attempt ${recoverableAttempt}, sleep ${delay}ms): ${formatK8sError(e)}`
+        `Recoverable error; restarting controller after backoff (attempt ${recoverableAttempt}, sleep ${delay}ms): ${errText}`
       );
       const step = 500;
       let waited = 0;

@@ -128,3 +128,17 @@ export async function findLatestBackupS3Destination(args: {
     chosenPrefix: `${bestFolder}/`,
   };
 }
+
+/**
+ * Interprets `db-YYYY-MM-DD-HH:MM:SS-full` folder name (with or without trailing slash) as UTC wall time from the name.
+ * Returns milliseconds since Unix epoch, or null if the shape does not match.
+ */
+export function parseBackupWallTimeUtcMsFromFolderPrefix(prefixOrFolder: string): number | null {
+  const folder = normalizeFolderPrefix(prefixOrFolder);
+  try {
+    const p = parseBackupParts(`${folder}/`);
+    return Date.UTC(p.y, p.mo - 1, p.d, p.h, p.mi, p.s);
+  } catch {
+    return null;
+  }
+}

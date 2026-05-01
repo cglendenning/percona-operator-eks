@@ -13,6 +13,14 @@ export type SlaveStatus = {
    * Position within `relayMasterLogFile` (`Exec_Master_Log_Pos` or MySQL 8.4+ `Exec_Source_Log_Pos`).
    */
   execMasterLogPos: number | null;
+  /**
+   * Binlog file the IO thread is (or was) reading from the source (`Source_Log_File` / `Master_Log_File`).
+   */
+  sourceLogFile: string;
+  /**
+   * Position in `sourceLogFile` for the IO thread (`Read_Source_Log_Pos` / `Read_Master_Log_Pos`).
+   */
+  readSourceLogPos: number | null;
   lastIoError: string;
   lastSqlError: string;
   lastErrno: number | null;
@@ -97,6 +105,27 @@ export function mergeUserAndPasswordIntoMysqlUrl(urlStr: string, user: string, p
   return u.toString();
 }
 
+/** Replaces hostname and port on a mysql/mysql2 URL; user/password/path unchanged. */
+export function applyMysqlHostPortToBaseUrl(baseUrlStr: string, host: string, port: number): string {
+  const h = host.trim();
+  if (!h) throw new Error("MySQL host must be non-empty");
+  if (!Number.isFinite(port) || port <= 0 || port > 65535) {
+    throw new Error(`MySQL port must be 1-65535 (got ${JSON.stringify(port)})`);
+  }
+  let u: URL;
+  try {
+    u = new URL(baseUrlStr);
+  } catch {
+    throw new Error(`MySQL URL is not a valid URL`);
+  }
+  if (u.protocol !== "mysql:" && u.protocol !== "mysql2:") {
+    throw new Error(`MySQL URL must use mysql:// or mysql2:// (got ${JSON.stringify(u.protocol)})`);
+  }
+  u.hostname = h;
+  u.port = String(port);
+  return u.toString();
+}
+
 function sqlStringLiteral(s: string): string {
   return `'${s.replace(/'/g, "''")}'`;
 }
@@ -141,6 +170,18 @@ function slaveStatusFromShowStatusRow(r: Record<string, unknown>): SlaveStatus {
       r["Exec_Master_Log_Pos"] ??
       r["exec_master_log_pos"]
   );
+  const sourceLogFile = asString(
+    r["Source_Log_File"] ??
+      r["source_log_file"] ??
+      r["Master_Log_File"] ??
+      r["master_log_file"]
+  );
+  const readSourceLogPos = asNumberOrNull(
+    r["Read_Source_Log_Pos"] ??
+      r["read_source_log_pos"] ??
+      r["Read_Master_Log_Pos"] ??
+      r["read_master_log_pos"]
+  );
 
   return {
     ioRunning: io,
@@ -148,6 +189,8 @@ function slaveStatusFromShowStatusRow(r: Record<string, unknown>): SlaveStatus {
     secondsBehind: sbm,
     relayMasterLogFile: relayFile,
     execMasterLogPos: execPos,
+    sourceLogFile,
+    readSourceLogPos,
     lastIoError: asString(r["Last_IO_Error"] ?? r["last_io_error"]),
     lastSqlError: asString(r["Last_SQL_Error"] ?? r["last_sql_error"]),
     lastErrno: asNumberOrNull(r["Last_SQL_Errno"] ?? r["last_sql_errno"]),

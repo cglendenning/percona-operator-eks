@@ -1,10 +1,10 @@
-import * as crypto from "crypto";
 import * as fs from "fs";
 import * as k8s from "@kubernetes/client-node";
 import type { Obj } from "./types";
 import { log, sleep } from "./log";
-import { formatK8sError } from "./k8s-errors";
+import { formatK8sError, isK8sConflict } from "./k8s-errors";
 import {
+  applyMysqlHostPortToBaseUrl,
   createMysqlPoolFromUrl,
   execSql,
   mergeUserAndPasswordIntoMysqlUrl,
@@ -13,7 +13,11 @@ import {
   type SlaveStatus,
 } from "./mysql";
 import type { Pool } from "mysql2/promise";
-import { findLatestBackupS3Destination, type S3ClientConfig } from "./s3-latest-backup";
+import {
+  findLatestBackupS3Destination,
+  parseBackupWallTimeUtcMsFromFolderPrefix,
+  type S3ClientConfig,
+} from "./s3-latest-backup";
 import {
   buildDesiredReplicationChannels,
   getClusterReady,
@@ -26,16 +30,26 @@ import {
   formatSlaveStatusLogLine,
   isCatchingUpLag,
   replicationBroken,
+  slaveErrorsSuggestMissingSourceBinlogs,
   slaveLooksHealthy,
   type AppliedExecCoords,
 } from "./replication-health";
 import {
   createRestoreFromS3Destination,
+  deleteRestoreCr,
+  getRestoreCr,
+  isTerminalRestoreFailureState,
   restoreInProgress,
   waitRestoreSucceededAndClusterReady,
+  waitUntilRestoreCrAbsent,
 } from "./restore";
 import { K8S_PATCH_CONTENT_TYPE_OPTIONS } from "./k8s-patch-options";
-import type { SourceEntry } from "./channel-normalize";
+import {
+  extractReplicationSourcesFromPxcBody,
+  pickPreferredReplicationSource,
+  type ReplicationChannelConnectConfig,
+  type SourceEntry,
+} from "./channel-normalize";
 import { waitUntilTrue } from "./wait-until";
 import { retryWithBackoff } from "./transient-errors";
 
@@ -84,9 +98,16 @@ function assertMysqlIdentifier(name: string, label: string): string {
   return name;
 }
 
-function randomIdent(prefix: string): string {
-  const rnd = crypto.randomBytes(4).toString("hex");
-  return `${prefix}_${rnd}`;
+/** PerconaXtraDBClusterRestore metadata.name (RFC 1123 subdomain, lowercase). */
+function assertBootstrapRestoreCrName(name: string, label: string): string {
+  const n = name.trim();
+  if (n.length < 1 || n.length > 253) {
+    throw new Error(`${label} length must be 1-253, got ${n.length}`);
+  }
+  if (!/^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$/.test(n)) {
+    throw new Error(`${label} must be a lowercase RFC 1123 subdomain, got ${JSON.stringify(n)}`);
+  }
+  return n;
 }
 
 function sqlString(s: string): string {
@@ -129,6 +150,16 @@ export async function runController(): Promise<void> {
 
   const SOURCE_PORT = parseIntEnv("SOURCE_PORT", 3306);
   const SOURCE_WEIGHT = parseIntEnv("SOURCE_WEIGHT", 100);
+  /** Percona `replicationChannels[].configuration.sourceRetryCount` (default was 3 in operator). */
+  const REPLICATION_SOURCE_RETRY_COUNT = Math.min(
+    999_999_999,
+    Math.max(1, parseIntEnv("REPLICATION_SOURCE_RETRY_COUNT", 100_000))
+  );
+  /** Percona `replicationChannels[].configuration.sourceConnectRetry` — seconds between reconnect tries (operator default 60). */
+  const REPLICATION_SOURCE_CONNECT_RETRY = Math.min(
+    86_400,
+    Math.max(1, parseIntEnv("REPLICATION_SOURCE_CONNECT_RETRY", 10))
+  );
   const PXC_API_VERSION = envOptional("PXC_API_VERSION", "v1");
 
   const READY_TIMEOUT_SEC = parseIntEnv("READY_TIMEOUT_SECONDS", 3600);
@@ -159,8 +190,23 @@ export async function runController(): Promise<void> {
   /** Secret data key holding the REPLICA user password (default `root`). */
   const REPLICA_MYSQL_PASSWORD_SECRET_KEY = envOptional("REPLICA_MYSQL_PASSWORD_SECRET_KEY", "root");
   const E2E_DB = assertMysqlIdentifier(envOptional("REPLICATION_E2E_DATABASE", "mysql"), "REPLICATION_E2E_DATABASE");
+  const E2E_TABLE = assertMysqlIdentifier(
+    envOptional("REPLICATION_E2E_TABLE", "pxc_async_replica_test"),
+    "REPLICATION_E2E_TABLE"
+  );
+  const BOOTSTRAP_RESTORE_CR_NAME = assertBootstrapRestoreCrName(
+    envOptional("PXC_BOOTSTRAP_RESTORE_CR_NAME", "async-replica-bootstrap"),
+    "PXC_BOOTSTRAP_RESTORE_CR_NAME"
+  );
+  const RESTORE_DELETE_WAIT_MS = parseIntEnv("RESTORE_DELETE_WAIT_MS", 120_000);
+  /** Total wall time between re-seed attempts (Phase A restore or post-reseed phases): steps × step duration. Default 5×1m = 5m. */
+  const RESEED_RETRY_STEP_MS = parseIntEnv("RESEED_RETRY_STEP_MS", 60_000);
+  const RESEED_RETRY_STEPS = parseIntEnv("RESEED_RETRY_STEPS", 5);
+  const BINLOG_GAP_ADVICE_COOLDOWN_MS = parseIntEnv("BINLOG_GAP_ADVICE_COOLDOWN_MS", 600_000);
 
   let shuttingDown = false;
+  let lastBinlogGapAdviceAt = 0;
+  let lastBinlogGapAdviceFp = "";
   const shutdown = () => {
     shuttingDown = true;
     log("SIGTERM/SIGINT received, shutting down gracefully");
@@ -187,7 +233,7 @@ export async function runController(): Promise<void> {
   if (!dbRootData) throw new Error(`Secret ${DB_ROOT_USERS_SECRET} has no data`);
 
   const sourceMysqlPassword = decodeSecretData(dbRootData, SOURCE_MYSQL_PASSWORD_SECRET_KEY);
-  const sourceMysqlUrl = mergeUserAndPasswordIntoMysqlUrl(
+  const sourceMysqlUrlFromEnv = mergeUserAndPasswordIntoMysqlUrl(
     SOURCE_MYSQL_URL_BASE,
     SOURCE_MYSQL_USER,
     sourceMysqlPassword
@@ -204,12 +250,57 @@ export async function runController(): Promise<void> {
     port: SOURCE_PORT,
     weight: SOURCE_WEIGHT,
   }));
-  const desiredChannels = buildDesiredReplicationChannels({ channelName: CHANNEL_NAME, sources });
+  const replicationConnectConfig: ReplicationChannelConnectConfig = {
+    sourceRetryCount: REPLICATION_SOURCE_RETRY_COUNT,
+    sourceConnectRetry: REPLICATION_SOURCE_CONNECT_RETRY,
+  };
+  const desiredChannels = buildDesiredReplicationChannels({
+    channelName: CHANNEL_NAME,
+    sources,
+    connectConfig: replicationConnectConfig,
+  });
   const pxcRef = { pxcApiVersion: PXC_API_VERSION, ns: DEST_NS, cluster: PXC_CLUSTER } as const;
+
+  const SOURCE_RESOLVE_FROM_CLUSTER = parseBoolEnv("SOURCE_RESOLVE_FROM_CLUSTER", true);
+  let lastLoggedSourceEndpoint = "";
+
+  /**
+   * MySQL URL for the async **source** used by E2E and SOURCE GATE. When {@link SOURCE_RESOLVE_FROM_CLUSTER}
+   * is true, host/port are taken from the live `PerconaXtraDBCluster` `spec.pxc.replicationChannels` entry
+   * for {@link CHANNEL_NAME} (same sources the operator configured for replication), not only `SOURCE_MYSQL_URL`.
+   */
+  async function resolveActiveSourceMysqlUrl(): Promise<string> {
+    if (!SOURCE_RESOLVE_FROM_CLUSTER) return sourceMysqlUrlFromEnv;
+    const body = await getPxcSpec(custom, pxcRef);
+    const live = extractReplicationSourcesFromPxcBody(body, CHANNEL_NAME, SOURCE_PORT);
+    if (live && live.length > 0) {
+      const pick = pickPreferredReplicationSource(live);
+      const withHost = applyMysqlHostPortToBaseUrl(SOURCE_MYSQL_URL_BASE, pick.host, pick.port);
+      const merged = mergeUserAndPasswordIntoMysqlUrl(withHost, SOURCE_MYSQL_USER, sourceMysqlPassword);
+      const tag = `${pick.host}:${pick.port}`;
+      if (tag !== lastLoggedSourceEndpoint) {
+        lastLoggedSourceEndpoint = tag;
+        log(
+          `SOURCE MySQL from live replicationChannels[${CHANNEL_NAME}]: ${tag} ` +
+            `(preferred of ${live.length} source(s) by weight, then host name)`
+        );
+      }
+      return merged;
+    }
+    if (lastLoggedSourceEndpoint !== "__env__") {
+      lastLoggedSourceEndpoint = "__env__";
+      log(
+        `SOURCE MySQL from env (no usable spec.pxc.replicationChannels sourcesList for channel ${CHANNEL_NAME})`
+      );
+    }
+    return sourceMysqlUrlFromEnv;
+  }
 
   log(
     `pxc-async-replica-controller starting destNs=${DEST_NS} cluster=${PXC_CLUSTER} channel=${CHANNEL_NAME} ` +
       `SOURCE_HOSTS(${allHosts.length})=${allHosts.join(",")} replicationHosts(${hostsForReplication.length})=${hostsForReplication.join(",")} ` +
+      `SOURCE_RESOLVE_FROM_CLUSTER=${SOURCE_RESOLVE_FROM_CLUSTER} ` +
+      `REPLICATION_SOURCE_RETRY_COUNT=${REPLICATION_SOURCE_RETRY_COUNT} REPLICATION_SOURCE_CONNECT_RETRY=${REPLICATION_SOURCE_CONNECT_RETRY}s ` +
       `dbRootSecret=${DB_ROOT_USERS_SECRET} (SOURCE password key=${SOURCE_MYSQL_PASSWORD_SECRET_KEY}) SOURCE_MYSQL_USER=${SOURCE_MYSQL_USER} ` +
       `(REPLICA password key=${REPLICA_MYSQL_PASSWORD_SECRET_KEY}) REPLICA_MYSQL_USER=${REPLICA_MYSQL_USER} ` +
       `S3_ENDPOINT=${S3_ENDPOINT} S3_BUCKET=${S3_BUCKET} S3_PREFIX=${S3_PREFIX || "<none>"} S3_BACKUP_FOLDER_PREFIX=${S3_BACKUP_FOLDER_PREFIX}`
@@ -244,12 +335,6 @@ export async function runController(): Promise<void> {
   }
 
   async function restoreFromLatestSeaweedBackup(): Promise<boolean> {
-    if (await restoreInProgress(custom, { pxcApiVersion: pxcRef.pxcApiVersion, ns: pxcRef.ns })) {
-      log("Restore already in progress in this namespace; waiting for cluster ready (external restore)");
-      await waitClusterReadyOrThrow();
-      return false;
-    }
-
     const s3cfg = loadS3CfgFromDbRootSecret();
     const listPrefix = `${S3_PREFIX}${S3_BACKUP_FOLDER_PREFIX}`;
     const latest = await findLatestBackupS3Destination({
@@ -259,21 +344,92 @@ export async function runController(): Promise<void> {
     });
     log(`Selected latest backup destination=${latest.destination} (chosenPrefix=${latest.chosenPrefix}, listPrefix=${JSON.stringify(listPrefix)})`);
 
-    const restoreName = `async-replica-restore-${new Date().toISOString().replace(/[-:.TZ]/g, "").slice(0, 14)}`;
+    const restoreName = BOOTSTRAP_RESTORE_CR_NAME;
 
-    await createRestoreFromS3Destination(custom, {
+    const existingEarly = await getRestoreCr(custom, {
       pxcApiVersion: pxcRef.pxcApiVersion,
       ns: pxcRef.ns,
-      cluster: pxcRef.cluster,
       restoreName,
-      destination: latest.destination,
-      s3: {
-        credentialsSecret: DB_ROOT_USERS_SECRET,
-        region: S3_REGION,
-        endpointUrl: S3_ENDPOINT,
-        forcePathStyle: S3_FORCE_PATH_STYLE,
-      },
     });
+    if (existingEarly) {
+      const stEarly = (existingEarly.status as Obj | undefined)?.state;
+      const stateEarly = typeof stEarly === "string" ? stEarly : "";
+      const destEarly = (() => {
+        const spec = existingEarly.spec as Obj | undefined;
+        const src = spec?.backupSource as Obj | undefined;
+        return typeof src?.destination === "string" ? src.destination : undefined;
+      })();
+      const staleSucceeded =
+        stateEarly === "Succeeded" && destEarly !== undefined && destEarly !== latest.destination;
+      if (isTerminalRestoreFailureState(stateEarly) || staleSucceeded) {
+        const reason = staleSucceeded
+          ? `backup source changed (stored=${JSON.stringify(destEarly)} latest=${JSON.stringify(latest.destination)})`
+          : `state=${JSON.stringify(stateEarly)}`;
+        log(`Removing bootstrap restore CR ${restoreName} (${reason}) before retry`);
+        await deleteRestoreCr(custom, {
+          pxcApiVersion: pxcRef.pxcApiVersion,
+          ns: pxcRef.ns,
+          restoreName,
+        });
+        await waitUntilRestoreCrAbsent({
+          custom,
+          pxcApiVersion: pxcRef.pxcApiVersion,
+          ns: pxcRef.ns,
+          restoreName,
+          timeoutMs: RESTORE_DELETE_WAIT_MS,
+          pollMs: POLL_MS,
+          isShuttingDown: () => shuttingDown,
+        });
+      }
+    }
+
+    if (await restoreInProgress(custom, { pxcApiVersion: pxcRef.pxcApiVersion, ns: pxcRef.ns })) {
+      log("Restore already in progress in this namespace; waiting for cluster ready (external restore)");
+      await waitClusterReadyOrThrow();
+      return false;
+    }
+
+    const existing = await getRestoreCr(custom, {
+      pxcApiVersion: pxcRef.pxcApiVersion,
+      ns: pxcRef.ns,
+      restoreName,
+    });
+    let needCreate = true;
+    if (existing) {
+      const st = (existing.status as Obj | undefined)?.state;
+      const state = typeof st === "string" ? st : "";
+      if (state === "Starting" || state === "Running" || state === "Succeeded") {
+        log(`Reusing existing restore CR ${restoreName} state=${state || "(empty)"}`);
+        needCreate = false;
+      } else if (!isTerminalRestoreFailureState(state) && state !== "") {
+        log(`Restore CR ${restoreName} in state=${JSON.stringify(state)}; will poll without creating a duplicate`);
+        needCreate = false;
+      }
+    }
+
+    if (needCreate) {
+      try {
+        await createRestoreFromS3Destination(custom, {
+          pxcApiVersion: pxcRef.pxcApiVersion,
+          ns: pxcRef.ns,
+          cluster: pxcRef.cluster,
+          restoreName,
+          destination: latest.destination,
+          s3: {
+            credentialsSecret: DB_ROOT_USERS_SECRET,
+            region: S3_REGION,
+            endpointUrl: S3_ENDPOINT,
+            forcePathStyle: S3_FORCE_PATH_STYLE,
+          },
+        });
+      } catch (e: unknown) {
+        if (isK8sConflict(e)) {
+          log(`Restore CR ${restoreName} already exists (409); adopting and polling status`);
+        } else {
+          throw e;
+        }
+      }
+    }
 
     const result = await waitRestoreSucceededAndClusterReady({
       custom,
@@ -290,6 +446,49 @@ export async function runController(): Promise<void> {
       throw new Error(`Restore did not succeed (result=${result}, restore=${restoreName})`);
     }
     return true;
+  }
+
+  /**
+   * When replica errors look like missing/purged source binlogs, log stream coordinates vs latest DR/S3 backup
+   * so operators can tell when the gap is past the newest restorable snapshot (must wait for a newer backup).
+   */
+  async function logBinlogGapVersusLatestDrBackupIfRelevant(s: SlaveStatus, reason: string): Promise<void> {
+    if (!slaveErrorsSuggestMissingSourceBinlogs(s)) return;
+    const fp = `${s.lastIoError}|${s.lastSqlError}|${s.relayMasterLogFile}|${s.execMasterLogPos ?? ""}|${s.sourceLogFile}|${s.readSourceLogPos ?? ""}`;
+    const now = Date.now();
+    if (fp === lastBinlogGapAdviceFp && now - lastBinlogGapAdviceAt < BINLOG_GAP_ADVICE_COOLDOWN_MS) return;
+    lastBinlogGapAdviceFp = fp;
+    lastBinlogGapAdviceAt = now;
+
+    log(
+      `BINLOG_GAP (${reason}): errors suggest source binary logs are unavailable. Stream position: SQL applied through ` +
+        `${s.relayMasterLogFile}:${s.execMasterLogPos ?? "null"}; IO thread read ` +
+        `${s.sourceLogFile || "(unknown)"}:${s.readSourceLogPos ?? "null"}. ` +
+        `Last_IO_Error=${JSON.stringify(s.lastIoError)} Last_SQL_Error=${JSON.stringify(s.lastSqlError)}`
+    );
+
+    try {
+      const s3cfg = loadS3CfgFromDbRootSecret();
+      const listPrefix = `${S3_PREFIX}${S3_BACKUP_FOLDER_PREFIX}`;
+      const latest = await findLatestBackupS3Destination({
+        cfg: s3cfg,
+        bucket: S3_BUCKET,
+        prefix: listPrefix.length > 0 ? listPrefix : undefined,
+      });
+      const tsMs = parseBackupWallTimeUtcMsFromFolderPrefix(latest.chosenPrefix);
+      const iso = tsMs !== null ? new Date(tsMs).toISOString() : "unknown";
+      log(
+        `BINLOG_GAP: latest DR/S3 full backup used for re-seed is ${JSON.stringify(latest.chosenPrefix)} ` +
+          `(folder timestamp ≈ ${iso} UTC). destination=${latest.destination}`
+      );
+      log(
+        `BINLOG_GAP: If the first missing or unavailable events on the source binlog stream are **after** that backup time, ` +
+          `a restore from this snapshot cannot bring the replica fully current until a **newer** full backup exists on the filer. ` +
+          `The controller picks the newest S3 prefix on each re-seed; when a backup newer than ${iso} UTC is published, the next restore can succeed.`
+      );
+    } catch (e: unknown) {
+      log(`BINLOG_GAP: could not list latest DR backup for comparison: ${formatK8sError(e)}`);
+    }
   }
 
   async function applyReplicationIfNeeded(): Promise<void> {
@@ -336,24 +535,28 @@ export async function runController(): Promise<void> {
   }
 
   /**
-   * Row-level write probe: DDL + INSERT on source, verify on replica, DROP on source, verify cleanup.
+   * Row-level write probe: ensure fixed E2E table exists, TRUNCATE + INSERT on source, verify on replica,
+   * TRUNCATE on source, verify empty on replica. Reuses a single table name (default pxc_async_replica_test);
+   * no per-run random DDL names.
    * Not a read-only check; requires privileges on `REPLICATION_E2E_DATABASE`.
    */
   async function validateReplication(): Promise<void> {
-    const sourcePool = createMysqlPoolFromUrl(sourceMysqlUrl);
+    const sourceMysqlUrlActive = await resolveActiveSourceMysqlUrl();
+    const sourcePool = createMysqlPoolFromUrl(sourceMysqlUrlActive);
     const replicaPool = createMysqlPoolFromUrl(replicaMysqlUrl);
 
-    const table = randomIdent("async_rep_e2e");
-    const fqtn = `\`${E2E_DB}\`.\`${table}\``;
+    const fqtn = `${E2E_DB}.${E2E_TABLE}`;
+    const rowCountSql = `SELECT COUNT(*) FROM ${fqtn}`;
 
     try {
-      log(`E2E: creating table ${fqtn} on SOURCE and inserting a row (database=${E2E_DB})`);
+      log(`E2E: ensuring table ${fqtn} on SOURCE, truncate, insert probe row (database=${E2E_DB})`);
       await runE2eStep("SOURCE", "CREATE DATABASE IF NOT EXISTS", () =>
-        execSql(sourcePool, `CREATE DATABASE IF NOT EXISTS \`${E2E_DB}\``)
+        execSql(sourcePool, `CREATE DATABASE IF NOT EXISTS ${E2E_DB}`)
       );
-      await runE2eStep("SOURCE", "CREATE TABLE", () =>
-        execSql(sourcePool, `CREATE TABLE ${fqtn} (id INT PRIMARY KEY, note VARCHAR(128))`)
+      await runE2eStep("SOURCE", "CREATE TABLE IF NOT EXISTS", () =>
+        execSql(sourcePool, `CREATE TABLE IF NOT EXISTS ${fqtn} (id INT PRIMARY KEY, note VARCHAR(128))`)
       );
+      await runE2eStep("SOURCE", "TRUNCATE before probe", () => execSql(sourcePool, `TRUNCATE TABLE ${fqtn}`));
       const note = `hello-${Date.now()}`;
       await runE2eStep("SOURCE", "INSERT test row", () =>
         execSql(sourcePool, `INSERT INTO ${fqtn} (id, note) VALUES (1, ${sqlString(note)})`)
@@ -380,33 +583,29 @@ export async function runController(): Promise<void> {
       }
       log("E2E: replicated row verified on REPLICA");
 
-      log(`E2E: dropping table ${fqtn} on SOURCE`);
-      await runE2eStep("SOURCE", "DROP TABLE", () => execSql(sourcePool, `DROP TABLE IF EXISTS ${fqtn}`));
+      log(`E2E: truncating ${fqtn} on SOURCE after successful probe`);
+      await runE2eStep("SOURCE", "TRUNCATE after probe", () => execSql(sourcePool, `TRUNCATE TABLE ${fqtn}`));
 
-      log("E2E: waiting for DROP to replicate to REPLICA");
-      const ischemaWhere = `table_schema='${E2E_DB.replace(/'/g, "''")}' AND table_name='${table.replace(/'/g, "''")}'`;
-      const tableCountSql = `SELECT COUNT(*) FROM information_schema.tables WHERE ${ischemaWhere}`;
-      const dropOk = await waitUntilTrue({
+      log("E2E: waiting for TRUNCATE to replicate to REPLICA (row count 0)");
+      const emptyOk = await waitUntilTrue({
         pollMs: 500,
         deadlineMs: READY_TIMEOUT_SEC * 1000,
         isShuttingDown: () => shuttingDown,
         predicate: async () => {
           try {
-            return (await scalarString(replicaPool, tableCountSql)) === "0";
+            return (await scalarString(replicaPool, rowCountSql)) === "0";
           } catch (e: unknown) {
-            throw e2eFail("REPLICA", "information_schema table count after DROP (poll)", e);
+            throw e2eFail("REPLICA", "SELECT row count after TRUNCATE (poll)", e);
           }
         },
       });
-      if (dropOk) {
-        log("E2E: drop replicated; cleanup verified");
+      if (emptyOk) {
+        log("E2E: truncate replicated; table empty on REPLICA");
         return;
       }
 
-      const cnt2 = await runE2eStep("REPLICA", "information_schema table count (final read)", () =>
-        scalarString(replicaPool, tableCountSql)
-      );
-      throw new Error(`E2E REPLICA: table still present after DROP wait (information_schema count=${cnt2})`);
+      const cnt2 = await runE2eStep("REPLICA", "SELECT row count (final read)", () => scalarString(replicaPool, rowCountSql));
+      throw new Error(`E2E REPLICA: table not empty after TRUNCATE wait (row count=${cnt2})`);
     } finally {
       await sourcePool.end().catch(() => {});
       await replicaPool.end().catch(() => {});
@@ -423,7 +622,8 @@ export async function runController(): Promise<void> {
     while (!shuttingDown) {
       attempt += 1;
       try {
-        const p = createMysqlPoolFromUrl(sourceMysqlUrl);
+        const url = await resolveActiveSourceMysqlUrl();
+        const p = createMysqlPoolFromUrl(url);
         try {
           await scalarString(p, "SELECT 1");
         } finally {
@@ -464,15 +664,18 @@ export async function runController(): Promise<void> {
     }
   }
 
-  async function waitReseedRetryWindow(): Promise<void> {
-    for (let remaining = 5; remaining >= 1 && !shuttingDown; remaining--) {
-      log(`Last re-seed attempt failed. Will try again in ${remaining} min${remaining === 1 ? "" : "s"}...`);
+  async function waitReseedRetryWindow(reason: string): Promise<void> {
+    const totalMin = (RESEED_RETRY_STEPS * RESEED_RETRY_STEP_MS) / 60_000;
+    log(
+      `${reason} Waiting ${RESEED_RETRY_STEPS}×${RESEED_RETRY_STEP_MS / 1000}s (~${totalMin} min total) before next re-seed attempt.`
+    );
+    for (let step = 1; step <= RESEED_RETRY_STEPS && !shuttingDown; step++) {
+      log(`  re-seed cooldown step ${step}/${RESEED_RETRY_STEPS}`);
       let waited = 0;
-      const delayMs = 60_000;
-      while (!shuttingDown && waited < delayMs) {
-        const step = Math.min(1000, delayMs - waited);
-        await sleep(step);
-        waited += step;
+      while (!shuttingDown && waited < RESEED_RETRY_STEP_MS) {
+        const chunk = Math.min(1000, RESEED_RETRY_STEP_MS - waited);
+        await sleep(chunk);
+        waited += chunk;
       }
     }
   }
@@ -499,7 +702,15 @@ export async function runController(): Promise<void> {
 
     while (!shuttingDown) {
       if (args.context === "BOOTSTRAP") log("Phase A: restore latest backup from Seaweed S3 (if needed)");
-      const reseedPerformed = await restoreFromLatestSeaweedBackup();
+      let reseedPerformed: boolean;
+      try {
+        reseedPerformed = await restoreFromLatestSeaweedBackup();
+      } catch (e: unknown) {
+        const detail = e instanceof Error ? e.message : formatK8sError(e);
+        log(`${args.context}: Phase A restore-from-latest failed: ${detail}. Applying re-seed cooldown before retry.`);
+        await waitReseedRetryWindow(`${args.context}:`);
+        continue;
+      }
 
       let stage: PostReseedStage = "cluster_ready";
       try {
@@ -522,15 +733,15 @@ export async function runController(): Promise<void> {
         if (stage === "validate_replication_e2e") {
           log(
             `${args.context}: replication validation failed despite a full re-seed: ${detail}. ` +
-              "Entering 5-minute retry window before attempting another re-seed."
+              "Entering re-seed cooldown before attempting another re-seed."
           );
         } else {
           log(
             `${args.context}: post-reseed step failed before replication validation ` +
-              `(stage=${stageLabel(stage)}): ${detail}. Entering 5-minute retry window before attempting another re-seed.`
+              `(stage=${stageLabel(stage)}): ${detail}. Entering re-seed cooldown before attempting another re-seed.`
           );
         }
-        await waitReseedRetryWindow();
+        await waitReseedRetryWindow(`${args.context}:`);
       }
     }
   }
@@ -640,6 +851,9 @@ export async function runController(): Promise<void> {
         if (recovered) return;
       }
       log("SELF-HEAL: escalating to full restore-from-latest-backup");
+      if (st && replicationBroken(st) && slaveErrorsSuggestMissingSourceBinlogs(st)) {
+        await logBinlogGapVersusLatestDrBackupIfRelevant(st, "SELF-HEAL before restore-from-latest");
+      }
       await reseedThenValidateWithRetry({ pool: args.replicaPool, context: "SELF-HEAL" });
     }
   }
@@ -676,6 +890,9 @@ export async function runController(): Promise<void> {
         log("HEALTH: SHOW REPLICA STATUS returned no rows");
       } else {
         log(`HEALTH: ${formatSlaveStatusLogLine(s)}`);
+        if (replicationBroken(s) && slaveErrorsSuggestMissingSourceBinlogs(s)) {
+          await logBinlogGapVersusLatestDrBackupIfRelevant(s, "HEALTH periodic");
+        }
       }
 
       const catchingUp = !!s && isCatchingUpLag(s, MAX_LAG_SECONDS, previousAppliedCoords);
@@ -701,6 +918,9 @@ export async function runController(): Promise<void> {
         } else {
           failStreak += 1;
           log(`HEALTH: still unhealthy after source reachability gate (failStreak=${failStreak}); running self-heal`);
+          if (s2 && replicationBroken(s2) && slaveErrorsSuggestMissingSourceBinlogs(s2)) {
+            await logBinlogGapVersusLatestDrBackupIfRelevant(s2, "HEALTH post source-gate");
+          }
           await selfHealReplication({ replicaPool, attempt: failStreak });
         }
       }

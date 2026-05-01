@@ -2,7 +2,13 @@ import type * as k8s from "@kubernetes/client-node";
 import type { Obj } from "./types";
 import { formatK8sError } from "./k8s-errors";
 import { log } from "./log";
-import { buildDesiredChannels, channelsMatchSpec, normalizeChannels, type SourceEntry } from "./channel-normalize";
+import {
+  buildDesiredChannels,
+  channelsMatchSpec,
+  normalizeChannels,
+  type ReplicationChannelConnectConfig,
+  type SourceEntry,
+} from "./channel-normalize";
 import { K8S_PATCH_CONTENT_TYPE_OPTIONS } from "./k8s-patch-options";
 import { isPxcClusterReadyBody } from "./pxc-cluster-ready";
 
@@ -29,8 +35,12 @@ export async function getClusterReady(custom: k8s.CustomObjectsApi, args: { pxcA
   return isPxcClusterReadyBody(body);
 }
 
-export function buildDesiredReplicationChannels(args: { channelName: string; sources: SourceEntry[] }): Obj[] {
-  return buildDesiredChannels(args.channelName, args.sources) as Obj[];
+export function buildDesiredReplicationChannels(args: {
+  channelName: string;
+  sources: SourceEntry[];
+  connectConfig: ReplicationChannelConnectConfig;
+}): Obj[] {
+  return buildDesiredChannels(args.channelName, args.sources, args.connectConfig) as Obj[];
 }
 
 export async function patchReplicationChannels(
@@ -47,7 +57,11 @@ export async function patchReplicationChannels(
 
   const ch0 = args.channels[0] as Obj | undefined;
   const nSources = Array.isArray(ch0?.sourcesList) ? (ch0.sourcesList as Obj[]).length : 0;
-  log(`Patching ${args.cluster} with replicationChannels (${nSources} source host(s) in channel)`);
+  const cfg = ch0?.configuration;
+  log(
+    `Patching ${args.cluster} with replicationChannels (${nSources} source host(s) in channel)` +
+      (cfg !== undefined && cfg !== null ? ` configuration=${JSON.stringify(cfg)}` : "")
+  );
 
   await custom.patchNamespacedCustomObject(
     {

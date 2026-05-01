@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import {
+  applyMysqlHostPortToBaseUrl,
   buildShowReplicaStatusForChannelSql,
   mergePasswordIntoMysqlUrl,
   mergeUserAndPasswordIntoMysqlUrl,
@@ -71,5 +72,21 @@ describe("mergePasswordIntoMysqlUrl", () => {
 
   it("rejects non-mysql protocols", () => {
     assert.throws(() => mergePasswordIntoMysqlUrl("https://x/", "p"), /mysql:\/\/ or mysql2:\/\//);
+  });
+});
+
+describe("applyMysqlHostPortToBaseUrl", () => {
+  it("replaces host and port", () => {
+    const out = applyMysqlHostPortToBaseUrl("mysql://root:pw@oldhost:1111/mysql", "newhost", 3308);
+    const u = new URL(out);
+    assert.equal(u.hostname, "newhost");
+    assert.equal(u.port, "3308");
+    assert.equal(u.username, "root");
+    assert.equal(u.password, "pw");
+    assert.equal(u.pathname, "/mysql");
+  });
+
+  it("rejects invalid port", () => {
+    assert.throws(() => applyMysqlHostPortToBaseUrl("mysql://u@h/db", "x", 0), /1-65535/);
   });
 });

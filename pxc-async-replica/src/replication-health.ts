@@ -57,8 +57,18 @@ export function formatSlaveStatusLogLine(s: SlaveStatus): string {
     s.relayMasterLogFile && s.execMasterLogPos != null
       ? ` applied=${s.relayMasterLogFile}:${s.execMasterLogPos}`
       : "";
+  const ioRead =
+    s.sourceLogFile && s.readSourceLogPos != null ? ` ioRead=${s.sourceLogFile}:${s.readSourceLogPos}` : "";
   return (
-    `IO=${s.ioRunning} SQL=${s.sqlRunning} lag=${s.secondsBehind ?? "null"}s${applied} ` +
+    `IO=${s.ioRunning} SQL=${s.sqlRunning} lag=${s.secondsBehind ?? "null"}s${applied}${ioRead} ` +
     `ioErr=${JSON.stringify(s.lastIoError)} sqlErr=${JSON.stringify(s.lastSqlError)}`
+  );
+}
+
+/** Heuristic: replica errors indicate the source binlog stream is missing or unreadable (purge, rotation, path). */
+export function slaveErrorsSuggestMissingSourceBinlogs(s: SlaveStatus): boolean {
+  const t = `${s.lastIoError} ${s.lastSqlError}`;
+  return /binlog|binary log|log file|Could not find|could not find|first log file|does not exist|was not found|purged|rotated away|ER_MASTER_FATAL_ERROR_READING_BINLOG|1236|connecting to source|failed to open/i.test(
+    t
   );
 }

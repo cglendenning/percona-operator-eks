@@ -4,6 +4,14 @@ export type Obj = Record<string, unknown>;
 
 export type SourceEntry = { host: string; port: number; weight: number };
 
+/** `spec.pxc.replicationChannels[].configuration` (replica / `isSource: false` only). */
+export type ReplicationChannelConnectConfig = {
+  /** Number of times the replica retries a failed source connection (operator default 3). */
+  sourceRetryCount: number;
+  /** Seconds to wait between reconnection attempts (operator default 60). */
+  sourceConnectRetry: number;
+};
+
 /** Recursively sort object keys so JSON comparison is order-insensitive. */
 export function sortKeysDeep(val: unknown): unknown {
   if (val === null || val === undefined) return val;
@@ -40,17 +48,80 @@ export function channelsMatchSpec(actual: unknown, expected: Obj[]): boolean {
 
 export function buildDesiredChannels(
   channelName: string,
-  sources: SourceEntry[]
+  sources: SourceEntry[],
+  connectConfig?: ReplicationChannelConnectConfig
 ): Obj[] {
-  return [
-    {
-      name: channelName,
-      isSource: false,
-      sourcesList: sources.map((s) => ({
-        host: s.host,
-        port: s.port,
-        weight: s.weight,
-      })),
-    },
-  ];
+  const ch: Obj = {
+    name: channelName,
+    isSource: false,
+    sourcesList: sources.map((s) => ({
+      host: s.host,
+      port: s.port,
+      weight: s.weight,
+    })),
+  };
+  if (connectConfig) {
+    ch.configuration = {
+      sourceRetryCount: connectConfig.sourceRetryCount,
+      sourceConnectRetry: connectConfig.sourceConnectRetry,
+    };
+  }
+  return [ch];
+}
+
+function parsePortOr(p: unknown, fallback: number): number {
+  const n = typeof p === "number" ? p : typeof p === "string" ? parseInt(p, 10) : NaN;
+  return Number.isFinite(n) && n > 0 && n <= 65535 ? n : fallback;
+}
+
+function parseWeightOr(w: unknown): number {
+  const n = typeof w === "number" ? w : typeof w === "string" ? parseInt(w, 10) : NaN;
+  return Number.isFinite(n) ? n : 100;
+}
+
+/**
+ * Reads `spec.pxc.replicationChannels` for the named channel (live cluster spec).
+ * Returns null if missing, wrong shape, or no usable sources.
+ */
+export function extractReplicationSourcesFromPxcBody(
+  body: unknown,
+  channelName: string,
+  defaultPort: number
+): SourceEntry[] | null {
+  if (body === null || typeof body !== "object") return null;
+  const spec = (body as Obj).spec;
+  if (spec === null || typeof spec !== "object") return null;
+  const pxc = (spec as Obj).pxc;
+  if (pxc === null || typeof pxc !== "object") return null;
+  const chans = (pxc as Obj).replicationChannels;
+  if (!Array.isArray(chans)) return null;
+  const want = channelName.trim();
+  if (!want) return null;
+  for (const ch of chans as Obj[]) {
+    if (asString(ch.name) !== want) continue;
+    const list = ch.sourcesList;
+    if (!Array.isArray(list) || list.length === 0) return null;
+    const out: SourceEntry[] = [];
+    for (const s of list as Obj[]) {
+      const host = asString(s.host).trim();
+      if (!host) continue;
+      out.push({
+        host,
+        port: parsePortOr(s.port, defaultPort),
+        weight: parseWeightOr(s.weight),
+      });
+    }
+    return out.length > 0 ? out : null;
+  }
+  return null;
+}
+
+/** Prefer highest weight, then lexicographically smallest host (deterministic). */
+export function pickPreferredReplicationSource(sources: SourceEntry[]): SourceEntry {
+  if (sources.length === 0) throw new Error("pickPreferredReplicationSource: empty sources");
+  const sorted = [...sources].sort((a, b) => {
+    if (b.weight !== a.weight) return b.weight - a.weight;
+    return a.host.localeCompare(b.host);
+  });
+  return sorted[0]!;
 }
