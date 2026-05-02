@@ -384,6 +384,59 @@ let
       };
       folder_uid = "__MYSQL_FOLDER_UID__";
     }
+    # Async / traditional replication (targets with mysql_slave_status_* / replica_* only; PXC primaries without a replica channel do not match).
+    {
+      name = "MySQL Async Replication Down Warning";
+      group = "expression";
+      expr = "max by (service_name, channel) ( (mysql_slave_status_slave_io_running == bool 0) or (mysql_slave_status_slave_sql_running == bool 0) or (mysql_slave_status_replica_io_running == bool 0) or (mysql_slave_status_replica_sql_running == bool 0) ) > 0";
+      for = "5m";
+      no_data_state = "OK";
+      custom_labels = {
+        severity = "warning";
+        route = "default";
+        managed_by = "pxc-pmm-alerts-controller";
+      };
+      folder_uid = "__MYSQL_FOLDER_UID__";
+    }
+    {
+      name = "MySQL Async Replication Down Critical";
+      group = "expression";
+      expr = "max by (service_name, channel) ( (mysql_slave_status_slave_io_running == bool 0) or (mysql_slave_status_slave_sql_running == bool 0) or (mysql_slave_status_replica_io_running == bool 0) or (mysql_slave_status_replica_sql_running == bool 0) ) > 0";
+      for = "15m";
+      no_data_state = "OK";
+      custom_labels = {
+        severity = "critical";
+        route = "pagerduty";
+        managed_by = "pxc-pmm-alerts-controller";
+      };
+      folder_uid = "__MYSQL_FOLDER_UID__";
+    }
+    {
+      name = "MySQL Async Replication Lag Warning";
+      group = "expression";
+      expr = "( max by (service_name, channel) ( mysql_slave_status_seconds_behind_master or mysql_slave_status_seconds_behind_source ) > 60 ) and on (service_name, channel) ( (max by (service_name, channel) (mysql_slave_status_slave_io_running or mysql_slave_status_replica_io_running)) == 1 ) and on (service_name, channel) ( (max by (service_name, channel) (mysql_slave_status_slave_sql_running or mysql_slave_status_replica_sql_running)) == 1 )";
+      for = "1m";
+      no_data_state = "OK";
+      custom_labels = {
+        severity = "warning";
+        route = "default";
+        managed_by = "pxc-pmm-alerts-controller";
+      };
+      folder_uid = "__MYSQL_FOLDER_UID__";
+    }
+    {
+      name = "MySQL Async Replication Lag Critical";
+      group = "expression";
+      expr = "( max by (service_name, channel) ( mysql_slave_status_seconds_behind_master or mysql_slave_status_seconds_behind_source ) > 300 ) and on (service_name, channel) ( (max by (service_name, channel) (mysql_slave_status_slave_io_running or mysql_slave_status_replica_io_running)) == 1 ) and on (service_name, channel) ( (max by (service_name, channel) (mysql_slave_status_slave_sql_running or mysql_slave_status_replica_sql_running)) == 1 )";
+      for = "1m";
+      no_data_state = "OK";
+      custom_labels = {
+        severity = "critical";
+        route = "pagerduty";
+        managed_by = "pxc-pmm-alerts-controller";
+      };
+      folder_uid = "__MYSQL_FOLDER_UID__";
+    }
   ];
 
   objects = [

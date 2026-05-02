@@ -48,6 +48,19 @@ npm test
 
 The controller adds **`pxc_pmm_managed_digest`** to **`custom_labels`** when posting template rules; do not rely on setting that key yourself.
 
+### Built-in MySQL async replication alerts (`pxc-pmm-alerts.nix`)
+
+The generated `rules.json` includes four **`expr`** rules that only evaluate targets exposing **`mysql_slave_status_*`** / **`mysql_slave_status_replica_*`** (traditional async replication collected by **`mysqld_exporter`**). PXC instances without a configured replica channel normally have **no** matching series, so they do not satisfy these predicates.
+
+| Rule | Condition | `for` |
+|------|-----------|-------|
+| **MySQL Async Replication Down Warning** | IO or SQL thread not running (`== bool 0`) | **5m** |
+| **MySQL Async Replication Down Critical** | Same PromQL | **15m** |
+| **MySQL Async Replication Lag Warning** | Lag `> 60s`, both threads `== 1` | **1m** |
+| **MySQL Async Replication Lag Critical** | Lag `> 300s`, both threads `== 1` | **1m** |
+
+Lag uses `mysql_slave_status_seconds_behind_master` **or** `mysql_slave_status_seconds_behind_source` for MySQL 8.x naming. Confirm exact metric names in **Grafana Explore** for your PMM / MySQL version before treating silence as proof of health.
+
 ### Limitations
 
 - **Template rules:** Sync uses a **digest of ConfigMap-controlled fields** plus the Grafana alert title. Edits in the PMM/Grafana UI that leave those fields (and the managed digest label) unchanged may **not** trigger a resync until you change `rules.json`. Expr rules are compared on **title, for, expr, no_data_state, and non-injected labels**; changes only to Grafana-only query metadata may not trigger a repost until something in that set differs.
