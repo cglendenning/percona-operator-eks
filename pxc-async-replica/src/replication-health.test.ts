@@ -4,11 +4,14 @@ import type { SlaveStatus } from "./mysql";
 import {
   appliedCoordsAdvanced,
   formatSlaveStatusLogLine,
+  ioOkSqlNotRunning,
   isCatchingUpLag,
   replicationBroken,
+  secondsRemainingUntilDeadline,
   slaveErrorsSuggestMissingSourceBinlogs,
   slaveIoSqlRunning,
   slaveLooksHealthy,
+  sqlErrorSuggestsApplierWorkerTable,
 } from "./replication-health";
 
 function s(partial: Partial<SlaveStatus>): SlaveStatus {
@@ -31,6 +34,39 @@ describe("slaveIoSqlRunning", () => {
     assert.equal(slaveIoSqlRunning(s({ ioRunning: "Yes", sqlRunning: "Yes" })), true);
     assert.equal(slaveIoSqlRunning(s({ ioRunning: "Yes", sqlRunning: "Connecting" })), false);
     assert.equal(slaveIoSqlRunning(s({ ioRunning: "No", sqlRunning: "Yes" })), false);
+  });
+});
+
+describe("ioOkSqlNotRunning", () => {
+  it("is true only when IO Yes and SQL not Yes", () => {
+    assert.equal(ioOkSqlNotRunning(s({ ioRunning: "Yes", sqlRunning: "No" })), true);
+    assert.equal(ioOkSqlNotRunning(s({ ioRunning: "Yes", sqlRunning: "Connecting" })), true);
+    assert.equal(ioOkSqlNotRunning(s({ ioRunning: "Yes", sqlRunning: "Yes" })), false);
+    assert.equal(ioOkSqlNotRunning(s({ ioRunning: "No", sqlRunning: "No" })), false);
+  });
+});
+
+describe("secondsRemainingUntilDeadline", () => {
+  it("floors at zero and rounds up to whole seconds", () => {
+    assert.equal(secondsRemainingUntilDeadline(10_500, 8000), 3);
+    assert.equal(secondsRemainingUntilDeadline(8000, 8000), 0);
+    assert.equal(secondsRemainingUntilDeadline(7000, 8000), 0);
+  });
+});
+
+describe("sqlErrorSuggestsApplierWorkerTable", () => {
+  it("is true when Last_SQL_Error references replication_applier_status_by_worker", () => {
+    assert.equal(
+      sqlErrorSuggestsApplierWorkerTable(
+        "Coordinator stopped because there were error(s) in the worker(s). See error log and/or performance_schema.replication_applier_status_by_worker table for more details."
+      ),
+      true
+    );
+  });
+
+  it("is false for empty or unrelated messages", () => {
+    assert.equal(sqlErrorSuggestsApplierWorkerTable(""), false);
+    assert.equal(sqlErrorSuggestsApplierWorkerTable("duplicate key"), false);
   });
 });
 

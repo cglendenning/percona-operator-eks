@@ -1,8 +1,10 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
+import type { Pool } from "mysql2/promise";
 import {
   applyMysqlHostPortToBaseUrl,
   buildShowReplicaStatusForChannelSql,
+  fetchReplicationApplierStatusByWorker,
   mergePasswordIntoMysqlUrl,
   mergeUserAndPasswordIntoMysqlUrl,
 } from "./mysql";
@@ -88,5 +90,29 @@ describe("applyMysqlHostPortToBaseUrl", () => {
 
   it("rejects invalid port", () => {
     assert.throws(() => applyMysqlHostPortToBaseUrl("mysql://u@h/db", "x", 0), /1-65535/);
+  });
+});
+
+describe("fetchReplicationApplierStatusByWorker", () => {
+  it("returns rows on success", async () => {
+    const pool = {
+      async query() {
+        return [[{ CHANNEL_NAME: "ch", THREAD_ID: 42, LAST_ERROR_MESSAGE: "dup key" }], []];
+      },
+    } as unknown as Pool;
+    const r = await fetchReplicationApplierStatusByWorker(pool);
+    assert.equal(r.ok, true);
+    if (r.ok) assert.equal(r.rows.length, 1);
+  });
+
+  it("returns error message on query failure", async () => {
+    const pool = {
+      async query() {
+        throw new Error("denied");
+      },
+    } as unknown as Pool;
+    const r = await fetchReplicationApplierStatusByWorker(pool);
+    assert.equal(r.ok, false);
+    if (!r.ok) assert.match(r.message, /denied/);
   });
 });

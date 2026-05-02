@@ -8,6 +8,16 @@ export function slaveIoSqlRunning(s: SlaveStatus): boolean {
   return s.ioRunning === "Yes" && s.sqlRunning === "Yes";
 }
 
+/** IO thread is `Yes` but the SQL/applier thread is not (stopped, error, connecting, etc.). */
+export function ioOkSqlNotRunning(s: SlaveStatus): boolean {
+  return s.ioRunning === "Yes" && s.sqlRunning !== "Yes";
+}
+
+/** Seconds until `deadlineMs`, floored at zero (for poll-timeout countdowns). */
+export function secondsRemainingUntilDeadline(deadlineMs: number, nowMs: number = Date.now()): number {
+  return Math.max(0, Math.ceil((deadlineMs - nowMs) / 1000));
+}
+
 export function slaveLooksHealthy(s: SlaveStatus, maxLagSeconds: number): boolean {
   if (!slaveIoSqlRunning(s)) return false;
   if (s.secondsBehind === null) return false;
@@ -63,6 +73,16 @@ export function formatSlaveStatusLogLine(s: SlaveStatus): string {
     `IO=${s.ioRunning} SQL=${s.sqlRunning} lag=${s.secondsBehind ?? "null"}s${applied}${ioRead} ` +
     `ioErr=${JSON.stringify(s.lastIoError)} sqlErr=${JSON.stringify(s.lastSqlError)}`
   );
+}
+
+/**
+ * True when `Last_SQL_Error` tells the operator to inspect
+ * `performance_schema.replication_applier_status_by_worker` for the concrete failure.
+ */
+export function sqlErrorSuggestsApplierWorkerTable(lastSqlError: string): boolean {
+  const t = lastSqlError.trim();
+  if (!t) return false;
+  return /replication_applier_status_by_worker/i.test(t);
 }
 
 /** Heuristic: replica errors indicate the source binlog stream is missing or unreadable (purge, rotation, path). */

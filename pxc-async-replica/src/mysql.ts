@@ -203,6 +203,27 @@ export async function readReplicaSlaveStatus(pool: Pool, replicationChannelName:
   return slaveStatusFromShowStatusRow(rows[0] as Record<string, unknown>);
 }
 
+export type ReplicationApplierWorkerQueryResult =
+  | { ok: true; rows: Record<string, unknown>[] }
+  | { ok: false; message: string };
+
+/**
+ * Reads parallel replication applier worker rows (errors often appear here when
+ * `Last_SQL_Error` only points at this table).
+ */
+export async function fetchReplicationApplierStatusByWorker(pool: Pool): Promise<ReplicationApplierWorkerQueryResult> {
+  try {
+    const [rows] = await pool.query(
+      "SELECT * FROM performance_schema.replication_applier_status_by_worker ORDER BY THREAD_ID"
+    );
+    if (!Array.isArray(rows)) return { ok: true, rows: [] };
+    return { ok: true, rows: rows as Record<string, unknown>[] };
+  } catch (e: unknown) {
+    const message = e instanceof Error ? e.message : String(e);
+    return { ok: false, message };
+  }
+}
+
 export async function execSql(pool: Pool, sql: string): Promise<void> {
   await pool.query(sql);
 }

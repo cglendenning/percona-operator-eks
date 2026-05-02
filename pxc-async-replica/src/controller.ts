@@ -7,6 +7,7 @@ import {
   applyMysqlHostPortToBaseUrl,
   createMysqlPoolFromUrl,
   execSql,
+  fetchReplicationApplierStatusByWorker,
   mergeUserAndPasswordIntoMysqlUrl,
   readReplicaSlaveStatus,
   scalarString,
@@ -28,10 +29,13 @@ import {
 import {
   appliedCoordsFromSlave,
   formatSlaveStatusLogLine,
+  ioOkSqlNotRunning,
   isCatchingUpLag,
   replicationBroken,
+  secondsRemainingUntilDeadline,
   slaveErrorsSuggestMissingSourceBinlogs,
   slaveLooksHealthy,
+  sqlErrorSuggestsApplierWorkerTable,
   type AppliedExecCoords,
 } from "./replication-health";
 import {
@@ -203,10 +207,13 @@ export async function runController(): Promise<void> {
   const RESEED_RETRY_STEP_MS = parseIntEnv("RESEED_RETRY_STEP_MS", 60_000);
   const RESEED_RETRY_STEPS = parseIntEnv("RESEED_RETRY_STEPS", 5);
   const BINLOG_GAP_ADVICE_COOLDOWN_MS = parseIntEnv("BINLOG_GAP_ADVICE_COOLDOWN_MS", 600_000);
+  /** Min interval between dumps of `performance_schema.replication_applier_status_by_worker` (tight loops use this). */
+  const APPLIER_WORKER_LOG_COOLDOWN_MS = parseIntEnv("REPLICATION_APPLIER_WORKER_LOG_COOLDOWN_MS", 60_000);
 
   let shuttingDown = false;
   let lastBinlogGapAdviceAt = 0;
   let lastBinlogGapAdviceFp = "";
+  let lastApplierWorkerDetailAt = 0;
   const shutdown = () => {
     shuttingDown = true;
     log("SIGTERM/SIGINT received, shutting down gracefully");
@@ -519,6 +526,27 @@ export async function runController(): Promise<void> {
     }
   }
 
+  /**
+   * When `Last_SQL_Error` references `replication_applier_status_by_worker`, query that table and log worker errors.
+   */
+  async function maybeLogReplicationApplierWorkerDetails(pool: Pool, s: SlaveStatus, tag: string): Promise<void> {
+    if (!sqlErrorSuggestsApplierWorkerTable(s.lastSqlError)) return;
+    const now = Date.now();
+    if (now - lastApplierWorkerDetailAt < APPLIER_WORKER_LOG_COOLDOWN_MS) return;
+    lastApplierWorkerDetailAt = now;
+    const result = await fetchReplicationApplierStatusByWorker(pool);
+    if (!result.ok) {
+      log(`REPLICATION_APPLIER_STATUS_BY_WORKER [${tag}]: query failed: ${result.message}`);
+      return;
+    }
+    if (result.rows.length === 0) {
+      log(`REPLICATION_APPLIER_STATUS_BY_WORKER [${tag}]: 0 rows`);
+      return;
+    }
+    const payload = JSON.stringify(result.rows, (_, v) => (typeof v === "bigint" ? v.toString() : v));
+    log(`REPLICATION_APPLIER_STATUS_BY_WORKER [${tag}]: ${payload}`);
+  }
+
   async function waitMysqlReplicationHealthy(pool: Pool): Promise<void> {
     const deadline = Date.now() + READY_TIMEOUT_SEC * 1000;
     while (!shuttingDown && Date.now() < deadline) {
@@ -526,7 +554,10 @@ export async function runController(): Promise<void> {
       if (!s) {
         log("Replication check: SHOW REPLICA STATUS returned no rows (replication not configured yet?)");
       } else {
-        log(`Replication check: ${formatSlaveStatusLogLine(s)}`);
+        const countdown =
+          ioOkSqlNotRunning(s) ? ` pollingTimeoutRemainingSec=${secondsRemainingUntilDeadline(deadline)}` : "";
+        log(`Replication check: ${formatSlaveStatusLogLine(s)}${countdown}`);
+        await maybeLogReplicationApplierWorkerDetails(pool, s, "wait replication healthy");
         if (slaveLooksHealthy(s, MAX_LAG_SECONDS)) return;
       }
       await sleep(POLL_MS);
@@ -843,6 +874,7 @@ export async function runController(): Promise<void> {
     // 3) Last resort: restore from latest Seaweed backup again
     if (args.attempt >= SELF_HEAL_FAILURE_THRESHOLD) {
       const st = await readReplicaSlaveStatus(args.replicaPool, CHANNEL_NAME);
+      if (st) await maybeLogReplicationApplierWorkerDetails(args.replicaPool, st, "SELF-HEAL before restore");
       if (isLagOnlyUnhealthy(st)) {
         log(
           "SELF-HEAL: replication appears lag-only (IO/SQL Yes, no slave errors); 5 status checks at 1m spacing before re-seed"
@@ -883,13 +915,26 @@ export async function runController(): Promise<void> {
     log(`Phase F: periodic replication health checks every ${HEALTH_INTERVAL_SEC}s`);
     let failStreak = 0;
     let previousAppliedCoords: AppliedExecCoords | null = null;
+    /** When IO is `Yes` and SQL is not, wall-clock countdown toward {@link READY_TIMEOUT_SEC}s since first seen in Phase F (resets when threads recover). */
+    let ioSqlBadPollDeadlineMs: number | null = null;
 
     while (!shuttingDown) {
       const s = await readReplicaSlaveStatus(replicaPool, CHANNEL_NAME);
       if (!s) {
+        ioSqlBadPollDeadlineMs = null;
         log("HEALTH: SHOW REPLICA STATUS returned no rows");
       } else {
-        log(`HEALTH: ${formatSlaveStatusLogLine(s)}`);
+        if (ioOkSqlNotRunning(s)) {
+          if (ioSqlBadPollDeadlineMs === null) ioSqlBadPollDeadlineMs = Date.now() + READY_TIMEOUT_SEC * 1000;
+        } else {
+          ioSqlBadPollDeadlineMs = null;
+        }
+        const pollRemain =
+          ioOkSqlNotRunning(s) && ioSqlBadPollDeadlineMs !== null
+            ? ` pollingTimeoutRemainingSec=${secondsRemainingUntilDeadline(ioSqlBadPollDeadlineMs)}`
+            : "";
+        log(`HEALTH: ${formatSlaveStatusLogLine(s)}${pollRemain}`);
+        await maybeLogReplicationApplierWorkerDetails(replicaPool, s, "HEALTH periodic");
         if (replicationBroken(s) && slaveErrorsSuggestMissingSourceBinlogs(s)) {
           await logBinlogGapVersusLatestDrBackupIfRelevant(s, "HEALTH periodic");
         }
@@ -911,11 +956,24 @@ export async function runController(): Promise<void> {
         await waitUntilSourceReachable("SOURCE GATE (replication unhealthy)");
         if (shuttingDown) break;
         const s2 = await readReplicaSlaveStatus(replicaPool, CHANNEL_NAME);
+        if (s2 && ioOkSqlNotRunning(s2)) {
+          if (ioSqlBadPollDeadlineMs === null) ioSqlBadPollDeadlineMs = Date.now() + READY_TIMEOUT_SEC * 1000;
+        } else if (s2 && !ioOkSqlNotRunning(s2)) {
+          ioSqlBadPollDeadlineMs = null;
+        }
         const healthyNow = !!s2 && slaveLooksHealthy(s2, MAX_LAG_SECONDS) && !replicationBroken(s2);
         if (healthyNow) {
           log("HEALTH: replication healthy after source reachability gate; skipping self-heal");
           failStreak = 0;
         } else {
+          if (s2) {
+            const gateRemain =
+              ioOkSqlNotRunning(s2) && ioSqlBadPollDeadlineMs !== null
+                ? ` pollingTimeoutRemainingSec=${secondsRemainingUntilDeadline(ioSqlBadPollDeadlineMs)}`
+                : "";
+            log(`HEALTH (after source gate): ${formatSlaveStatusLogLine(s2)}${gateRemain}`);
+            await maybeLogReplicationApplierWorkerDetails(replicaPool, s2, "HEALTH post source-gate");
+          }
           failStreak += 1;
           log(`HEALTH: still unhealthy after source reachability gate (failStreak=${failStreak}); running self-heal`);
           if (s2 && replicationBroken(s2) && slaveErrorsSuggestMissingSourceBinlogs(s2)) {
