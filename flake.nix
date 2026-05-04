@@ -27,19 +27,19 @@
         in
         {
           percona-onprem-anti-affinity-hostname =
-            pkgs.runCommand "percona-onprem-anti-affinity-hostname" { nativeBuildInputs = [ pkgs.yq-go ]; } ''
+            pkgs.runCommandNoCC "percona-onprem-anti-affinity-hostname" { nativeBuildInputs = [ pkgs.yq-go ]; } ''
               set -euo pipefail
 
               pxc_topology="$(yq -r '${getTopologyExpr "pxc"}' ${valuesYaml})"
               haproxy_topology="$(yq -r '${getTopologyExpr "haproxy"}' ${valuesYaml})"
 
               if [ "$pxc_topology" != "${expected}" ]; then
-                echo "pxc anti-affinity topology key must be '${expected}', got '${pxc_topology:-<unset>}'" >&2
+                echo "pxc anti-affinity topology key must be '${expected}', got ''${pxc_topology:-<unset>}'" >&2
                 exit 1
               fi
 
               if [ "$haproxy_topology" != "${expected}" ]; then
-                echo "haproxy anti-affinity topology key must be '${expected}', got '${haproxy_topology:-<unset>}'" >&2
+                echo "haproxy anti-affinity topology key must be '${expected}', got ''${haproxy_topology:-<unset>}'" >&2
                 exit 1
               fi
 

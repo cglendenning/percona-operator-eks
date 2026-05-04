@@ -48,7 +48,14 @@ in
       repo = seaweedfs-repo;
       chart = "seaweedfs";
       version = "4.0.406";
-      chartHash = "sha256-asrXr0Hslpw9Cg+aaqc7g6htkWyaalfZ+JKCc4t0J2Y="; 
+      chartHash = "sha256-asrXr0Hslpw9Cg+aaqc7g6htkWyaalfZ+JKCc4t0J2Y=";
+    };
+    # Helm chart version 4.17.0 (SeaweedFS appVersion 4.17)
+    "4_17_0" = kubelib.downloadHelmChart {
+      repo = seaweedfs-repo;
+      chart = "seaweedfs";
+      version = "4.17.0";
+      chartHash = "sha256-DntICzBtkwvTJ2aUVpjtrKUsdDh2lKamwzHz1aCpxLk=";
     };
   };
 }

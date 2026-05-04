@@ -38,6 +38,8 @@ let
   saName = "pxc-async-replica-sa";
   deployName = "pxc-async-replica-controller";
   destRoleName = "pxc-async-replica-dest";
+  # Must match controller env PXC_BOOTSTRAP_RESTORE_CR_NAME (delete RBAC is name-scoped).
+  bootstrapRestoreCrName = "async-replica-bootstrap";
 
   # First host is used for SOURCE_MYSQL_URL (mysql client); full list is SOURCE_HOSTS for replication channel sources.
   sourceHosts = [
@@ -89,6 +91,12 @@ let
           apiGroups = [ "pxc.percona.com" ];
           resources = [ "perconaxtradbclusterrestores" ];
           verbs = [ "get" "list" "create" ];
+        }
+        {
+          apiGroups = [ "pxc.percona.com" ];
+          resources = [ "perconaxtradbclusterrestores" ];
+          resourceNames = [ bootstrapRestoreCrName ];
+          verbs = [ "delete" ];
         }
       ];
     }
@@ -182,6 +190,8 @@ let
                   value: "10000"
                 - name: RESTORE_TIMEOUT_SECONDS
                   value: "7200"
+                - name: PXC_BOOTSTRAP_RESTORE_CR_NAME
+                  value: "${bootstrapRestoreCrName}"
                 - name: HEALTHCHECK_INTERVAL_SECONDS
                   value: "60"
                 - name: MAX_REPLICATION_LAG_SECONDS
