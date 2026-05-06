@@ -64,6 +64,21 @@ def run_checked(args: Sequence[str], timeout_s: int = 30) -> str:
         )
     except FileNotFoundError as e:
         raise UserFacingError(f"Missing required command: {args[0]}") from e
+    except OSError as e:
+        # Common on WSL when PATH points at a Windows kubectl.exe or wrong-arch binary.
+        if getattr(e, "errno", None) == 8:
+            raise UserFacingError(
+                "OSError: Exec format error running kubectl.\n"
+                "This usually means your 'kubectl' on PATH is not a Linux executable (often a Windows kubectl.exe).\n"
+                "Fix: install a Linux kubectl inside WSL and ensure it comes first on PATH.\n"
+                "Quick checks:\n"
+                "  - which kubectl\n"
+                "  - ls -l $(which kubectl)\n"
+                "  - file $(which kubectl)\n"
+                "If it points under /mnt/c/ or ends with .exe, install kubectl via your WSL distro package manager "
+                "or download the Linux binary, then retry."
+            ) from e
+        raise
     except subprocess.TimeoutExpired as e:
         raise UserFacingError(f"Timed out after {timeout_s}s running: {shlex.join(args)}") from e
 
@@ -87,6 +102,18 @@ def run_maybe(args: Sequence[str], timeout_s: int = 30) -> Tuple[int, str, str]:
         )
     except FileNotFoundError:
         return 127, "", f"Missing required command: {args[0]}"
+    except OSError as e:
+        if getattr(e, "errno", None) == 8:
+            return (
+                126,
+                "",
+                (
+                    "OSError: Exec format error running kubectl. "
+                    "Your 'kubectl' on PATH is not a Linux executable (often Windows kubectl.exe). "
+                    "Install a Linux kubectl in WSL and ensure it is first on PATH."
+                ),
+            )
+        return 126, "", str(e)
     except subprocess.TimeoutExpired:
         return 124, "", f"Timed out after {timeout_s}s running: {shlex.join(args)}"
     return cp.returncode, (cp.stdout or ""), (cp.stderr or "")
