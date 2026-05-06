@@ -17,6 +17,7 @@ import json
 import os
 import re
 import shlex
+import shutil
 import subprocess
 import sys
 from dataclasses import dataclass
@@ -49,7 +50,24 @@ def kubectl_base_args() -> List[str]:
             "KUBECONFIG contains ':' (multiple kubeconfigs). This script requires KUBECONFIG "
             "to be a single file path so it can pass --kubeconfig \"$KUBECONFIG\"."
         )
-    return ["kubectl", "--kubeconfig", kubeconfig]
+    kubectl = os.environ.get("KUBECTL", "").strip() or shutil.which("kubectl") or ""
+    if not kubectl:
+        raise UserFacingError("kubectl not found on PATH. Install kubectl and retry.")
+    return [kubectl, "--kubeconfig", kubeconfig]
+
+
+def _run_via_shell(args: Sequence[str], timeout_s: int) -> subprocess.CompletedProcess:
+    # Some WSL setups exhibit "works in interactive shell, fails from subprocess exec"
+    # due to PATH differences or Windows interop wrappers. As a fallback, run via sh -lc.
+    cmd = shlex.join(list(args))
+    return subprocess.run(
+        ["/bin/sh", "-lc", cmd],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        timeout=timeout_s,
+        check=False,
+    )
 
 
 def run_checked(args: Sequence[str], timeout_s: int = 30) -> str:
@@ -67,16 +85,23 @@ def run_checked(args: Sequence[str], timeout_s: int = 30) -> str:
     except OSError as e:
         # Common on WSL when PATH points at a Windows kubectl.exe or wrong-arch binary.
         if getattr(e, "errno", None) == 8:
+            # Attempt shell fallback first; if that succeeds, proceed silently.
+            cp = _run_via_shell(args, timeout_s=timeout_s)
+            if cp.returncode == 0:
+                return (cp.stdout or "").strip("\n")
+
+            resolved = args[0]
+            which_kubectl = shutil.which(os.path.basename(resolved)) or ""
+            detail = (cp.stderr or "").strip() or (cp.stdout or "").strip() or "Exec format error"
             raise UserFacingError(
                 "OSError: Exec format error running kubectl.\n"
-                "This usually means your 'kubectl' on PATH is not a Linux executable (often a Windows kubectl.exe).\n"
-                "Fix: install a Linux kubectl inside WSL and ensure it comes first on PATH.\n"
-                "Quick checks:\n"
-                "  - which kubectl\n"
-                "  - ls -l $(which kubectl)\n"
-                "  - file $(which kubectl)\n"
-                "If it points under /mnt/c/ or ends with .exe, install kubectl via your WSL distro package manager "
-                "or download the Linux binary, then retry."
+                f"kubectl resolved to: {resolved}\n"
+                + (f"PATH lookup for 'kubectl' returned: {which_kubectl}\n" if which_kubectl else "")
+                + "Fix: ensure a Linux kubectl is first on PATH in non-interactive shells, or set KUBECTL to an absolute path.\n"
+                "Example:\n"
+                "  export KUBECTL=/usr/local/bin/kubectl\n"
+                "Then retry.\n"
+                f"Details: {detail}"
             ) from e
         raise
     except subprocess.TimeoutExpired as e:
@@ -104,15 +129,8 @@ def run_maybe(args: Sequence[str], timeout_s: int = 30) -> Tuple[int, str, str]:
         return 127, "", f"Missing required command: {args[0]}"
     except OSError as e:
         if getattr(e, "errno", None) == 8:
-            return (
-                126,
-                "",
-                (
-                    "OSError: Exec format error running kubectl. "
-                    "Your 'kubectl' on PATH is not a Linux executable (often Windows kubectl.exe). "
-                    "Install a Linux kubectl in WSL and ensure it is first on PATH."
-                ),
-            )
+            cp2 = _run_via_shell(args, timeout_s=timeout_s)
+            return cp2.returncode, (cp2.stdout or ""), (cp2.stderr or "")
         return 126, "", str(e)
     except subprocess.TimeoutExpired:
         return 124, "", f"Timed out after {timeout_s}s running: {shlex.join(args)}"
@@ -527,6 +545,16 @@ def format_findings(findings: List[Finding]) -> str:
 
 def main() -> int:
     try:
+        # Guardrail: if this is Windows Python, it cannot exec Linux kubectl (WSL interop).
+        if os.name == "nt" or sys.platform.startswith("win"):
+            raise UserFacingError(
+                "You are running this script with Windows Python (platform is Windows), not WSL Linux Python.\n"
+                "That causes 'Exec format error' when it tries to run Linux binaries like /usr/local/bin/kubectl.\n"
+                "Fix: run with WSL's python3 (install it if needed) and re-run the script.\n"
+                "Check:\n"
+                "  python3 -c 'import sys; print(sys.executable, sys.platform)'"
+            )
+
         require_env("KUBECONFIG")
         # Quick kubectl probe.
         _ = run_checked(kubectl_base_args() + ["version", "--client=true"], timeout_s=15)
