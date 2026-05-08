@@ -29,7 +29,8 @@ export async function kubectlJson<T = unknown>(
   namespace?: string
 ): Promise<T> {
   const nsArgs = namespace ? ["-n", namespace] : [];
-  const full = ["--kubeconfig", kubeconfigPath(), ...args, ...nsArgs, "-o", "json"];
+  // Put -n immediately after kubeconfig so it never lands after `--` (e.g. kubectl exec … -- …).
+  const full = ["--kubeconfig", kubeconfigPath(), ...nsArgs, ...args, "-o", "json"];
   try {
     const { stdout, stderr } = await execFileAsync("kubectl", full, {
       maxBuffer: 32 * 1024 * 1024,
@@ -60,7 +61,7 @@ export async function kubectlText(
   namespace?: string
 ): Promise<string> {
   const nsArgs = namespace ? ["-n", namespace] : [];
-  const full = ["--kubeconfig", kubeconfigPath(), ...args, ...nsArgs];
+  const full = ["--kubeconfig", kubeconfigPath(), ...nsArgs, ...args];
   try {
     const { stdout, stderr } = await execFileAsync("kubectl", full, {
       maxBuffer: 32 * 1024 * 1024,
