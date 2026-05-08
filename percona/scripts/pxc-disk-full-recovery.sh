@@ -3,9 +3,14 @@
 # pods are in CrashLoopBackOff. WSL-friendly (bash, kubectl, jq). Run with LF
 # line endings; avoid CRLF so shebang works in Git Bash/WSL.
 #
-# - Inspects PVCs, pods, and basic MySQL state on healthy members.
-# - Suggests oldest binary logs from SHOW BINARY LOGS and can run PURGE when a
-#   writable MySQL instance is reachable via kubectl exec.
+# - Inspects PVCs, pods, and disk/binlog layout on every healthy (Running, non-CrashLoop) member.
+# - Probes mysqld once per member (TCP + pod IP + sockets). On each reachable member: SHOW BINARY LOGS;
+#   optional PURGE BINARY LOGS TO with the same filename on all of them.
+# - If SQL is dead everywhere: still reports disk, then optional filesystem binlog deletion + *.index prune
+#   on all healthy members (strong warnings if mysqld is still running).
+# - After healthy members: CrashLoopBackOff datadir PVCs get a busybox recovery Pod (when this script can
+#   release the volume) with the same optional filesystem binlog cleanup at /mnt/mysql; you can also name
+#   extra recovery Pods to treat other detached PVC mounts the same way.
 # - For CrashLoopBackOff PXC pods, can schedule a privileged debug pod on the
 #   same node with the datadir PVC mounted read/write, but only after the PVC
 #   is free. For standard StatefulSets with RWO volumes, Kubernetes only
@@ -24,8 +29,7 @@
 #                           Overrides default name ${PXC_CR}-secrets; --root-secret wins if both set.
 #   PXC_MYSQL_HOST          primary TCP target for mysql client (default 127.0.0.1)
 #   PXC_MYSQL_PORT          mysqld port (default 3306)
-#   PXC_MYSQL_CONNECT_RETRIES  attempts (default 45); unhealthy Galera may delay accepting SQL
-#   PXC_MYSQL_CONNECT_DELAY    seconds between rounds (default 2)
+#   PXC_MYSQL_WARMUP_SECONDS optional sleep once before probing all members (default 0)
 #
 set -euo pipefail
 
@@ -83,14 +87,18 @@ done
 
 [[ -n "$NAMESPACE" ]] || die "namespace is required (-n/--namespace)"
 
-# MySQL client inside PXC pods: try TCP then Unix sockets; retry while mysqld/Galera recovers.
+# MySQL client inside PXC pods: try TCP then Unix sockets (single probe pass per pod; no retry storms).
 PXC_MYSQL_HOST="${PXC_MYSQL_HOST:-127.0.0.1}"
 PXC_MYSQL_PORT="${PXC_MYSQL_PORT:-3306}"
-PXC_MYSQL_CONNECT_RETRIES="${PXC_MYSQL_CONNECT_RETRIES:-45}"
-PXC_MYSQL_CONNECT_DELAY="${PXC_MYSQL_CONNECT_DELAY:-2}"
+PXC_MYSQL_WARMUP_SECONDS="${PXC_MYSQL_WARMUP_SECONDS:-0}"
 
 LAST_MYSQL_CTN=""
+# Parallel arrays populated by probe_mysql_on_healthy_members: pod name -> working container name
+MYSQL_REACHABLE_PODS=()
+MYSQL_REACHABLE_CTNS=()
 
+# Last successful healthy-member filesystem basename list (base64 of newline-separated names), reused for mounts.
+LAST_FS_BINLOG_B64=""
 need kubectl
 need jq
 
@@ -196,6 +204,62 @@ _pod_primary_ip() {
     sh -c 'hostname -i 2>/dev/null || true' 2>/dev/null | awk '{ print $1 }'
 }
 
+list_healthy_member_pods() {
+  local pods p
+  mapfile -t pods < <(list_pxc_member_pods)
+  for p in "${pods[@]}"; do
+    pod_is_crashloop "$p" && continue
+    kube get pod "$p" -n "$NAMESPACE" -o jsonpath='{.status.phase}' 2>/dev/null | grep -qx Running || continue
+    echo "$p"
+  done
+}
+
+log_member_coarse_k8s_state() {
+  local p="$1" phase ready_reason
+  phase="$(kube get pod "$p" -n "$NAMESPACE" -o jsonpath='{.status.phase}' 2>/dev/null || echo "?")"
+  ready_reason="$(kube get pod "$p" -n "$NAMESPACE" -o json 2>/dev/null \
+    | jq -r '[.status.conditions[]? | select(.type=="Ready") | "\(.status) (\(.reason // .type))"] | join(" ")')"
+  [[ -z "$ready_reason" ]] || ready_reason=" Ready:${ready_reason}"
+  log "${p}${ready_reason:-} phase=${phase}"
+}
+
+primary_datadir_container() {
+  local pod="$1"
+  local _ctdf=()
+  mapfile -t _ctdf < <(mysql_containers_to_try "$pod")
+  if [[ "${#_ctdf[@]}" -gt 0 && -n "${_ctdf[0]}" ]]; then
+    echo "${_ctdf[0]}"
+    return 0
+  fi
+  mysql_container_for_pod "$pod"
+}
+
+disk_snapshot_on_mount() {
+  local pod="$1" ctn="$2" dd="$3"
+  local show_mysqld="${4:-1}"
+  log "--- disk / binlogs: ${pod} container=${ctn} mount=${dd} ---"
+  kube exec -n "$NAMESPACE" "$pod" -c "$ctn" -- df -h "$dd" 2>/dev/null \
+    || log "    df failed (exec error)"
+  if [[ "$show_mysqld" == "1" ]]; then
+    kube exec -n "$NAMESPACE" "$pod" -c "$ctn" -- \
+      sh -c 'echo "mysqld process:"; (command -v pgrep >/dev/null 2>&1 && pgrep -a mysqld) || ps aux | awk "/[m]ysqld/ {print}"' \
+      2>/dev/null || true
+  fi
+  kube exec -n "$NAMESPACE" "$pod" -c "$ctn" -- env SNAP_DD="$dd" sh -ec '
+    dd="$SNAP_DD"
+    cd "$dd" 2>/dev/null && ls -lhS . 2>/dev/null | head -30
+  ' 2>/dev/null || true
+  kube exec -n "$NAMESPACE" "$pod" -c "$ctn" -- env SNAP_DD="$dd" sh -ec '
+    dd="$SNAP_DD"
+    find "$dd" -maxdepth 1 -type f \( -name "binlog.*" -o -name "*-bin.*" -o -name "*.index" \) \
+      -exec ls -lh {} \; 2>/dev/null | sort -k5 -h -r | head -40
+  ' 2>/dev/null || true
+}
+
+disk_snapshot_on_member() {
+  disk_snapshot_on_mount "$1" "$2" /var/lib/mysql 1
+}
+
 # Streams SQL on stdin to mysql. Tries: TCP configured host, TCP pod IP, Unix sockets.
 mysql_query_once() {
   local pod="$1" ctn="$2" pw="$3" use_n="$4" sql="$5" show_err="$6"
@@ -227,39 +291,349 @@ mysql_query_once() {
   return 1
 }
 
-mysql_query_with_retries_pod() {
-  local pod="$1" pw="$2" use_n="$3" sql="$4"
-  local max="${PXC_MYSQL_CONNECT_RETRIES}" delay="${PXC_MYSQL_CONNECT_DELAY}"
+mysql_probe_pod() {
+  local pod="$1" pw="$2"
   local -a ctns=()
   mapfile -t ctns < <(mysql_containers_to_try "$pod")
-  [[ "${#ctns[@]}" -gt 0 ]] || die "no mysql containers to try on pod ${pod}"
-
-  local a c show_err
-  for ((a = 1; a <= max; a++)); do
-    [[ "$a" -eq "$max" ]] && show_err=1 || show_err=0
-    for c in "${ctns[@]}"; do
-      if mysql_query_once "$pod" "$c" "$pw" "$use_n" "$sql" "$show_err"; then
-        LAST_MYSQL_CTN="$c"
-        log "mysql OK via container ${LAST_MYSQL_CTN} (${a}/${max})"
-        return 0
-      fi
-    done
-    log "mysql not reachable on any container (attempt ${a}/${max}); waiting ${delay}s then retry (${ctns[*]})."
-    sleep "$delay"
+  [[ "${#ctns[@]}" -gt 0 ]] || return 1
+  local c
+  for c in "${ctns[@]}"; do
+    if mysql_query_once "$pod" "$c" "$pw" y "SELECT 1;" 0; then
+      LAST_MYSQL_CTN="$c"
+      return 0
+    fi
   done
   return 1
 }
 
-mysql_query_using_last_ctn() {
-  local pod="$1" pw="$2" use_n="$3" sql="$4"
-  if [[ -n "${LAST_MYSQL_CTN:-}" ]]; then
-    if mysql_query_once "$pod" "$LAST_MYSQL_CTN" "$pw" "$use_n" "$sql" 1; then
+probe_mysql_on_healthy_members() {
+  local pw="$1"
+  shift
+  local -a healthy=("$@")
+  MYSQL_REACHABLE_PODS=()
+  MYSQL_REACHABLE_CTNS=()
+  [[ "${#healthy[@]}" -gt 0 ]] || return 1
+  local p
+  for p in "${healthy[@]}"; do
+    LAST_MYSQL_CTN=""
+    if mysql_probe_pod "$p" "$pw"; then
+      MYSQL_REACHABLE_PODS+=("$p")
+      MYSQL_REACHABLE_CTNS+=("${LAST_MYSQL_CTN}")
+      log "mysqld accepts SQL on ${p} container=${LAST_MYSQL_CTN}"
+    else
+      log "no working mysql login on ${p} (skipped after one probe pass)"
+    fi
+  done
+  [[ "${#MYSQL_REACHABLE_PODS[@]}" -gt 0 ]]
+}
+
+show_binary_logs_every_reachable() {
+  local pw="$1"
+  local i p c
+  for i in "${!MYSQL_REACHABLE_PODS[@]}"; do
+    p="${MYSQL_REACHABLE_PODS[$i]}"
+    c="${MYSQL_REACHABLE_CTNS[$i]}"
+    printf '\n===== SHOW BINARY LOGS: %s (container=%s) =====\n' "$p" "$c" >&2
+    mysql_query_once "$p" "$c" "$pw" y "SHOW BINARY LOGS;" 1 || log "WARN: SHOW BINARY LOGS failed on $p"
+  done
+}
+
+purge_binary_logs_every_reachable() {
+  local pw="$1" target_file="$2"
+  local i p c fails=0
+  for i in "${!MYSQL_REACHABLE_PODS[@]}"; do
+    p="${MYSQL_REACHABLE_PODS[$i]}"
+    c="${MYSQL_REACHABLE_CTNS[$i]}"
+    printf '\n===== PURGING on %s (container=%s) =====\n' "$p" "$c" >&2
+    mysql_query_once "$p" "$c" "$pw" n "PURGE BINARY LOGS TO '${target_file}';" 1 \
+      || { log "WARN: PURGE failed on ${p}"; fails=$((fails + 1)); }
+  done
+  [[ "$fails" -eq 0 ]] || log "${fails} member(s) failed PURGE; verify each instance."
+}
+
+mysqld_process_running_exec() {
+  local pod="$1" ctn="$2"
+  kube exec -n "$NAMESPACE" "$pod" -c "$ctn" -- \
+    sh -c '(command -v pgrep >/dev/null 2>&1 && pgrep mysqld >/dev/null 2>&1) || ps aux | grep -q "[m]ysqld"' \
+    2>/dev/null
+}
+
+wait_pod_phase_running() {
+  local pod="$1"
+  local max="${2:-24}"
+  local i phase
+  for ((i = 1; i <= max; i++)); do
+    phase="$(kube get pod "$pod" -n "$NAMESPACE" -o jsonpath='{.status.phase}' 2>/dev/null || true)"
+    if [[ "$phase" == "Running" ]]; then
       return 0
     fi
-    log "mysql failed on cached container ${LAST_MYSQL_CTN}; rediscovering..."
-    LAST_MYSQL_CTN=""
+    log "waiting for pod ${pod} phase=Running (now: ${phase:-missing}) ${i}/${max}"
+    sleep 2
+  done
+  return 1
+}
+
+pack_basenames_line_to_b64() {
+  local base_line="$1"
+  local -a bases=()
+  read -r -a bases <<<"$base_line"
+  local tok baselist_packed=""
+  for tok in "${bases[@]}"; do
+    [[ -z "$tok" ]] && continue
+    if [[ ! "$tok" =~ ^[a-zA-Z0-9_.-]+$ ]]; then
+      die "unsafe basename rejected: ${tok}"
+    fi
+    baselist_packed+="${tok}"$'\n'
+  done
+  [[ -n "$baselist_packed" ]] || die "no valid basenames"
+  printf '%s' "$baselist_packed" | base64 | tr -d '\n'
+}
+
+# Same binlog file + *.index prune as healthy members, on a recovery Pod mount (default /mnt/mysql).
+recovery_mount_filesystem_offer() {
+  local rpod="$1"
+  local dd="${2:-/mnt/mysql}"
+  local ctn="${3:-recovery}"
+  local b64="" mode do_fs base_line
+
+  echo ""
+  log "PVC recovery pod ${rpod} — datadir mount ${dd} (container ${ctn})"
+  disk_snapshot_on_mount "$rpod" "$ctn" "$dd" 0
+
+  b64=""
+  if [[ -n "${LAST_FS_BINLOG_B64:-}" ]]; then
+    printf "Reuse the same basename list as the healthy-member filesystem cleanup on this mount? (yes/no): " >&2
+    read -r mode
+    mode="${mode,,}"
+    if [[ "$mode" == "yes" || "$mode" == "y" ]]; then
+      b64="$LAST_FS_BINLOG_B64"
+    fi
   fi
-  mysql_query_with_retries_pod "$pod" "$pw" "$use_n" "$sql"
+
+  if [[ -z "$b64" ]]; then
+    printf "Run filesystem binlog cleanup on %s in %s? (yes/no): " "$dd" "$rpod" >&2
+    read -r do_fs
+    do_fs="${do_fs,,}"
+    if [[ "$do_fs" != "yes" && "$do_fs" != "y" ]]; then
+      log "Skipping filesystem cleanup on recovery mount ${rpod}."
+      return 0
+    fi
+    printf "Space-separated basenames under %s (empty = abort): " "$dd" >&2
+    read -r base_line
+    if [[ -z "$base_line" ]]; then
+      log "No basenames; skipping recovery mount cleanup."
+      return 0
+    fi
+    b64="$(pack_basenames_line_to_b64 "$base_line")"
+  fi
+
+  confirm "Delete named binlog files + prune *.index under ${dd} on Pod ${rpod}." \
+    "DELETE-BINLOGS-RECOVERY-MOUNT" \
+    || { log "Aborted recovery mount cleanup."; return 0; }
+
+  if filesystem_binlog_delete_on_pod "$rpod" "$ctn" "$b64" "$dd"; then
+    log "filesystem cleanup OK on recovery pod ${rpod}"
+  else
+    log "WARN: filesystem cleanup failed on ${rpod}"
+  fi
+  echo ""
+  log "Disk after cleanup on ${rpod}:"
+  disk_snapshot_on_mount "$rpod" "$ctn" "$dd" 0
+}
+
+list_crashloop_member_pods() {
+  local pods p
+  mapfile -t pods < <(list_pxc_member_pods)
+  for p in "${pods[@]}"; do
+    pod_is_crashloop "$p" && echo "$p"
+  done
+}
+
+# Highest ordinal first: matches StatefulSet scale-down order (drop replicas-1, then …).
+list_crashloop_member_pods_sorted_by_ordinal_desc() {
+  local pods p o
+  mapfile -t pods < <(list_pxc_member_pods)
+  for p in "${pods[@]}"; do
+    pod_is_crashloop "$p" || continue
+    o="$(ordinal_from_pod "$p")" || continue
+    printf '%04d\t%s\n' "$o" "$p"
+  done | sort -t "$(printf '\t')" -k1 -nr | cut -f2
+}
+
+filesystem_binlog_delete_on_pod() {
+  local pod="$1" ctn="$2" baselist_b64="$3"
+  local dd="${4:-/var/lib/mysql}"
+  kube exec -n "$NAMESPACE" "$pod" -c "$ctn" -i -- \
+    env BINLOG_RM_B64="$baselist_b64" PXC_DATADIR_ROOT="$dd" sh -s <<'EOSCRIPT'
+set -eu
+datadir="$PXC_DATADIR_ROOT"
+cd "$datadir" || exit 2
+BN="/tmp/bnames.$$"
+IX="/tmp/idxlst.$$"
+trap 'rm -f "$BN" "$IX"' EXIT INT HUP
+printf '%s' "$BINLOG_RM_B64" | base64 -d >"$BN" || exit 3
+while IFS= read -r b; do
+  b=$(printf '%s' "$b" | tr -d '\r')
+  [ -z "$b" ] && continue
+  bn=$(basename "$b")
+  case "$bn" in *[!abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_.-]*)
+    echo "reject unsafe basename: $bn" >&2
+    exit 2
+  ;; esac
+  rm -f "$datadir/$bn"
+done <"$BN"
+find "$datadir" -maxdepth 1 -type f -name '*.index' >"$IX" 2>/dev/null || true
+while IFS= read -r idx; do
+  [ -z "$idx" ] && continue
+  [ ! -f "$idx" ] && continue
+  tmp="${idx}.pxc.$$"
+  : >"$tmp"
+  while IFS= read -r line; do
+    line=$(printf '%s' "$line" | tr -d '\r')
+    [ -z "$line" ] && continue
+    bnx=$(basename "$line")
+    if [ -f "$datadir/$bnx" ]; then
+      printf '%s\n' "$line" >>"$tmp"
+    fi
+  done <"$idx"
+  mv -f "$tmp" "$idx"
+done <"$IX"
+printf 'filesystem binlog cleanup + index prune done (%s)\n' "$datadir"
+EOSCRIPT
+}
+
+recovery_flow_disk_mysql_and_maybe_fs() {
+  local -a healthy=()
+  mapfile -t healthy < <(list_healthy_member_pods)
+
+  echo ""
+  log "Healthy members (phase=Running, not CrashLoop): ${healthy[*]:-"(none)"}"
+  if [[ "${#healthy[@]}" -eq 0 ]]; then
+    log "No healthy pods to probe for disk/mysql; CrashLoop/recovery PVC path follows."
+    return 0
+  fi
+
+  local pw
+  pw="$(root_password_from_secret)"
+  local p
+  for p in "${healthy[@]}"; do
+    log_member_coarse_k8s_state "$p"
+  done
+
+  if [[ "${PXC_MYSQL_WARMUP_SECONDS}" =~ ^[0-9]+$ ]] && [[ "${PXC_MYSQL_WARMUP_SECONDS}" -gt 0 ]]; then
+    log "PXC_MYSQL_WARMUP_SECONDS=${PXC_MYSQL_WARMUP_SECONDS}; waiting once before probing all members..."
+    sleep "${PXC_MYSQL_WARMUP_SECONDS}"
+  fi
+
+  echo ""
+  log "Disk usage + datadir listings on every healthy member:"
+  local ctn
+  for p in "${healthy[@]}"; do
+    ctn="$(primary_datadir_container "$p")"
+    disk_snapshot_on_member "$p" "$ctn"
+  done
+
+  echo ""
+  log "Single-pass mysqld probe (TCP + pod IP + sockets) across all healthy members."
+  probe_mysql_on_healthy_members "$pw" "${healthy[@]}" \
+    || true
+
+  if [[ "${#MYSQL_REACHABLE_PODS[@]}" -gt 0 ]]; then
+    show_binary_logs_every_reachable "$pw"
+    log "SQL reachable on ${#MYSQL_REACHABLE_PODS[@]} member(s). PURGE BINARY LOGS TO runs on **each** of them with the same filename."
+    printf "Enter binlog filename for PURGE BINARY LOGS TO on all reachable members (empty = skip SQL purge): " >&2
+    read -r target_file
+    if [[ -n "$target_file" ]]; then
+      if [[ ! "$target_file" =~ ^[A-Za-z0-9_.-]+$ ]]; then
+        log "unsafe binlog filename; skipping SQL purge."
+      else
+        confirm \
+          "PURGE removes prior binary logs on every reachable member above. Replica/PITR impact is your responsibility." \
+          "PURGE-ALL-${target_file}" \
+          && purge_binary_logs_every_reachable "$pw" "$target_file"
+      fi
+    else
+      log "Skipping SQL PURGE."
+    fi
+  else
+    log "mysqld did not accept SQL on any healthy member after one probe pass — cannot use PURGE."
+  fi
+
+  echo ""
+  log "Optional: delete binlog **files** under /var/lib/mysql on every healthy member and prune *.index lines for missing files."
+  log "Unsafe if mysqld is running; only use when instance is wedged / cannot connect. You name basenames (e.g. binlog.000012 mysql-bin.000045)."
+  printf "Run filesystem binlog cleanup on all healthy members? (yes/no): " >&2
+  read -r do_fs
+  do_fs="${do_fs,,}"
+  if [[ "$do_fs" != "yes" && "$do_fs" != "y" ]]; then
+    log "Skipping filesystem binlog cleanup."
+    return 0
+  fi
+
+  printf "Space-separated basenames to remove from /var/lib/mysql on ALL healthy members (empty = abort): " >&2
+  read -r base_line
+  if [[ -z "$base_line" ]]; then
+    log "No basenames; abort filesystem cleanup."
+    return 0
+  fi
+
+  local -a bases=()
+  read -r -a bases <<<"$base_line"
+  local tok any_mysqld=0
+  for tok in "${bases[@]}"; do
+    [[ -z "$tok" ]] && continue
+    if [[ ! "$tok" =~ ^[a-zA-Z0-9_.-]+$ ]]; then
+      die "unsafe basename rejected: ${tok}"
+    fi
+  done
+
+  local h c
+  for h in "${healthy[@]}"; do
+    c="$(primary_datadir_container "$h")"
+    mysqld_process_running_exec "$h" "$c" && any_mysqld=1
+  done
+  if [[ "$any_mysqld" -ne 0 ]]; then
+    log "mysqld appears to be running on at least one healthy member."
+    confirm "Deleting binlog files while mysqld runs can corrupt replication. Confirm you accept that risk." \
+      "DELETE-BINLOGS-WITH-MYSQLD-RUNNING" \
+      || { log "Aborted filesystem cleanup."; return 0; }
+  else
+    confirm "Proceed with filesystem deletes + *.index pruning on all healthy members." \
+      "DELETE-BINLOGS-FILES" \
+      || { log "Aborted filesystem cleanup."; return 0; }
+  fi
+
+  local baselist_packed b64
+  baselist_packed=""
+  for tok in "${bases[@]}"; do
+    [[ -z "$tok" ]] && continue
+    baselist_packed+="${tok}"$'\n'
+  done
+  if [[ -z "$baselist_packed" ]]; then
+    log "No basenames to apply; abort filesystem cleanup."
+    return 0
+  fi
+  b64="$(printf '%s' "$baselist_packed" | base64 | tr -d '\n')"
+  LAST_FS_BINLOG_B64="$b64"
+
+  local ok=0 fail=0
+  for h in "${healthy[@]}"; do
+    c="$(primary_datadir_container "$h")"
+    if filesystem_binlog_delete_on_pod "$h" "$c" "$b64"; then
+      log "filesystem cleanup OK on $h"
+      ok=$((ok + 1))
+    else
+      log "WARN: filesystem cleanup failed on $h"
+      fail=$((fail + 1))
+    fi
+  done
+  log "filesystem cleanup finished: ok=${ok} failed=${fail}"
+  echo ""
+  log "Disk after cleanup (all healthy members):"
+  for h in "${healthy[@]}"; do
+    c="$(primary_datadir_container "$h")"
+    disk_snapshot_on_member "$h" "$c"
+  done
 }
 
 datadir_claim_for_pod() {
@@ -376,40 +750,6 @@ inspect_cluster() {
     | head -80 >&2 || true
 }
 
-purge_binlogs_via_member() {
-  local candidate="$1"
-  pod_is_crashloop "$candidate" && die "chosen pod $candidate is CrashLoopBackOff"
-
-  local pw
-  pw="$(root_password_from_secret)"
-  LAST_MYSQL_CTN=""
-
-  log "Reaching mysqld inside ${candidate} (TCP:${PXC_MYSQL_HOST}:${PXC_MYSQL_PORT}, pod IP, Unix sockets; up to ${PXC_MYSQL_CONNECT_RETRIES}x${PXC_MYSQL_CONNECT_DELAY}s)."
-
-  log "Fetching SHOW BINARY LOGS (you will be prompted before any PURGE)"
-
-  mysql_query_with_retries_pod "$candidate" "$pw" y "SHOW BINARY LOGS;" \
-    || die "unable to reach MySQL in ${candidate} after ${PXC_MYSQL_CONNECT_RETRIES} rounds; check wsrep_ready, disk, and PXC_MYSQL_* settings"
-
-  log "Suggested cleanup: purge up to EXCLUDING the newest file still needed downstream."
-  log "Prefer PURGE BINARY LOGS TO 'filename'; (keeps named file)."
-  printf "Enter BINLOG FILENAME for PURGE BINARY LOGS TO (leave empty to skip): " >&2
-  read -r target_file
-  if [[ -z "$target_file" ]]; then
-    log "skipping PURGE."
-    return 0
-  fi
-  if [[ ! "$target_file" =~ ^[A-Za-z0-9_.-]+$ ]]; then
-    die "unsafe binlog filename (allowed: letters, digits, ._- only): $target_file"
-  fi
-  confirm \
-    "PURGE removes prior binary logs on THIS member (${candidate}). Replica/PITR impact is your responsibility." \
-    "PURGE $target_file"
-  mysql_query_using_last_ctn "$candidate" "$pw" n "PURGE BINARY LOGS TO '${target_file}';" \
-    || die "PURGE failed on ${candidate}"
-  log "PURGE completed on $candidate (verify space with df)."
-}
-
 sanitize_dns_label() {
   local s="$1"
   s="$(printf '%s' "$s" | tr '[:upper:]' '[:lower:]' | tr -c 'a-z0-9-' '-')"
@@ -490,9 +830,14 @@ handle_crashloop_member() {
 
   if [[ "$ord" != "$((reps - 1))" ]]; then
     log "Kubernetes StatefulSet caveat: freeing this PVC without deleting intermediate ordinals normally requires"
-    log "scaling the entire ${sts} StatefulSet carefully (risk to Galera quorum). This script will not automate"
-    log "PVC takeover for non-highest ordinals."
-    printf "Proceed with interactive binlog/other recovery only (already covered). Press Enter.\n" >&2
+    log "scaling the entire ${sts} StatefulSet carefully (risk to Galera quorum). Automated recovery Pod apply is skipped."
+    local suggest safecr
+    safecr="$(sanitize_dns_label "$PXC_CR")"
+    suggest="pxc-pvc-recovery-${safecr}-manual-${ord}-$(date +%s)"
+    log "When the PVC is unattached from the member Pod, apply a recovery Pod like this (name ${suggest}) and clear space under /mnt/mysql:"
+    recovery_pod_yaml "$suggest" "$claim" "$node" >&2 || true
+    printf "After applying a recovery Pod mounting claim %s, re-run this script namespace/cluster options (it will prompt for extra recovery Pods at the end), or cleanup manually.\n" "$claim" >&2
+    printf "Press Enter to continue.\n" >&2
     read -r
     return 0
   fi
@@ -541,6 +886,13 @@ handle_crashloop_member() {
   printf "browse binlogs (example): kubectl --kubeconfig=... exec -n %s %s -c recovery -- ls -la /mnt/mysql\n" \
     "$NAMESPACE" "$rpod" >&2
 
+  if wait_pod_phase_running "$rpod"; then
+    recovery_mount_filesystem_offer "$rpod" /mnt/mysql recovery
+  else
+    log "WARN: recovery pod ${rpod} did not reach Running quickly; filesystem cleanup skipped. Delete member Pod contention or CSI attach delay."
+    log "Retry manually: kubectl exec -n ${NAMESPACE} -c recovery ${rpod} -- df /mnt/mysql"
+  fi
+
   printf "\nWhen finished freeing space:\n" >&2
   printf "  kubectl --kubeconfig=\"\$KUBECONFIG\" delete pod %s -n %s --wait=false\n" "$rpod" "$NAMESPACE" >&2
   printf "Then restore desired member count:\n" >&2
@@ -555,32 +907,35 @@ main() {
 
   inspect_cluster
 
-  echo ""
-  log "MySQL-assisted recovery candidates: Running phase, not CrashLoopBackOff (Pod can be NotReady while mysqld warms up):"
-  local pods running=()
+  recovery_flow_disk_mysql_and_maybe_fs
+
   mapfile -t pods < <(list_pxc_member_pods)
-  local p ready
-  for p in "${pods[@]}"; do
-    if ! pod_is_crashloop "$p" && kube get pod "$p" -n "$NAMESPACE" -o jsonpath='{.status.phase}' 2>/dev/null | grep -qx Running; then
-      running+=("$p")
-      ready="$(kube get pod "$p" -n "$NAMESPACE" -o jsonpath='{.status.containerStatuses[0].ready}' 2>/dev/null || echo "?")"
-      echo "  - $p (container[0].ready=${ready})"
-    fi
+  local -a crash_first=()
+  mapfile -t crash_first < <(list_crashloop_member_pods_sorted_by_ordinal_desc)
+  local p
+  for p in "${crash_first[@]}"; do
+    handle_crashloop_member "$p"
   done
 
-  if [[ "${#running[@]}" -gt 0 ]]; then
-    printf "Enter pod name to use for SHOW BINARY LOGS / PURGE (empty = skip): " >&2
-    read -r pick_pod
-    if [[ -n "$pick_pod" ]]; then
-      purge_binlogs_via_member "$pick_pod"
+  local -a still_crashing=()
+  mapfile -t still_crashing < <(list_crashloop_member_pods)
+  if [[ "${#still_crashing[@]}" -gt 0 ]]; then
+    echo ""
+    log "Members still CrashLoopBackOff after automation: ${still_crashing[*]}"
+    log "If you attached any extra recovery Pods (PVC at /mnt/mysql), name them here for the same filesystem binlog cleanup."
+    printf "Space-separated recovery Pod names (empty = skip): " >&2
+    read -r extra_rp
+    if [[ -n "$extra_rp" ]]; then
+      local -a erp=()
+      read -r -a erp <<<"$extra_rp"
+      local er
+      for er in "${erp[@]}"; do
+        [[ -z "$er" ]] && continue
+        kube get pod "$er" -n "$NAMESPACE" >/dev/null 2>&1 || { log "WARN: pod ${er} not found; skip"; continue; }
+        recovery_mount_filesystem_offer "$er" /mnt/mysql recovery
+      done
     fi
-  else
-    log "no Running PXC pods; binary-log PURGE requires bringing at least one member up or freeing disk first."
   fi
-
-  for p in "${pods[@]}"; do
-    pod_is_crashloop "$p" && handle_crashloop_member "$p"
-  done
 
   echo ""
   log "done."
