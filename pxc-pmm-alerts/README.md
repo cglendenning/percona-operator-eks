@@ -98,6 +98,8 @@ nix-build pxc-pmm-alerts.nix -A k8sManifest -o /tmp/pxc-pmm-alerts.json
 kubectl apply -f /tmp/pxc-pmm-alerts.json
 ```
 
+`pxc-pmm-alerts.nix` is a parameterized expression: **`alertEnv`** (default `dev`) and **`alertRoute`** (default `pagerduty`) flow into each rule’s **`custom_labels`** (`env` and **`route`**). Override at build time with **`--argstr alertEnv prod`** and **`--argstr alertRoute opsgenie`**, for example.
+
 The Deployment expects Secret **`pmm-secret`** / key **`PMM_ADMIN_PASSWORD`** (created by the official `percona/pmm` Helm chart).
 
 ## Local PMM on k3d (Mac arm64)

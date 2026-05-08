@@ -4,6 +4,13 @@
 #   docker buildx build --load -t pxc-pmm-alerts-controller:latest .
 # Apply manifests (pure Nix, no nixpkgs: avoids multi-GiB Darwin stdenv on nix-build):
 #   nix-build pxc-pmm-alerts.nix -A k8sManifest && kubectl apply -f result  # result is a v1/List JSON
+#
+# Optional: `nix-build … --argstr alertEnv prod --argstr alertRoute opsgenie`
+
+{
+  alertEnv ? "dev",
+  alertRoute ? "pagerduty",
+}:
 
 let
   namespace = "pmm";
@@ -37,7 +44,8 @@ let
       custom_labels = {
         source = "pxc-pmm";
         severity = "critical";
-        route = "pagerduty";
+        route = alertRoute;
+        env = alertEnv;
         managed_by = "pxc-pmm-alerts-controller";
       };
       folder_uid = "__MYSQL_FOLDER_UID__";
@@ -50,7 +58,8 @@ let
       no_data_state = "OK";
       custom_labels = {
         severity = "warning";
-        route = "default";
+        route = alertRoute;
+        env = alertEnv;
         managed_by = "pxc-pmm-alerts-controller";
       };
       folder_uid = "__MYSQL_FOLDER_UID__";
@@ -63,7 +72,8 @@ let
       no_data_state = "OK";
       custom_labels = {
         severity = "critical";
-        route = "pagerduty";
+        route = alertRoute;
+        env = alertEnv;
         managed_by = "pxc-pmm-alerts-controller";
       };
       folder_uid = "__MYSQL_FOLDER_UID__";
@@ -76,7 +86,8 @@ let
       no_data_state = "OK";
       custom_labels = {
         severity = "warning";
-        route = "default";
+        route = alertRoute;
+        env = alertEnv;
         managed_by = "pxc-pmm-alerts-controller";
       };
       folder_uid = "__MYSQL_FOLDER_UID__";
@@ -89,7 +100,8 @@ let
       no_data_state = "OK";
       custom_labels = {
         severity = "critical";
-        route = "pagerduty";
+        route = alertRoute;
+        env = alertEnv;
         managed_by = "pxc-pmm-alerts-controller";
       };
       folder_uid = "__MYSQL_FOLDER_UID__";
@@ -102,7 +114,8 @@ let
       no_data_state = "OK";
       custom_labels = {
         severity = "warning";
-        route = "default";
+        route = alertRoute;
+        env = alertEnv;
         managed_by = "pxc-pmm-alerts-controller";
       };
       folder_uid = "__MYSQL_FOLDER_UID__";
@@ -115,7 +128,8 @@ let
       no_data_state = "OK";
       custom_labels = {
         severity = "critical";
-        route = "pagerduty";
+        route = alertRoute;
+        env = alertEnv;
         managed_by = "pxc-pmm-alerts-controller";
       };
       folder_uid = "__MYSQL_FOLDER_UID__";
@@ -128,7 +142,8 @@ let
       no_data_state = "OK";
       custom_labels = {
         severity = "warning";
-        route = "default";
+        route = alertRoute;
+        env = alertEnv;
         managed_by = "pxc-pmm-alerts-controller";
       };
       folder_uid = "__MYSQL_FOLDER_UID__";
@@ -141,7 +156,8 @@ let
       no_data_state = "OK";
       custom_labels = {
         severity = "critical";
-        route = "pagerduty";
+        route = alertRoute;
+        env = alertEnv;
         managed_by = "pxc-pmm-alerts-controller";
       };
       folder_uid = "__MYSQL_FOLDER_UID__";
@@ -154,7 +170,8 @@ let
       no_data_state = "OK";
       custom_labels = {
         severity = "warning";
-        route = "default";
+        route = alertRoute;
+        env = alertEnv;
         managed_by = "pxc-pmm-alerts-controller";
       };
       folder_uid = "__MYSQL_FOLDER_UID__";
@@ -167,7 +184,8 @@ let
       no_data_state = "OK";
       custom_labels = {
         severity = "critical";
-        route = "pagerduty";
+        route = alertRoute;
+        env = alertEnv;
         managed_by = "pxc-pmm-alerts-controller";
       };
       folder_uid = "__MYSQL_FOLDER_UID__";
@@ -180,7 +198,8 @@ let
       no_data_state = "OK";
       custom_labels = {
         severity = "warning";
-        route = "default";
+        route = alertRoute;
+        env = alertEnv;
         managed_by = "pxc-pmm-alerts-controller";
       };
       folder_uid = "__MYSQL_FOLDER_UID__";
@@ -193,7 +212,8 @@ let
       no_data_state = "OK";
       custom_labels = {
         severity = "critical";
-        route = "pagerduty";
+        route = alertRoute;
+        env = alertEnv;
         managed_by = "pxc-pmm-alerts-controller";
       };
       folder_uid = "__MYSQL_FOLDER_UID__";
@@ -206,7 +226,8 @@ let
       no_data_state = "OK";
       custom_labels = {
         severity = "warning";
-        route = "default";
+        route = alertRoute;
+        env = alertEnv;
         managed_by = "pxc-pmm-alerts-controller";
       };
       folder_uid = "__MYSQL_FOLDER_UID__";
@@ -219,7 +240,8 @@ let
       no_data_state = "OK";
       custom_labels = {
         severity = "critical";
-        route = "pagerduty";
+        route = alertRoute;
+        env = alertEnv;
         managed_by = "pxc-pmm-alerts-controller";
       };
       folder_uid = "__MYSQL_FOLDER_UID__";
@@ -232,7 +254,8 @@ let
       no_data_state = "OK";
       custom_labels = {
         severity = "warning";
-        route = "default";
+        route = alertRoute;
+        env = alertEnv;
         managed_by = "pxc-pmm-alerts-controller";
       };
       folder_uid = "__MYSQL_FOLDER_UID__";
@@ -245,7 +268,8 @@ let
       no_data_state = "OK";
       custom_labels = {
         severity = "critical";
-        route = "pagerduty";
+        route = alertRoute;
+        env = alertEnv;
         managed_by = "pxc-pmm-alerts-controller";
       };
       folder_uid = "__MYSQL_FOLDER_UID__";
@@ -258,7 +282,8 @@ let
       no_data_state = "OK";
       custom_labels = {
         severity = "critical";
-        route = "pagerduty";
+        route = alertRoute;
+        env = alertEnv;
         managed_by = "pxc-pmm-alerts-controller";
       };
       folder_uid = "__MYSQL_FOLDER_UID__";
@@ -271,7 +296,8 @@ let
       no_data_state = "OK";
       custom_labels = {
         severity = "critical";
-        route = "pagerduty";
+        route = alertRoute;
+        env = alertEnv;
         managed_by = "pxc-pmm-alerts-controller";
       };
       folder_uid = "__MYSQL_FOLDER_UID__";
@@ -284,7 +310,8 @@ let
       no_data_state = "OK";
       custom_labels = {
         severity = "critical";
-        route = "pagerduty";
+        route = alertRoute;
+        env = alertEnv;
         managed_by = "pxc-pmm-alerts-controller";
       };
       folder_uid = "__MYSQL_FOLDER_UID__";
@@ -297,7 +324,8 @@ let
       no_data_state = "OK";
       custom_labels = {
         severity = "warning";
-        route = "default";
+        route = alertRoute;
+        env = alertEnv;
         managed_by = "pxc-pmm-alerts-controller";
       };
       folder_uid = "__MYSQL_FOLDER_UID__";
@@ -310,7 +338,8 @@ let
       no_data_state = "OK";
       custom_labels = {
         severity = "critical";
-        route = "pagerduty";
+        route = alertRoute;
+        env = alertEnv;
         managed_by = "pxc-pmm-alerts-controller";
       };
       folder_uid = "__MYSQL_FOLDER_UID__";
@@ -323,7 +352,8 @@ let
       no_data_state = "OK";
       custom_labels = {
         severity = "warning";
-        route = "default";
+        route = alertRoute;
+        env = alertEnv;
         managed_by = "pxc-pmm-alerts-controller";
       };
       folder_uid = "__MYSQL_FOLDER_UID__";
@@ -336,7 +366,8 @@ let
       no_data_state = "OK";
       custom_labels = {
         severity = "critical";
-        route = "pagerduty";
+        route = alertRoute;
+        env = alertEnv;
         managed_by = "pxc-pmm-alerts-controller";
       };
       folder_uid = "__MYSQL_FOLDER_UID__";
@@ -349,7 +380,8 @@ let
       no_data_state = "OK";
       custom_labels = {
         severity = "warning";
-        route = "default";
+        route = alertRoute;
+        env = alertEnv;
         managed_by = "pxc-pmm-alerts-controller";
       };
       folder_uid = "__MYSQL_FOLDER_UID__";
@@ -362,7 +394,8 @@ let
       no_data_state = "OK";
       custom_labels = {
         severity = "critical";
-        route = "pagerduty";
+        route = alertRoute;
+        env = alertEnv;
         managed_by = "pxc-pmm-alerts-controller";
       };
       folder_uid = "__MYSQL_FOLDER_UID__";
@@ -375,7 +408,8 @@ let
       no_data_state = "OK";
       custom_labels = {
         severity = "warning";
-        route = "default";
+        route = alertRoute;
+        env = alertEnv;
         managed_by = "pxc-pmm-alerts-controller";
       };
       folder_uid = "__MYSQL_FOLDER_UID__";
@@ -388,7 +422,8 @@ let
       no_data_state = "OK";
       custom_labels = {
         severity = "critical";
-        route = "pagerduty";
+        route = alertRoute;
+        env = alertEnv;
         managed_by = "pxc-pmm-alerts-controller";
       };
       folder_uid = "__MYSQL_FOLDER_UID__";
@@ -402,7 +437,8 @@ let
       no_data_state = "OK";
       custom_labels = {
         severity = "warning";
-        route = "default";
+        route = alertRoute;
+        env = alertEnv;
         managed_by = "pxc-pmm-alerts-controller";
       };
       folder_uid = "__MYSQL_FOLDER_UID__";
@@ -415,7 +451,8 @@ let
       no_data_state = "OK";
       custom_labels = {
         severity = "critical";
-        route = "pagerduty";
+        route = alertRoute;
+        env = alertEnv;
         managed_by = "pxc-pmm-alerts-controller";
       };
       folder_uid = "__MYSQL_FOLDER_UID__";
@@ -428,7 +465,8 @@ let
       no_data_state = "OK";
       custom_labels = {
         severity = "warning";
-        route = "default";
+        route = alertRoute;
+        env = alertEnv;
         managed_by = "pxc-pmm-alerts-controller";
       };
       folder_uid = "__MYSQL_FOLDER_UID__";
@@ -441,7 +479,8 @@ let
       no_data_state = "OK";
       custom_labels = {
         severity = "critical";
-        route = "pagerduty";
+        route = alertRoute;
+        env = alertEnv;
         managed_by = "pxc-pmm-alerts-controller";
       };
       folder_uid = "__MYSQL_FOLDER_UID__";
@@ -460,7 +499,8 @@ let
       no_data_state = "Alerting";
       custom_labels = {
         severity = "critical";
-        route = "pagerduty";
+        route = alertRoute;
+        env = alertEnv;
         managed_by = "pxc-pmm-alerts-controller";
       };
       folder_uid = "__MYSQL_FOLDER_UID__";
@@ -476,7 +516,8 @@ let
       no_data_state = "OK";
       custom_labels = {
         severity = "critical";
-        route = "pagerduty";
+        route = alertRoute;
+        env = alertEnv;
         managed_by = "pxc-pmm-alerts-controller";
       };
       folder_uid = "__MYSQL_FOLDER_UID__";
@@ -490,7 +531,8 @@ let
       no_data_state = "OK";
       custom_labels = {
         severity = "critical";
-        route = "pagerduty";
+        route = alertRoute;
+        env = alertEnv;
         managed_by = "pxc-pmm-alerts-controller";
       };
       folder_uid = "__MYSQL_FOLDER_UID__";
@@ -503,7 +545,8 @@ let
       no_data_state = "OK";
       custom_labels = {
         severity = "critical";
-        route = "pagerduty";
+        route = alertRoute;
+        env = alertEnv;
         managed_by = "pxc-pmm-alerts-controller";
       };
       folder_uid = "__MYSQL_FOLDER_UID__";
@@ -516,7 +559,8 @@ let
       no_data_state = "OK";
       custom_labels = {
         severity = "warning";
-        route = "default";
+        route = alertRoute;
+        env = alertEnv;
         managed_by = "pxc-pmm-alerts-controller";
       };
       folder_uid = "__MYSQL_FOLDER_UID__";
@@ -532,7 +576,8 @@ let
       no_data_state = "OK";
       custom_labels = {
         severity = "critical";
-        route = "pagerduty";
+        route = alertRoute;
+        env = alertEnv;
         managed_by = "pxc-pmm-alerts-controller";
       };
       folder_uid = "__MYSQL_FOLDER_UID__";
@@ -545,7 +590,8 @@ let
       no_data_state = "OK";
       custom_labels = {
         severity = "warning";
-        route = "default";
+        route = alertRoute;
+        env = alertEnv;
         managed_by = "pxc-pmm-alerts-controller";
       };
       folder_uid = "__MYSQL_FOLDER_UID__";
@@ -560,7 +606,8 @@ let
       no_data_state = "OK";
       custom_labels = {
         severity = "critical";
-        route = "pagerduty";
+        route = alertRoute;
+        env = alertEnv;
         managed_by = "pxc-pmm-alerts-controller";
       };
       folder_uid = "__MYSQL_FOLDER_UID__";
@@ -573,7 +620,8 @@ let
       no_data_state = "OK";
       custom_labels = {
         severity = "warning";
-        route = "default";
+        route = alertRoute;
+        env = alertEnv;
         managed_by = "pxc-pmm-alerts-controller";
       };
       folder_uid = "__MYSQL_FOLDER_UID__";
@@ -586,7 +634,8 @@ let
       no_data_state = "OK";
       custom_labels = {
         severity = "critical";
-        route = "pagerduty";
+        route = alertRoute;
+        env = alertEnv;
         managed_by = "pxc-pmm-alerts-controller";
       };
       folder_uid = "__MYSQL_FOLDER_UID__";
@@ -600,7 +649,8 @@ let
       no_data_state = "OK";
       custom_labels = {
         severity = "warning";
-        route = "default";
+        route = alertRoute;
+        env = alertEnv;
         managed_by = "pxc-pmm-alerts-controller";
       };
       folder_uid = "__MYSQL_FOLDER_UID__";
