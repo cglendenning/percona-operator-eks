@@ -22,6 +22,10 @@
 #   RECOVERY_BUSYBOX_IMAGE  override busybox image tag (default busybox:1.36)
 #   PXC_ROOT_SECRET_NAME    Kubernetes Secret containing MySQL root password (key: root).
 #                           Overrides default name ${PXC_CR}-secrets; --root-secret wins if both set.
+#   PXC_MYSQL_HOST          primary TCP target for mysql client (default 127.0.0.1)
+#   PXC_MYSQL_PORT          mysqld port (default 3306)
+#   PXC_MYSQL_CONNECT_RETRIES  attempts (default 45); unhealthy Galera may delay accepting SQL
+#   PXC_MYSQL_CONNECT_DELAY    seconds between rounds (default 2)
 #
 set -euo pipefail
 
@@ -78,6 +82,14 @@ while [[ $# -gt 0 ]]; do
 done
 
 [[ -n "$NAMESPACE" ]] || die "namespace is required (-n/--namespace)"
+
+# MySQL client inside PXC pods: try TCP then Unix sockets; retry while mysqld/Galera recovers.
+PXC_MYSQL_HOST="${PXC_MYSQL_HOST:-127.0.0.1}"
+PXC_MYSQL_PORT="${PXC_MYSQL_PORT:-3306}"
+PXC_MYSQL_CONNECT_RETRIES="${PXC_MYSQL_CONNECT_RETRIES:-45}"
+PXC_MYSQL_CONNECT_DELAY="${PXC_MYSQL_CONNECT_DELAY:-2}"
+
+LAST_MYSQL_CTN=""
 
 need kubectl
 need jq
@@ -157,6 +169,97 @@ mysql_container_for_pod() {
         // .spec.containers[0].name // empty')"
   [[ -n "$cn" ]] || die "cannot resolve mysql container name for pod $pod"
   echo "$cn"
+}
+
+# Prefer containers that mount /var/lib/mysql (where mysqld runs); fall back to mysql_container_for_pod.
+mysql_containers_to_try() {
+  local pod="$1"
+  local json
+  json="$(kube get pod "$pod" -n "$NAMESPACE" -o json)"
+  local -a names=()
+  mapfile -t names < <(jq -r '
+    [.spec.containers[]
+      | select(any(.volumeMounts[]?; .mountPath == "/var/lib/mysql"))
+      | .name]
+      | unique[]
+  ' <<<"$json")
+  if [[ "${#names[@]}" -gt 0 && -n "${names[0]}" ]]; then
+    printf '%s\n' "${names[@]}"
+    return 0
+  fi
+  mysql_container_for_pod "$pod"
+}
+
+_pod_primary_ip() {
+  local pod="$1" ctn="$2"
+  kube exec -n "$NAMESPACE" "$pod" -c "$ctn" -- \
+    sh -c 'hostname -i 2>/dev/null || true' 2>/dev/null | awk '{ print $1 }'
+}
+
+# Streams SQL on stdin to mysql. Tries: TCP configured host, TCP pod IP, Unix sockets.
+mysql_query_once() {
+  local pod="$1" ctn="$2" pw="$3" use_n="$4" sql="$5" show_err="$6"
+  local -a base=()
+  [[ "$use_n" == "y" ]] && base+=(-N)
+  local err_sink=/dev/null
+  [[ "$show_err" == "1" ]] && err_sink=/dev/stderr
+  local hip sock
+
+  hip="$(_pod_primary_ip "$pod" "$ctn")"
+
+  if printf '%s\n' "$sql" | kube exec -i -n "$NAMESPACE" "$pod" -c "$ctn" -- \
+      env MYSQL_PWD="$pw" mysql "${base[@]}" \
+        --protocol=TCP -h"$PXC_MYSQL_HOST" -P"$PXC_MYSQL_PORT" -uroot 2>"$err_sink"; then
+    return 0
+  fi
+  if [[ -n "$hip" ]] && printf '%s\n' "$sql" | kube exec -i -n "$NAMESPACE" "$pod" -c "$ctn" -- \
+      env MYSQL_PWD="$pw" mysql "${base[@]}" \
+        --protocol=TCP -h"$hip" -P"$PXC_MYSQL_PORT" -uroot 2>"$err_sink"; then
+    return 0
+  fi
+  for sock in /var/lib/mysql/mysql.sock /var/run/mysqld/mysqld.sock /tmp/mysql.sock; do
+    kube exec -n "$NAMESPACE" "$pod" -c "$ctn" -- test -S "$sock" 2>/dev/null || continue
+    if printf '%s\n' "$sql" | kube exec -i -n "$NAMESPACE" "$pod" -c "$ctn" -- \
+        env MYSQL_PWD="$pw" mysql "${base[@]}" --socket="$sock" -uroot 2>"$err_sink"; then
+      return 0
+    fi
+  done
+  return 1
+}
+
+mysql_query_with_retries_pod() {
+  local pod="$1" pw="$2" use_n="$3" sql="$4"
+  local max="${PXC_MYSQL_CONNECT_RETRIES}" delay="${PXC_MYSQL_CONNECT_DELAY}"
+  local -a ctns=()
+  mapfile -t ctns < <(mysql_containers_to_try "$pod")
+  [[ "${#ctns[@]}" -gt 0 ]] || die "no mysql containers to try on pod ${pod}"
+
+  local a c show_err
+  for ((a = 1; a <= max; a++)); do
+    [[ "$a" -eq "$max" ]] && show_err=1 || show_err=0
+    for c in "${ctns[@]}"; do
+      if mysql_query_once "$pod" "$c" "$pw" "$use_n" "$sql" "$show_err"; then
+        LAST_MYSQL_CTN="$c"
+        log "mysql OK via container ${LAST_MYSQL_CTN} (${a}/${max})"
+        return 0
+      fi
+    done
+    log "mysql not reachable on any container (attempt ${a}/${max}); waiting ${delay}s then retry (${ctns[*]})."
+    sleep "$delay"
+  done
+  return 1
+}
+
+mysql_query_using_last_ctn() {
+  local pod="$1" pw="$2" use_n="$3" sql="$4"
+  if [[ -n "${LAST_MYSQL_CTN:-}" ]]; then
+    if mysql_query_once "$pod" "$LAST_MYSQL_CTN" "$pw" "$use_n" "$sql" 1; then
+      return 0
+    fi
+    log "mysql failed on cached container ${LAST_MYSQL_CTN}; rediscovering..."
+    LAST_MYSQL_CTN=""
+  fi
+  mysql_query_with_retries_pod "$pod" "$pw" "$use_n" "$sql"
 }
 
 datadir_claim_for_pod() {
@@ -260,8 +363,10 @@ inspect_cluster() {
     node="$(kube get pod "$p" -n "$NAMESPACE" -o jsonpath='{.spec.nodeName}' 2>/dev/null || true)"
     log "    datadir pvc: ${claim:-unknown}  node: ${node:-unknown}"
     if ! pod_is_crashloop "$p"; then
-      local ctn
-      ctn="$(mysql_container_for_pod "$p")"
+      local ctn _ctdf=()
+      mapfile -t _ctdf < <(mysql_containers_to_try "$p")
+      ctn="${_ctdf[0]:-}"
+      [[ -n "$ctn" ]] || ctn="$(mysql_container_for_pod "$p")"
       kube exec -n "$NAMESPACE" "$p" -c "$ctn" -- df -h /var/lib/mysql 2>/dev/null \
         || log "    could not exec df on $p"
     fi
@@ -275,16 +380,16 @@ purge_binlogs_via_member() {
   local candidate="$1"
   pod_is_crashloop "$candidate" && die "chosen pod $candidate is CrashLoopBackOff"
 
-  local ctn pw
-  ctn="$(mysql_container_for_pod "$candidate")"
+  local pw
   pw="$(root_password_from_secret)"
-  export MYSQL_PWD="$pw"
+  LAST_MYSQL_CTN=""
 
-  log "Fetching SHOW BINARY LOGS from pod $candidate (you will be prompted before any PURGE)"
+  log "Reaching mysqld inside ${candidate} (TCP:${PXC_MYSQL_HOST}:${PXC_MYSQL_PORT}, pod IP, Unix sockets; up to ${PXC_MYSQL_CONNECT_RETRIES}x${PXC_MYSQL_CONNECT_DELAY}s)."
 
-  kube exec -n "$NAMESPACE" "$candidate" -c "$ctn" -- \
-    env MYSQL_PWD="$pw" mysql -uroot -N -e "SHOW BINARY LOGS;" \
-    || die "unable to reach MySQL inside $candidate"
+  log "Fetching SHOW BINARY LOGS (you will be prompted before any PURGE)"
+
+  mysql_query_with_retries_pod "$candidate" "$pw" y "SHOW BINARY LOGS;" \
+    || die "unable to reach MySQL in ${candidate} after ${PXC_MYSQL_CONNECT_RETRIES} rounds; check wsrep_ready, disk, and PXC_MYSQL_* settings"
 
   log "Suggested cleanup: purge up to EXCLUDING the newest file still needed downstream."
   log "Prefer PURGE BINARY LOGS TO 'filename'; (keeps named file)."
@@ -292,8 +397,6 @@ purge_binlogs_via_member() {
   read -r target_file
   if [[ -z "$target_file" ]]; then
     log "skipping PURGE."
-    unset MYSQL_PWD
-    export -n MYSQL_PWD 2>/dev/null || true
     return 0
   fi
   if [[ ! "$target_file" =~ ^[A-Za-z0-9_.-]+$ ]]; then
@@ -302,10 +405,8 @@ purge_binlogs_via_member() {
   confirm \
     "PURGE removes prior binary logs on THIS member (${candidate}). Replica/PITR impact is your responsibility." \
     "PURGE $target_file"
-  kube exec -n "$NAMESPACE" "$candidate" -c "$ctn" -- \
-    env MYSQL_PWD="$pw" mysql -uroot -e "PURGE BINARY LOGS TO '${target_file}';"
-  unset MYSQL_PWD || true
-  export -n MYSQL_PWD 2>/dev/null || true
+  mysql_query_using_last_ctn "$candidate" "$pw" n "PURGE BINARY LOGS TO '${target_file}';" \
+    || die "PURGE failed on ${candidate}"
   log "PURGE completed on $candidate (verify space with df)."
 }
 
@@ -455,14 +556,15 @@ main() {
   inspect_cluster
 
   echo ""
-  log "Healthy member for MySQL-assisted recovery (shows Running, non-crashloop):"
+  log "MySQL-assisted recovery candidates: Running phase, not CrashLoopBackOff (Pod can be NotReady while mysqld warms up):"
   local pods running=()
   mapfile -t pods < <(list_pxc_member_pods)
-  local p ctn
+  local p ready
   for p in "${pods[@]}"; do
     if ! pod_is_crashloop "$p" && kube get pod "$p" -n "$NAMESPACE" -o jsonpath='{.status.phase}' 2>/dev/null | grep -qx Running; then
       running+=("$p")
-      echo "  - $p"
+      ready="$(kube get pod "$p" -n "$NAMESPACE" -o jsonpath='{.status.containerStatuses[0].ready}' 2>/dev/null || echo "?")"
+      echo "  - $p (container[0].ready=${ready})"
     fi
   done
 
