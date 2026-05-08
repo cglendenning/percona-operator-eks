@@ -15,10 +15,13 @@
 # Kubeconfig: every kubectl uses --kubeconfig when KUBECONFIG is set (non-empty).
 #
 # Usage:
-#   ./pxc-disk-full-recovery.sh -n NAMESPACE [-c PXC_CR_NAME] [--recovery-image busybox:1.36]
+#   ./pxc-disk-full-recovery.sh -n NAMESPACE [-c PXC_CR_NAME] [--root-secret SECRET]
+#       [--recovery-image busybox:1.36]
 #
 # Environment:
 #   RECOVERY_BUSYBOX_IMAGE  override busybox image tag (default busybox:1.36)
+#   PXC_ROOT_SECRET_NAME    Kubernetes Secret containing MySQL root password (key: root).
+#                           Overrides default name ${PXC_CR}-secrets; --root-secret wins if both set.
 #
 set -euo pipefail
 
@@ -45,6 +48,7 @@ need() {
 NAMESPACE=""
 PXC_CR=""
 RECOVERY_IMAGE="${RECOVERY_BUSYBOX_IMAGE:-busybox:1.36}"
+ROOT_SECRET_NAME="${PXC_ROOT_SECRET_NAME:-}"
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -54,6 +58,10 @@ while [[ $# -gt 0 ]]; do
       ;;
     -c|--cluster)
       PXC_CR="${2:-}"
+      shift 2
+      ;;
+    --root-secret)
+      ROOT_SECRET_NAME="${2:-}"
       shift 2
       ;;
     --recovery-image)
@@ -212,9 +220,9 @@ discover_operator_deployment() {
 }
 
 root_password_from_secret() {
-  local secret="${PXC_CR}-secrets"
+  local secret="${ROOT_SECRET_NAME:-${PXC_CR}-secrets}"
   if ! kube get secret "$secret" -n "$NAMESPACE" >/dev/null 2>&1; then
-    die "secret ${secret} not found (adjust secret naming outside this script)"
+    die "secret '${secret}' not found in ${NAMESPACE} (use --root-secret or PXC_ROOT_SECRET_NAME)"
   fi
   kube get secret "$secret" -n "$NAMESPACE" -o jsonpath='{.data.root}' | base64 -d
 }
