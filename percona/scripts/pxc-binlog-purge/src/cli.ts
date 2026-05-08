@@ -106,6 +106,21 @@ async function getPxcPods(ns: string, cluster?: string): Promise<{ pods: string[
   const sel = cluster ? `${baseSel},app.kubernetes.io/instance=${cluster}` : baseSel;
   const pods = await kubectlJson<PodList>(["get", "pods", "-l", sel], ns);
 
+  if (!cluster) {
+    const instances = new Set<string>();
+    for (const p of pods.items) {
+      const inst = p.metadata.labels?.["app.kubernetes.io/instance"]?.trim();
+      if (inst) instances.add(inst);
+    }
+    if (instances.size > 1) {
+      const list = [...instances].sort().join(", ");
+      throw new Error(
+        `Multiple PXC clusters found in namespace ${ns}: ${list}. ` +
+          `Pass --cluster to select one.`
+      );
+    }
+  }
+
   const running = pods.items
     .filter((p) => (p.status?.phase ?? "") === "Running")
     .map((p) => p.metadata.name)
