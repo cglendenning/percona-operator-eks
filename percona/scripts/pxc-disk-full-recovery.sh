@@ -238,8 +238,16 @@ disk_snapshot_on_mount() {
   local pod="$1" ctn="$2" dd="$3"
   local show_mysqld="${4:-1}"
   log "--- disk / binlogs: ${pod} container=${ctn} mount=${dd} ---"
-  kube exec -n "$NAMESPACE" "$pod" -c "$ctn" -- df -h "$dd" 2>/dev/null \
-    || log "    df failed (exec error)"
+  if ! kube exec -n "$NAMESPACE" "$pod" -c "$ctn" -- df -h "$dd" 2>/dev/null; then
+    if ! kube exec -n "$NAMESPACE" "$pod" -c "$ctn" -- df "$dd" 2>/dev/null; then
+      log "    df failed (exec error). diagnostics:"
+      kube get pod "$pod" -n "$NAMESPACE" -o wide 2>/dev/null || true
+      kube get pod "$pod" -n "$NAMESPACE" -o json 2>/dev/null \
+        | jq -r '.status.containerStatuses[]? | "\(.name)\tready=\(.ready)\trestart=\(.restartCount)\tstate=\(.state|keys[0])\treason=\(.state.waiting.reason // \"-\")"' \
+        2>/dev/null || true
+      kube exec -n "$NAMESPACE" "$pod" -c "$ctn" -- sh -c 'id; uname -a; command -v df || true; ls -la / 2>/dev/null | head -20' 2>/dev/null || true
+    fi
+  fi
   if [[ "$show_mysqld" == "1" ]]; then
     kube exec -n "$NAMESPACE" "$pod" -c "$ctn" -- \
       sh -c 'echo "mysqld process:"; (command -v pgrep >/dev/null 2>&1 && pgrep -a mysqld) || ps aux | awk "/[m]ysqld/ {print}"' \
@@ -373,6 +381,27 @@ wait_pod_phase_running() {
   return 1
 }
 
+wait_pod_container_running() {
+  local pod="$1"
+  local ctn="$2"
+  local max="${3:-24}"
+  local i state
+  for ((i = 1; i <= max; i++)); do
+    state="$(
+      kube get pod "$pod" -n "$NAMESPACE" -o json 2>/dev/null \
+        | jq -r --arg c "$ctn" '
+            (.status.containerStatuses[]? | select(.name==$c) | (.state | keys[0])) // empty
+          '
+    )"
+    if [[ "$state" == "running" ]]; then
+      return 0
+    fi
+    log "waiting for pod ${pod} container ${ctn} state=running (now: ${state:-missing}) ${i}/${max}"
+    sleep 2
+  done
+  return 1
+}
+
 pack_basenames_line_to_b64() {
   local base_line="$1"
   local -a bases=()
@@ -389,6 +418,21 @@ pack_basenames_line_to_b64() {
   printf '%s' "$baselist_packed" | base64 | tr -d '\n'
 }
 
+list_binlog_basenames_on_mount() {
+  local pod="$1" ctn="$2" dd="$3"
+  echo "" >&2
+  log "Binlog-like files on ${pod}:${dd} (basenames):"
+  kube exec -n "$NAMESPACE" "$pod" -c "$ctn" -- env SNAP_DD="$dd" sh -ec '
+    dd="$SNAP_DD"
+    cd "$dd" 2>/dev/null || exit 0
+    # Keep it simple/portable: just emit basenames in a stable order.
+    find "$dd" -maxdepth 1 -type f \( -name "binlog.*" -o -name "*-bin.*" -o -name "*.index" \) \
+      -printf "%f\n" 2>/dev/null \
+      | sort \
+      || true
+  ' 2>/dev/null || true
+}
+
 # Same binlog file + *.index prune as healthy members, on a recovery Pod mount (default /mnt/mysql).
 recovery_mount_filesystem_offer() {
   local rpod="$1"
@@ -399,6 +443,7 @@ recovery_mount_filesystem_offer() {
   echo ""
   log "PVC recovery pod ${rpod} — datadir mount ${dd} (container ${ctn})"
   disk_snapshot_on_mount "$rpod" "$ctn" "$dd" 0
+  list_binlog_basenames_on_mount "$rpod" "$ctn" "$dd"
 
   b64=""
   if [[ -n "${LAST_FS_BINLOG_B64:-}" ]]; then
@@ -428,7 +473,7 @@ recovery_mount_filesystem_offer() {
   fi
 
   confirm "Delete named binlog files + prune *.index under ${dd} on Pod ${rpod}." \
-    "DELETE-BINLOGS-RECOVERY-MOUNT" \
+    "delete" \
     || { log "Aborted recovery mount cleanup."; return 0; }
 
   if filesystem_binlog_delete_on_pod "$rpod" "$ctn" "$b64" "$dd"; then
@@ -887,7 +932,12 @@ handle_crashloop_member() {
     "$NAMESPACE" "$rpod" >&2
 
   if wait_pod_phase_running "$rpod"; then
-    recovery_mount_filesystem_offer "$rpod" /mnt/mysql recovery
+    if wait_pod_container_running "$rpod" recovery; then
+      recovery_mount_filesystem_offer "$rpod" /mnt/mysql recovery
+    else
+      log "WARN: recovery pod ${rpod} container 'recovery' not running; filesystem cleanup skipped."
+      log "Retry later: kubectl exec -n ${NAMESPACE} -c recovery ${rpod} -- df /mnt/mysql"
+    fi
   else
     log "WARN: recovery pod ${rpod} did not reach Running quickly; filesystem cleanup skipped. Delete member Pod contention or CSI attach delay."
     log "Retry manually: kubectl exec -n ${NAMESPACE} -c recovery ${rpod} -- df /mnt/mysql"
