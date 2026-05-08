@@ -91,6 +91,9 @@ done
 PXC_MYSQL_HOST="${PXC_MYSQL_HOST:-127.0.0.1}"
 PXC_MYSQL_PORT="${PXC_MYSQL_PORT:-3306}"
 PXC_MYSQL_WARMUP_SECONDS="${PXC_MYSQL_WARMUP_SECONDS:-0}"
+# Hard caps for kubectl exec probes (super aggressive by default).
+PXC_KUBECTL_EXEC_TIMEOUT_SECS="${PXC_KUBECTL_EXEC_TIMEOUT_SECS:-3}"
+PXC_MYSQL_PROBE_TIMEOUT_SECS="${PXC_MYSQL_PROBE_TIMEOUT_SECS:-3}"
 
 LAST_MYSQL_CTN=""
 # Parallel arrays populated by probe_mysql_on_healthy_members: pod name -> working container name
@@ -102,12 +105,44 @@ LAST_FS_BINLOG_B64=""
 need kubectl
 need jq
 
+KUBECTL=(kubectl)
+if [[ -n "${KUBECONFIG:-}" ]]; then
+  KUBECTL+=(--kubeconfig="$KUBECONFIG")
+fi
+
 kube() {
-  if [[ -n "${KUBECONFIG:-}" ]]; then
-    kubectl --kubeconfig="$KUBECONFIG" "$@"
-  else
-    kubectl "$@"
+  "${KUBECTL[@]}" "$@"
+}
+
+run_with_timeout() {
+  local secs="$1"
+  shift
+  if [[ ! "${secs}" =~ ^[0-9]+$ ]] || [[ "${secs}" -lt 1 ]]; then
+    die "bad timeout seconds: ${secs}"
   fi
+  if command -v timeout >/dev/null 2>&1; then
+    timeout "${secs}" "$@"
+    return $?
+  fi
+  if command -v gtimeout >/dev/null 2>&1; then
+    gtimeout "${secs}" "$@"
+    return $?
+  fi
+  "$@" &
+  local pid=$!
+  local i=0
+  while kill -0 "${pid}" 2>/dev/null; do
+    if [[ "${i}" -ge "${secs}" ]]; then
+      kill -TERM "${pid}" 2>/dev/null || true
+      sleep 1
+      kill -KILL "${pid}" 2>/dev/null || true
+      wait "${pid}" 2>/dev/null || true
+      return 124
+    fi
+    sleep 1
+    i=$((i + 1))
+  done
+  wait "${pid}"
 }
 
 confirm() {
@@ -117,6 +152,16 @@ confirm() {
   printf "%s\nType exactly: %s\n" "$msg" "$must" >&2
   read -r line
   [[ "$line" == "$must" ]]
+}
+
+confirm_ci() {
+  local msg="$1"
+  local must_lower="$2"
+  local line
+  printf "%s\nType exactly: %s\n" "$msg" "$must_lower" >&2
+  read -r line
+  line="${line,,}"
+  [[ "$line" == "$must_lower" ]]
 }
 
 list_pxc_cr_names() {
@@ -200,7 +245,7 @@ mysql_containers_to_try() {
 
 _pod_primary_ip() {
   local pod="$1" ctn="$2"
-  kube exec -n "$NAMESPACE" "$pod" -c "$ctn" -- \
+  run_with_timeout "${PXC_KUBECTL_EXEC_TIMEOUT_SECS}" "${KUBECTL[@]}" exec -n "$NAMESPACE" "$pod" -c "$ctn" -- \
     sh -c 'hostname -i 2>/dev/null || true' 2>/dev/null | awk '{ print $1 }'
 }
 
@@ -259,8 +304,13 @@ disk_snapshot_on_mount() {
   ' 2>/dev/null || true
   kube exec -n "$NAMESPACE" "$pod" -c "$ctn" -- env SNAP_DD="$dd" sh -ec '
     dd="$SNAP_DD"
-    find "$dd" -maxdepth 1 -type f \( -name "binlog.*" -o -name "*-bin.*" -o -name "*.index" \) \
-      -exec ls -lh {} \; 2>/dev/null | sort -k5 -h -r | head -40
+    # Unique, stable listing of binlog-like files (avoid double-globbing / double-printing).
+    paths="$(ls -1 "$dd"/binlog.* "$dd"/*-bin.* "$dd"/*.index 2>/dev/null | sort -u || true)"
+    [ -z "${paths}" ] && exit 0
+    # Print sizes; sort by size desc (best-effort: relies on ls -lh format).
+    for p in $paths; do
+      [ -f "$p" ] && ls -lh "$p" 2>/dev/null
+    done | sort -k5 -h -r | head -40
   ' 2>/dev/null || true
 }
 
@@ -279,19 +329,19 @@ mysql_query_once() {
 
   hip="$(_pod_primary_ip "$pod" "$ctn")"
 
-  if printf '%s\n' "$sql" | kube exec -i -n "$NAMESPACE" "$pod" -c "$ctn" -- \
+  if printf '%s\n' "$sql" | run_with_timeout "${PXC_MYSQL_PROBE_TIMEOUT_SECS}" "${KUBECTL[@]}" exec -i -n "$NAMESPACE" "$pod" -c "$ctn" -- \
       env MYSQL_PWD="$pw" mysql "${base[@]}" \
         --protocol=TCP -h"$PXC_MYSQL_HOST" -P"$PXC_MYSQL_PORT" -uroot 2>"$err_sink"; then
     return 0
   fi
-  if [[ -n "$hip" ]] && printf '%s\n' "$sql" | kube exec -i -n "$NAMESPACE" "$pod" -c "$ctn" -- \
+  if [[ -n "$hip" ]] && printf '%s\n' "$sql" | run_with_timeout "${PXC_MYSQL_PROBE_TIMEOUT_SECS}" "${KUBECTL[@]}" exec -i -n "$NAMESPACE" "$pod" -c "$ctn" -- \
       env MYSQL_PWD="$pw" mysql "${base[@]}" \
         --protocol=TCP -h"$hip" -P"$PXC_MYSQL_PORT" -uroot 2>"$err_sink"; then
     return 0
   fi
   for sock in /var/lib/mysql/mysql.sock /var/run/mysqld/mysqld.sock /tmp/mysql.sock; do
-    kube exec -n "$NAMESPACE" "$pod" -c "$ctn" -- test -S "$sock" 2>/dev/null || continue
-    if printf '%s\n' "$sql" | kube exec -i -n "$NAMESPACE" "$pod" -c "$ctn" -- \
+    run_with_timeout "${PXC_MYSQL_PROBE_TIMEOUT_SECS}" "${KUBECTL[@]}" exec -n "$NAMESPACE" "$pod" -c "$ctn" -- test -S "$sock" 2>/dev/null || continue
+    if printf '%s\n' "$sql" | run_with_timeout "${PXC_MYSQL_PROBE_TIMEOUT_SECS}" "${KUBECTL[@]}" exec -i -n "$NAMESPACE" "$pod" -c "$ctn" -- \
         env MYSQL_PWD="$pw" mysql "${base[@]}" --socket="$sock" -uroot 2>"$err_sink"; then
       return 0
     fi
@@ -329,7 +379,7 @@ probe_mysql_on_healthy_members() {
       MYSQL_REACHABLE_CTNS+=("${LAST_MYSQL_CTN}")
       log "mysqld accepts SQL on ${p} container=${LAST_MYSQL_CTN}"
     else
-      log "no working mysql login on ${p} (skipped after one probe pass)"
+      log "mysql probe failed on ${p} (single-pass, ${PXC_MYSQL_PROBE_TIMEOUT_SECS}s cap per exec)"
     fi
   done
   [[ "${#MYSQL_REACHABLE_PODS[@]}" -gt 0 ]]
@@ -425,11 +475,12 @@ list_binlog_basenames_on_mount() {
   kube exec -n "$NAMESPACE" "$pod" -c "$ctn" -- env SNAP_DD="$dd" sh -ec '
     dd="$SNAP_DD"
     cd "$dd" 2>/dev/null || exit 0
-    # Keep it simple/portable: just emit basenames in a stable order.
-    find "$dd" -maxdepth 1 -type f \( -name "binlog.*" -o -name "*-bin.*" -o -name "*.index" \) \
-      -printf "%f\n" 2>/dev/null \
-      | sort \
-      || true
+    # BusyBox find often lacks -printf; use globbing + ls and strip paths.
+    (
+      ls -1 "$dd"/binlog.* "$dd"/*-bin.* "$dd"/*.index 2>/dev/null \
+        | awk -F/ "{print \\$NF}" \
+        | sort -u
+    ) || true
   ' 2>/dev/null || true
 }
 
@@ -472,7 +523,7 @@ recovery_mount_filesystem_offer() {
     b64="$(pack_basenames_line_to_b64 "$base_line")"
   fi
 
-  confirm "Delete named binlog files + prune *.index under ${dd} on Pod ${rpod}." \
+  confirm_ci "Delete named binlog files + prune *.index under ${dd} on Pod ${rpod}." \
     "delete" \
     || { log "Aborted recovery mount cleanup."; return 0; }
 
@@ -639,12 +690,12 @@ recovery_flow_disk_mysql_and_maybe_fs() {
   done
   if [[ "$any_mysqld" -ne 0 ]]; then
     log "mysqld appears to be running on at least one healthy member."
-    confirm "Deleting binlog files while mysqld runs can corrupt replication. Confirm you accept that risk." \
-      "DELETE-BINLOGS-WITH-MYSQLD-RUNNING" \
+    confirm_ci "Deleting binlog files while mysqld runs can corrupt replication. Confirm you accept that risk." \
+      "delete" \
       || { log "Aborted filesystem cleanup."; return 0; }
   else
-    confirm "Proceed with filesystem deletes + *.index pruning on all healthy members." \
-      "DELETE-BINLOGS-FILES" \
+    confirm_ci "Proceed with filesystem deletes + *.index pruning on all healthy members." \
+      "delete" \
       || { log "Aborted filesystem cleanup."; return 0; }
   fi
 
@@ -804,36 +855,98 @@ sanitize_dns_label() {
   printf '%s' "$s"
 }
 
-recovery_pod_yaml() {
+get_pod_scheduling_json() {
+  local pod="$1"
+  kube get pod "$pod" -n "$NAMESPACE" -o json 2>/dev/null \
+    | jq '{nodeSelector, tolerations, affinity, topologySpreadConstraints, priorityClassName, serviceAccountName} | with_entries(select(.value!=null))'
+}
+
+pvc_phase() {
+  local pvc="$1"
+  kube get pvc "$pvc" -n "$NAMESPACE" -o jsonpath='{.status.phase}' 2>/dev/null || true
+}
+
+pods_using_pvc() {
+  local pvc="$1"
+  kube get pods -n "$NAMESPACE" -o json 2>/dev/null \
+    | jq -r --arg pvc "$pvc" '
+      .items[]
+      | select(.status.phase != "Succeeded" and .status.phase != "Failed")
+      | select(any(.spec.volumes[]?; (.persistentVolumeClaim.claimName // "") == $pvc))
+      | .metadata.name
+    '
+}
+
+wait_pvc_bound_and_unused() {
+  local pvc="$1"
+  local max="${2:-20}" # ~40s
+  local i phase users
+  for ((i = 1; i <= max; i++)); do
+    phase="$(pvc_phase "$pvc")"
+    users="$(pods_using_pvc "$pvc" | tr '\n' ' ' | sed 's/[[:space:]]*$//')"
+    [[ -n "$phase" ]] || phase="missing"
+    if [[ "$phase" == "Bound" ]] && [[ -z "$users" ]]; then
+      return 0
+    fi
+    log "waiting for PVC ${pvc} phase=Bound and unused (phase=${phase}, users=${users:-none}) ${i}/${max}"
+    sleep 2
+  done
+  return 1
+}
+
+recovery_pod_manifest_json() {
   local name="$1"
   local pvc="$2"
   local node="$3"
-  cat <<EOF
-apiVersion: v1
-kind: Pod
-metadata:
-  name: ${name}
-  namespace: ${NAMESPACE}
-  labels:
-    pxc-disk-recovery: "true"
-spec:
-  nodeName: ${node}
-  restartPolicy: Never
-  terminationGracePeriodSeconds: 60
-  containers:
-  - name: recovery
-    image: ${RECOVERY_IMAGE}
-    command: ["sh", "-c", "sleep 36000"]
-    securityContext:
-      runAsUser: 0
-    volumeMounts:
-    - name: datadir
-      mountPath: /mnt/mysql
-  volumes:
-  - name: datadir
-    persistentVolumeClaim:
-      claimName: ${pvc}
-EOF
+  local scheduling_json="${4:-{}}"
+  jq -n \
+    --arg name "$name" \
+    --arg ns "$NAMESPACE" \
+    --arg node "$node" \
+    --arg pvc "$pvc" \
+    --arg img "$RECOVERY_IMAGE" \
+    --argjson sched "$scheduling_json" \
+    '
+    {
+      apiVersion: "v1",
+      kind: "Pod",
+      metadata: {
+        name: $name,
+        namespace: $ns,
+        labels: { "pxc-disk-recovery": "true" }
+      },
+      spec: (
+        {
+          nodeName: $node,
+          restartPolicy: "Never",
+          terminationGracePeriodSeconds: 60,
+          automountServiceAccountToken: false,
+          containers: [
+            {
+              name: "recovery",
+              image: $img,
+              imagePullPolicy: "IfNotPresent",
+              command: ["sh","-c","sleep 36000"],
+              securityContext: { runAsUser: 0 },
+              volumeMounts: [{ name: "datadir", mountPath: "/mnt/mysql" }]
+            }
+          ],
+          volumes: [
+            { name: "datadir", persistentVolumeClaim: { claimName: $pvc } }
+          ]
+        }
+        + $sched
+      )
+    }'
+}
+
+apply_recovery_pod() {
+  local rpod="$1" pvc="$2" node="$3" src_pod="$4"
+  local sched
+  sched="$(get_pod_scheduling_json "$src_pod" || echo '{}')"
+  kube get pvc "$pvc" -n "$NAMESPACE" >/dev/null 2>&1 || die "PVC $pvc not found in $NAMESPACE"
+  wait_pvc_bound_and_unused "$pvc" || die "PVC $pvc not ready for attach (still in use or not Bound)"
+  recovery_pod_manifest_json "$rpod" "$pvc" "$node" "$sched" | kube apply -f -
 }
 
 wait_operator_scaled_to_zero() {
@@ -880,7 +993,7 @@ handle_crashloop_member() {
     safecr="$(sanitize_dns_label "$PXC_CR")"
     suggest="pxc-pvc-recovery-${safecr}-manual-${ord}-$(date +%s)"
     log "When the PVC is unattached from the member Pod, apply a recovery Pod like this (name ${suggest}) and clear space under /mnt/mysql:"
-    recovery_pod_yaml "$suggest" "$claim" "$node" >&2 || true
+    recovery_pod_manifest_json "$suggest" "$claim" "$node" "$(get_pod_scheduling_json "$pod" || echo '{}')" >&2 || true
     printf "After applying a recovery Pod mounting claim %s, re-run this script namespace/cluster options (it will prompt for extra recovery Pods at the end), or cleanup manually.\n" "$claim" >&2
     printf "Press Enter to continue.\n" >&2
     read -r
@@ -923,8 +1036,7 @@ handle_crashloop_member() {
   if [[ "${#rpod}" -gt 200 ]]; then
     rpod="pxc-pvc-recovery-$(printf '%s/%s/%s' "$NAMESPACE" "$PXC_CR" "$ord" | sha256sum | awk '{print substr($1,1,24)}')"
   fi
-  recovery_pod_yaml "$rpod" "$claim" "$node" \
-    | kube apply -f -
+  apply_recovery_pod "$rpod" "$claim" "$node" "$pod"
   log "recovery pod ${rpod}"
   printf "inspect: kubectl --kubeconfig=... exec -n %s %s -c recovery -- df -h /mnt/mysql\n" \
     "$NAMESPACE" "$rpod" >&2
@@ -934,6 +1046,36 @@ handle_crashloop_member() {
   if wait_pod_phase_running "$rpod"; then
     if wait_pod_container_running "$rpod" recovery; then
       recovery_mount_filesystem_offer "$rpod" /mnt/mysql recovery
+      printf "Detach recovery pod %s now (free PVC for PXC to restart)? (yes/no): " "$rpod" >&2
+      read -r detach_now
+      detach_now="${detach_now,,}"
+      if [[ "$detach_now" == "yes" || "$detach_now" == "y" ]]; then
+        kube delete pod "$rpod" -n "$NAMESPACE" --wait=false >/dev/null 2>&1 || true
+        # don't wait forever; just confirm it started terminating
+        sleep 2
+        kube get pod "$rpod" -n "$NAMESPACE" >/dev/null 2>&1 || log "recovery pod ${rpod} deleted"
+
+        log "restoring StatefulSet/${sts} replicas -> ${reps}"
+        kube scale sts/"$sts" -n "$NAMESPACE" --replicas="$reps"
+        log "restoring operator Deployment/${op} replicas -> 1"
+        kube scale deploy/"$op" -n "$NAMESPACE" --replicas=1
+
+        # Bounded readiness check for the member ordinal we removed
+        local m="${PXC_CR}-pxc-${ord}"
+        local tries=0 ph
+        while [[ "$tries" -lt 15 ]]; do
+          ph="$(kube get pod "$m" -n "$NAMESPACE" -o jsonpath='{.status.phase}' 2>/dev/null || true)"
+          if [[ "$ph" == "Running" ]]; then
+            log "member pod ${m} is Running"
+            break
+          fi
+          log "waiting for member pod ${m} to be Running (now: ${ph:-missing}) $((tries+1))/15"
+          sleep 2
+          tries=$((tries + 1))
+        done
+      else
+        log "leaving recovery pod ${rpod} running; remember to delete it and scale STS/operator back up."
+      fi
     else
       log "WARN: recovery pod ${rpod} container 'recovery' not running; filesystem cleanup skipped."
       log "Retry later: kubectl exec -n ${NAMESPACE} -c recovery ${rpod} -- df /mnt/mysql"
