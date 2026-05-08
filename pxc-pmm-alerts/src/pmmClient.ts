@@ -16,6 +16,10 @@ async function pmmRequest<T>(args: {
   path: string;
   method?: string;
   body?: unknown;
+  /** Raw text body (skips JSON.stringify); takes precedence over `body` when set. */
+  bodyText?: string;
+  /** Override Content-Type when sending raw text bodies (e.g. Prometheus exposition). */
+  contentType?: string;
   timeoutMs: number;
   insecureTls: boolean;
   /** If set, these HTTP codes are treated as success (e.g. 404 on delete-if-absent). */
@@ -25,7 +29,9 @@ async function pmmRequest<T>(args: {
   const url = new URL(fullUrl);
   const isHttps = url.protocol === "https:";
   const authHeader = `Basic ${Buffer.from(`${args.user}:${args.password}`).toString("base64")}`;
-  const payload = args.body !== undefined ? JSON.stringify(args.body) : undefined;
+  const payload =
+    typeof args.bodyText === "string" ? args.bodyText : args.body !== undefined ? JSON.stringify(args.body) : undefined;
+  const payloadContentType = args.contentType ?? (typeof args.bodyText === "string" ? "text/plain" : "application/json");
 
   return await new Promise<T>((resolve, reject) => {
     const opts: http.RequestOptions | https.RequestOptions = {
@@ -36,7 +42,9 @@ async function pmmRequest<T>(args: {
       headers: {
         Authorization: authHeader,
         Accept: "application/json",
-        ...(payload ? { "Content-Type": "application/json", "Content-Length": Buffer.byteLength(payload) } : {}),
+        ...(payload
+          ? { "Content-Type": payloadContentType, "Content-Length": Buffer.byteLength(payload) }
+          : {}),
       },
       timeout: args.timeoutMs,
       ...(isHttps ? { rejectUnauthorized: !args.insecureTls } : {}),
@@ -90,7 +98,16 @@ export function createPmmClient(config: {
 }) {
   const { baseUrl, user, password, timeoutMs, insecureTls } = config;
 
-  function request<T>(path: string, opts?: { method?: string; body?: unknown; okStatuses?: Set<number> }): Promise<T> {
+  function request<T>(
+    path: string,
+    opts?: {
+      method?: string;
+      body?: unknown;
+      bodyText?: string;
+      contentType?: string;
+      okStatuses?: Set<number>;
+    }
+  ): Promise<T> {
     return pmmRequest<T>({
       baseUrl,
       user,
@@ -98,6 +115,8 @@ export function createPmmClient(config: {
       path,
       method: opts?.method,
       body: opts?.body,
+      bodyText: opts?.bodyText,
+      contentType: opts?.contentType,
       timeoutMs,
       insecureTls,
       okStatuses: opts?.okStatuses,
@@ -184,6 +203,32 @@ export function createPmmClient(config: {
 
     async createAlertingRule(payload: JsonObj): Promise<void> {
       await request("/v1/alerting/rules", { method: "POST", body: payload });
+    },
+
+    /**
+     * Push raw Prometheus text exposition into PMM's bundled VictoriaMetrics so PromQL alert rules
+     * can query the operator's view of cluster health. PMM 3 exposes vminsert at
+     * `/victoriametrics/api/v1/import/prometheus`. If a deployment fronts vmagent on the legacy
+     * `/prometheus/api/v1/import/prometheus` path, fall back to that automatically.
+     */
+    async importPrometheusMetrics(text: string): Promise<void> {
+      if (!text) return;
+      const paths = ["/victoriametrics/api/v1/import/prometheus", "/prometheus/api/v1/import/prometheus"];
+      let lastErr: unknown;
+      for (const p of paths) {
+        try {
+          await request(p, {
+            method: "POST",
+            bodyText: text,
+            contentType: "text/plain",
+            okStatuses: new Set([200, 204]),
+          });
+          return;
+        } catch (e) {
+          lastErr = e;
+        }
+      }
+      throw lastErr instanceof Error ? lastErr : new Error(String(lastErr));
     },
   };
 }

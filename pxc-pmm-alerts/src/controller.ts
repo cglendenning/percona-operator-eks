@@ -9,6 +9,11 @@ import {
   syncIncremental,
   type JsonObj,
 } from "./alertSync";
+import {
+  collectAndPushOnce,
+  makeKubeCrCollectorClient,
+  type MetricsExporter,
+} from "./clusterCollector";
 import { logLine } from "./log";
 import { createPmmClient } from "./pmmClient";
 
@@ -27,6 +32,15 @@ function parseIntEnv(name: string, defaultValue: number): number {
   if (!raw) return defaultValue;
   const n = parseInt(raw, 10);
   return Number.isFinite(n) ? n : defaultValue;
+}
+
+function parseListEnv(name: string): string[] {
+  const raw = process.env[name]?.trim();
+  if (!raw) return [];
+  return raw
+    .split(",")
+    .map((s) => s.trim())
+    .filter((s) => s.length > 0);
 }
 
 function readNamespaceFromServiceAccount(): string {
@@ -68,6 +82,9 @@ export async function runController(): Promise<void> {
   if (!Number.isFinite(syncIntervalMs) || syncIntervalMs < 5000) throw new Error("SYNC_INTERVAL_MS must be >= 5000");
   const requestTimeoutMs = parseIntEnv("PMM_REQUEST_TIMEOUT_MS", 15_000);
   const insecureTls = parseBoolEnv("PMM_INSECURE_TLS", true);
+  const watchNamespaces = parseListEnv("PXC_WATCH_NAMESPACES");
+  const collectIntervalMs = parseIntEnv("PXC_COLLECT_INTERVAL_MS", 30_000);
+  if (collectIntervalMs < 5000) throw new Error("PXC_COLLECT_INTERVAL_MS must be >= 5000");
 
   let stopping = false;
   const onStop = () => {
@@ -79,6 +96,7 @@ export async function runController(): Promise<void> {
   const kc = new k8s.KubeConfig();
   kc.loadFromDefault();
   const core = kc.makeApiClient(k8s.CoreV1Api);
+  const customObjects = kc.makeApiClient(k8s.CustomObjectsApi);
 
   try {
     const user = await promptIfMissing(process.env.PMM_USER ?? process.env.GRAFANA_USER, "PMM_USER");
@@ -98,66 +116,107 @@ export async function runController(): Promise<void> {
     logLine(
       `pxc-pmm-alerts-controller started pmmUrl=${pmmBaseUrl} ns=${namespace} cm=${configMapName}/${configMapKey} ` +
         `ruleGroup=${ruleGroupName} exprBatchGroup=${exprRuleBatchGroupName} syncIntervalMs=${syncIntervalMs} ` +
+        `collectIntervalMs=${collectIntervalMs} watchNamespaces=${watchNamespaces.join(",") || "(none)"} ` +
         `requestTimeoutMs=${requestTimeoutMs} insecureTls=${insecureTls}`
     );
 
-    while (!stopping) {
-      const cycleStart = Date.now();
-      try {
-        const cfg = await core.readNamespacedConfigMap({ name: configMapName, namespace });
-        const rawRulesPeek = cfg.data?.[configMapKey];
-        if (!rawRulesPeek) throw new Error(`ConfigMap ${namespace}/${configMapName} missing key ${configMapKey}`);
-        const rulesDigest = sha256Hex(rawRulesPeek);
+    const exporter: MetricsExporter = {
+      pushPrometheusText: (body) => pmm.importPrometheusMetrics(body),
+    };
+    const crClient = makeKubeCrCollectorClient({ core, customObjects });
 
-        let folderUid: string;
-        let datasourceUid: string;
-        if (uidCache?.digest === rulesDigest) {
-          folderUid = uidCache.folderUid;
-          datasourceUid = uidCache.datasourceUid;
-          logLine(`sync: using cached MySQL folder / datasource UIDs (ConfigMap digest unchanged)`);
-        } else {
-          logLine("sync: resolving MySQL folder UID…");
-          folderUid = await pmm.resolveMySqlFolderUid();
-          logLine(`sync: MySQL folder uid=${folderUid}`);
-          logLine("sync: resolving Grafana datasource UID…");
-          datasourceUid = await pmm.resolveDatasourceUid();
-          logLine(`sync: datasource uid=${datasourceUid}`);
-          uidCache = { digest: rulesDigest, folderUid, datasourceUid };
+    const alertSyncLoop = (async () => {
+      while (!stopping) {
+        const cycleStart = Date.now();
+        try {
+          const cfg = await core.readNamespacedConfigMap({ name: configMapName, namespace });
+          const rawRulesPeek = cfg.data?.[configMapKey];
+          if (!rawRulesPeek) throw new Error(`ConfigMap ${namespace}/${configMapName} missing key ${configMapKey}`);
+          const rulesDigest = sha256Hex(rawRulesPeek);
+
+          let folderUid: string;
+          let datasourceUid: string;
+          if (uidCache?.digest === rulesDigest) {
+            folderUid = uidCache.folderUid;
+            datasourceUid = uidCache.datasourceUid;
+            logLine(`sync: using cached MySQL folder / datasource UIDs (ConfigMap digest unchanged)`);
+          } else {
+            logLine("sync: resolving MySQL folder UID…");
+            folderUid = await pmm.resolveMySqlFolderUid();
+            logLine(`sync: MySQL folder uid=${folderUid}`);
+            logLine("sync: resolving Grafana datasource UID…");
+            datasourceUid = await pmm.resolveDatasourceUid();
+            logLine(`sync: datasource uid=${datasourceUid}`);
+            uidCache = { digest: rulesDigest, folderUid, datasourceUid };
+          }
+
+          const rawRules = rawRulesPeek;
+
+          const desiredRules = parseRules(rawRules).map((rule) =>
+            deepReplace(rule, {
+              "__MYSQL_FOLDER_UID__": folderUid,
+              "${MYSQL_FOLDER_UID}": folderUid,
+            })
+          ) as JsonObj[];
+
+          const templateRules = desiredRules.filter((r) => ruleUsesPmmTemplate(r));
+          const exprRules = desiredRules.filter((r) => !ruleUsesPmmTemplate(r));
+
+          const applied = await syncIncremental({
+            pmm,
+            folderUid,
+            datasourceUid,
+            ruleGroupName,
+            exprRuleBatchGroupName,
+            templateRules,
+            exprRules,
+          });
+
+          logLine(
+            applied === 0
+              ? `sync: no changes needed (${Date.now() - cycleStart}ms digest=${rulesDigest.slice(0, 12)}…)`
+              : `sync: applied ${applied} rule operations in ${Date.now() - cycleStart}ms digest=${rulesDigest.slice(0, 12)}…`
+          );
+        } catch (err: unknown) {
+          const message = err instanceof Error ? err.message : String(err);
+          logLine(`sync iteration failed: ${message}`);
         }
-
-        const rawRules = rawRulesPeek;
-
-        const desiredRules = parseRules(rawRules).map((rule) =>
-          deepReplace(rule, {
-            "__MYSQL_FOLDER_UID__": folderUid,
-            "${MYSQL_FOLDER_UID}": folderUid,
-          })
-        ) as JsonObj[];
-
-        const templateRules = desiredRules.filter((r) => ruleUsesPmmTemplate(r));
-        const exprRules = desiredRules.filter((r) => !ruleUsesPmmTemplate(r));
-
-        const applied = await syncIncremental({
-          pmm,
-          folderUid,
-          datasourceUid,
-          ruleGroupName,
-          exprRuleBatchGroupName,
-          templateRules,
-          exprRules,
-        });
-
-        logLine(
-          applied === 0
-            ? `sync: no changes needed (${Date.now() - cycleStart}ms digest=${rulesDigest.slice(0, 12)}…)`
-            : `sync: applied ${applied} rule operations in ${Date.now() - cycleStart}ms digest=${rulesDigest.slice(0, 12)}…`
-        );
-      } catch (err: unknown) {
-        const message = err instanceof Error ? err.message : String(err);
-        logLine(`sync iteration failed: ${message}`);
+        await sleep(syncIntervalMs);
       }
-      await sleep(syncIntervalMs);
-    }
+    })();
+
+    const collectorLoop = (async () => {
+      if (watchNamespaces.length === 0) {
+        logLine(
+          "collector: PXC_WATCH_NAMESPACES is empty; PerconaXtraDBCluster CR-state metrics " +
+            "(pxc_cluster_*, pxc_pod_ready, pxc_pvc_pending) will NOT be pushed. CR-level alerts will be silent."
+        );
+        return;
+      }
+      while (!stopping) {
+        const cycleStart = Date.now();
+        try {
+          const result = await collectAndPushOnce({
+            client: crClient,
+            exporter,
+            namespaces: watchNamespaces,
+            nowMs: Date.now(),
+          });
+          const totals = Object.entries(result.clustersByNamespace)
+            .map(([ns, n]) => `${ns}=${n}`)
+            .join(",");
+          logLine(
+            `collector: pushed ${result.samples.length} samples for clusters {${totals}} in ${Date.now() - cycleStart}ms`
+          );
+        } catch (err: unknown) {
+          const message = err instanceof Error ? err.message : String(err);
+          logLine(`collector iteration failed: ${message}`);
+        }
+        await sleep(collectIntervalMs);
+      }
+    })();
+
+    await Promise.all([alertSyncLoop, collectorLoop]);
   } finally {
     process.off("SIGTERM", onStop);
     process.off("SIGINT", onStop);

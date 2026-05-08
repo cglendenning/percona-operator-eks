@@ -2,6 +2,8 @@
 
 Daemon that reads alert rule JSON from a `ConfigMap`, resolves the Grafana **MySQL** folder UID (`GET /graph/api/folders`), substitutes `__MYSQL_FOLDER_UID__`, then aligns PMM using **`POST /v1/alerting/rules`** for PMM template rules and **`POST /graph/api/ruler/grafana/api/v1/rules/{folderUid}`** for custom PromQL (`expr`) rules (**one Grafana rule group per expr alert**, named after the rule `name`). **`EXPR_RULE_BATCH_GROUP`** (default **`expression`**) is only used to delete the legacy **batched** expr group from older releases.
 
+The same daemon also closes the gap where `kubectl get pxc <name>` reports a non-`ready` cluster but no PMM-scraped series can fire (Pending pod, paused cluster, error reconcile, PVC unbound). It watches `PerconaXtraDBCluster` CRs plus their pods/PVCs in the namespaces listed in **`PXC_WATCH_NAMESPACES`**, derives operator-view gauges (`pxc_cluster_ready`, `pxc_cluster_state`, `pxc_pxc_ready/size`, `pxc_pod_ready`, `pxc_pvc_pending`, `pxc_cluster_observed_generation`, plus a `pxc_pmm_alerts_collector_heartbeat_seconds` self-monitor), and pushes them as Prometheus text exposition into PMM via `POST /victoriametrics/api/v1/import/prometheus` (falling back to the legacy `/prometheus/api/v1/import/prometheus` path on older PMM builds). Standard `expr` alert rules in `pxc-pmm-alerts.nix` then PromQL against those gauges the same way as `mysql_up` / `node_*` rules.
+
 ### Sync behavior
 
 PMM does not expose a usable **`GET /v1/alerting/rules`** list on many builds (often 501). The controller instead uses Grafana’s ruler API:
@@ -31,6 +33,8 @@ While the ConfigMap bytes are unchanged (same SHA-256 digest as the previous suc
 | `SYNC_INTERVAL_MS` | `60000` | Sleep between reconcile loops. |
 | `ALERT_RULES_CONFIGMAP` | `pxc-pmm-alert-rules` | ConfigMap name. |
 | `ALERT_RULES_KEY` | `rules.json` | Key holding a **JSON array** of rule objects. |
+| `PXC_WATCH_NAMESPACES` | (empty) | Comma-separated list of namespaces containing `PerconaXtraDBCluster` CRs. The Nix manifest emits a `Role` + `RoleBinding` (verbs `get,list,watch` on `pxc.percona.com/perconaxtradbclusters`, `pods`, `persistentvolumeclaims`) **per namespace** in this list and sets the env var to the same list. Empty disables CR-state collection (operator-view alerts will be silent: heartbeat alert will fire). |
+| `PXC_COLLECT_INTERVAL_MS` | `30000` | Sleep between cluster-state collect+push cycles. Independent of `SYNC_INTERVAL_MS`. |
 
 ## Tests
 
@@ -39,7 +43,7 @@ cd pxc-pmm-alerts
 npm test
 ```
 
-`src/alertSync.test.ts` covers rule parsing, placeholder replacement, Grafana ruler flattening, expr batch semantic equality, template digest/in-sync checks, and **`syncIncremental`** against an in-memory **`PmmClient`** fake (including ruler GET failure, per-rule expr reconcile, template duplicate recovery, and orphaned / legacy expr group cleanup).
+`src/alertSync.test.ts` covers rule parsing, placeholder replacement, Grafana ruler flattening, expr batch semantic equality, template digest/in-sync checks, and **`syncIncremental`** against an in-memory **`PmmClient`** fake (including ruler GET failure, per-rule expr reconcile, template duplicate recovery, and orphaned / legacy expr group cleanup). `src/clusterMetrics.test.ts` covers the pure CR/Pod/PVC -> sample mapping for every `pxc_cluster_*`, `pxc_pod_*`, `pxc_pvc_*` series and the Prometheus exposition serializer (HELP/TYPE, label sort, escaping, finite-value filtering). `src/clusterCollector.test.ts` covers the multi-namespace collect+push (label-selector scoping, missing-CRD tolerance, heartbeat-only payload when zero clusters, push error propagation, and rejection of an empty `PXC_WATCH_NAMESPACES`).
 
 ## ConfigMap rule shape
 
@@ -47,6 +51,25 @@ npm test
 - **Custom expr rule**: `name`, `group` (informational / docs; ruler group is **the rule `name`**), `expr`, `for`, optional `no_data_state`, `custom_labels`, optional `folder_uid` placeholder `__MYSQL_FOLDER_UID__`.
 
 The controller adds **`pxc_pmm_managed_digest`** to **`custom_labels`** when posting template rules; do not rely on setting that key yourself.
+
+### Operator-view alerts (PerconaXtraDBCluster CR state)
+
+These rules query gauges this controller pushes from the K8s API, not series PMM scraped from `mysqld_exporter` / `node_exporter`. They cover the case where `mysql_up` is missing or 1 (because the unhealthy pod is `Pending`/never started) but the operator already considers the cluster degraded.
+
+| Rule | Condition | `for` |
+|------|-----------|-------|
+| **PXC Alert Controller Heartbeat Stale Critical** | `time() - max(pxc_pmm_alerts_collector_heartbeat_seconds) > 300` (or `absent`); `no_data_state=Alerting` | **2m** |
+| **PXC Cluster Not Ready Critical** | `max by (cluster, namespace) (pxc_cluster_ready) == 0` | **5m** |
+| **PXC Cluster Error State Critical** | `pxc_cluster_state{state="error"} == 1` | **1m** |
+| **PXC Cluster Stuck Initializing Critical** | `pxc_cluster_state{state=~"initializing\|applying-changes"} == 1` | **15m** |
+| **PXC Cluster Paused Warning** | `pxc_cluster_paused == 1` | **10m** |
+| **PXC Replicas Below Desired Critical** | `pxc_pxc_size - pxc_pxc_ready > 0` | **5m** |
+| **PXC HAProxy Replicas Below Desired Warning** | `pxc_haproxy_size - pxc_haproxy_ready > 0` | **5m** |
+| **PXC PVC Unbound Critical** | `max by (cluster, namespace, pvc) (pxc_pvc_pending) == 1` | **5m** |
+| **PXC Pod Not Ready Warning / Critical** | `max by (cluster, namespace, pod) (pxc_pod_ready{role="pxc"}) == 0` | **5m / 10m** |
+| **PXC Operator Generation Drift Warning** | `pxc_cluster_generation - pxc_cluster_observed_generation > 0` | **10m** |
+
+The heartbeat alert is the canary: every other rule above uses `no_data_state=OK`, so if the controller dies the heartbeat alert is what pages.
 
 ### Built-in MySQL async replication alerts (`pxc-pmm-alerts.nix`)
 
@@ -64,6 +87,7 @@ Lag uses `mysql_slave_status_seconds_behind_master` **or** `mysql_slave_status_s
 ### Limitations
 
 - **Template rules:** Sync uses a **digest of ConfigMap-controlled fields** plus the Grafana alert title. Edits in the PMM/Grafana UI that leave those fields (and the managed digest label) unchanged may **not** trigger a resync until you change `rules.json`. Expr rules are compared on **title, for, expr, no_data_state, and non-injected labels**; changes only to Grafana-only query metadata may not trigger a repost until something in that set differs.
+- **Operator-view metrics:** `pxc_cluster_*` / `pxc_pod_*` / `pxc_pvc_*` series only exist in PMM while this controller is running and `PXC_WATCH_NAMESPACES` lists the namespace. The heartbeat alert (`pxc_pmm_alerts_collector_heartbeat_seconds`) is the canary; if it fires (or `absent`), every CR-state rule below it is also potentially silent. Add the namespace of every new pxc cluster to `pxcWatchNamespaces` in `pxc-pmm-alerts.nix` and re-apply the manifest, or the new cluster's CR state is invisible to alerting even if PMM scrapes its mysqld.
 
 ## Kubernetes manifests
 

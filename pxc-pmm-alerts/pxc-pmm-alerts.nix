@@ -9,10 +9,19 @@ let
   namespace = "pmm";
   serviceAccountName = "pxc-pmm-alerts-sa";
   roleName = "pxc-pmm-alerts-role";
+  # Per-namespace Role/RoleBinding name on each PXC namespace (read PerconaXtraDBCluster CRs,
+  # plus pods/pvcs to derive operator-view metrics that PMM-scraped mysql_*/node_* cannot see).
+  watchRoleName = "pxc-pmm-alerts-watch";
   deploymentName = "pxc-pmm-alerts-controller";
   rulesConfigMapName = "pxc-pmm-alert-rules";
   # Helm chart `percona/pmm` creates this secret with generated admin password.
   credentialsSecret = "pmm-secret";
+
+  # Namespaces that contain PerconaXtraDBCluster CRs. The controller lists pxc CRs, pods, and PVCs
+  # in each, derives gauges (pxc_cluster_ready, pxc_cluster_state, pxc_pvc_pending, pxc_pod_ready),
+  # and pushes them to PMM via VictoriaMetrics import. Add a namespace here when you deploy a new
+  # pxc cluster; the manifest will emit a Role + RoleBinding scoped to that namespace only.
+  pxcWatchNamespaces = [ "percona" ];
 
   /* Each object is POSTed to PMM `POST /v1/alerting/rules` (same pattern as `modules/projects/pmm/alerts.nix`).
      - Template rule: built-in PMM template `pmm_mysql_down`.
@@ -437,7 +446,212 @@ let
       };
       folder_uid = "__MYSQL_FOLDER_UID__";
     }
+    # Operator-view alerts: derived from PerconaXtraDBCluster CR status, not from mysqld scrapes.
+    # The controller pushes pxc_cluster_*/pxc_pod_*/pxc_pvc_* gauges to VictoriaMetrics each cycle.
+    # Together with the heartbeat alert below, these close the gap when PMM-scraped mysql_up,
+    # node_*, or haproxy_up cannot fire (e.g. pod stuck Pending, cluster paused, error reconcile).
+    {
+      name = "PXC Alert Controller Heartbeat Stale Critical";
+      group = "expression";
+      # If this fires, every other PXC CR-level alert below is potentially silent: the
+      # controller is not pushing operator-view gauges. Treat as ground truth for alerting health.
+      expr = "(time() - max(pxc_pmm_alerts_collector_heartbeat_seconds)) > 300 or absent(pxc_pmm_alerts_collector_heartbeat_seconds)";
+      for = "2m";
+      no_data_state = "Alerting";
+      custom_labels = {
+        severity = "critical";
+        route = "pagerduty";
+        managed_by = "pxc-pmm-alerts-controller";
+      };
+      folder_uid = "__MYSQL_FOLDER_UID__";
+    }
+    {
+      name = "PXC Cluster Not Ready Critical";
+      group = "expression";
+      # status.state != "ready" for 5 minutes -> page. Covers the gap where mysqld is up on the
+      # survivors but the operator considers the cluster degraded (failed reconcile, missing
+      # replica, immutable spec change, TLS rotation stuck).
+      expr = "max by (cluster, namespace) (pxc_cluster_ready) == 0";
+      for = "5m";
+      no_data_state = "OK";
+      custom_labels = {
+        severity = "critical";
+        route = "pagerduty";
+        managed_by = "pxc-pmm-alerts-controller";
+      };
+      folder_uid = "__MYSQL_FOLDER_UID__";
+    }
+    {
+      name = "PXC Cluster Error State Critical";
+      group = "expression";
+      # status.state == "error" is sticky in the operator and means reconcile gave up.
+      expr = "max by (cluster, namespace) (pxc_cluster_state{state=\"error\"}) == 1";
+      for = "1m";
+      no_data_state = "OK";
+      custom_labels = {
+        severity = "critical";
+        route = "pagerduty";
+        managed_by = "pxc-pmm-alerts-controller";
+      };
+      folder_uid = "__MYSQL_FOLDER_UID__";
+    }
+    {
+      name = "PXC Cluster Stuck Initializing Critical";
+      group = "expression";
+      expr = "max by (cluster, namespace) (pxc_cluster_state{state=~\"initializing|applying-changes\"}) == 1";
+      for = "15m";
+      no_data_state = "OK";
+      custom_labels = {
+        severity = "critical";
+        route = "pagerduty";
+        managed_by = "pxc-pmm-alerts-controller";
+      };
+      folder_uid = "__MYSQL_FOLDER_UID__";
+    }
+    {
+      name = "PXC Cluster Paused Warning";
+      group = "expression";
+      expr = "max by (cluster, namespace) (pxc_cluster_paused) == 1";
+      for = "10m";
+      no_data_state = "OK";
+      custom_labels = {
+        severity = "warning";
+        route = "default";
+        managed_by = "pxc-pmm-alerts-controller";
+      };
+      folder_uid = "__MYSQL_FOLDER_UID__";
+    }
+    {
+      name = "PXC Replicas Below Desired Critical";
+      group = "expression";
+      # Operator-reported ready < size for too long means at least one pxc replica is missing
+      # (Pending pod, evicted, OOMKilled before mysqld could come up). PMM-side mysql_up cannot
+      # detect this when the unhealthy pod never produces a series.
+      expr = "(max by (cluster, namespace) (pxc_pxc_size) - max by (cluster, namespace) (pxc_pxc_ready)) > 0";
+      for = "5m";
+      no_data_state = "OK";
+      custom_labels = {
+        severity = "critical";
+        route = "pagerduty";
+        managed_by = "pxc-pmm-alerts-controller";
+      };
+      folder_uid = "__MYSQL_FOLDER_UID__";
+    }
+    {
+      name = "PXC HAProxy Replicas Below Desired Warning";
+      group = "expression";
+      expr = "(max by (cluster, namespace) (pxc_haproxy_size) - max by (cluster, namespace) (pxc_haproxy_ready)) > 0";
+      for = "5m";
+      no_data_state = "OK";
+      custom_labels = {
+        severity = "warning";
+        route = "default";
+        managed_by = "pxc-pmm-alerts-controller";
+      };
+      folder_uid = "__MYSQL_FOLDER_UID__";
+    }
+    {
+      name = "PXC PVC Unbound Critical";
+      group = "expression";
+      # Bare-metal / cloud volume binding failures keep pxc pods Pending and silently exclude
+      # them from every PMM-scraped MySQL alert.
+      expr = "max by (cluster, namespace, pvc) (pxc_pvc_pending) == 1";
+      for = "5m";
+      no_data_state = "OK";
+      custom_labels = {
+        severity = "critical";
+        route = "pagerduty";
+        managed_by = "pxc-pmm-alerts-controller";
+      };
+      folder_uid = "__MYSQL_FOLDER_UID__";
+    }
+    {
+      name = "PXC Pod Not Ready Warning";
+      group = "expression";
+      expr = "max by (cluster, namespace, pod) (pxc_pod_ready{role=\"pxc\"}) == 0";
+      for = "5m";
+      no_data_state = "OK";
+      custom_labels = {
+        severity = "warning";
+        route = "default";
+        managed_by = "pxc-pmm-alerts-controller";
+      };
+      folder_uid = "__MYSQL_FOLDER_UID__";
+    }
+    {
+      name = "PXC Pod Not Ready Critical";
+      group = "expression";
+      expr = "max by (cluster, namespace, pod) (pxc_pod_ready{role=\"pxc\"}) == 0";
+      for = "10m";
+      no_data_state = "OK";
+      custom_labels = {
+        severity = "critical";
+        route = "pagerduty";
+        managed_by = "pxc-pmm-alerts-controller";
+      };
+      folder_uid = "__MYSQL_FOLDER_UID__";
+    }
+    {
+      name = "PXC Operator Generation Drift Warning";
+      group = "expression";
+      # observedGeneration < generation for too long -> operator hasn't acked the latest spec.
+      expr = "(max by (cluster, namespace) (pxc_cluster_generation) - max by (cluster, namespace) (pxc_cluster_observed_generation)) > 0";
+      for = "10m";
+      no_data_state = "OK";
+      custom_labels = {
+        severity = "warning";
+        route = "default";
+        managed_by = "pxc-pmm-alerts-controller";
+      };
+      folder_uid = "__MYSQL_FOLDER_UID__";
+    }
   ];
+
+  # Per-namespace Role granting the controller's ServiceAccount the minimum verbs to derive
+  # operator-view metrics (list/get pods+pvcs and pxc CRs) in each pxc namespace. Built once per
+  # entry in `pxcWatchNamespaces` so adding a new pxc namespace requires only one list edit.
+  pxcWatchRbacObjects = builtins.concatMap (ns: [
+    {
+      apiVersion = "rbac.authorization.k8s.io/v1";
+      kind = "Role";
+      metadata = {
+        name = watchRoleName;
+        namespace = ns;
+      };
+      rules = [
+        {
+          apiGroups = [ "pxc.percona.com" ];
+          resources = [ "perconaxtradbclusters" ];
+          verbs = [ "get" "list" "watch" ];
+        }
+        {
+          apiGroups = [ "" ];
+          resources = [ "pods" "persistentvolumeclaims" ];
+          verbs = [ "get" "list" "watch" ];
+        }
+      ];
+    }
+    {
+      apiVersion = "rbac.authorization.k8s.io/v1";
+      kind = "RoleBinding";
+      metadata = {
+        name = watchRoleName;
+        namespace = ns;
+      };
+      subjects = [
+        {
+          kind = "ServiceAccount";
+          name = serviceAccountName;
+          inherit namespace;
+        }
+      ];
+      roleRef = {
+        apiGroup = "rbac.authorization.k8s.io";
+        kind = "Role";
+        name = watchRoleName;
+      };
+    }
+  ]) pxcWatchNamespaces;
 
   objects = [
     {
@@ -531,6 +745,8 @@ let
                   { name = "RULE_GROUP_NAME"; value = "template"; }
                   { name = "EXPR_RULE_BATCH_GROUP"; value = "expression"; }
                   { name = "SYNC_INTERVAL_MS"; value = "60000"; }
+                  { name = "PXC_COLLECT_INTERVAL_MS"; value = "30000"; }
+                  { name = "PXC_WATCH_NAMESPACES"; value = builtins.concatStringsSep "," pxcWatchNamespaces; }
                   { name = "PMM_REQUEST_TIMEOUT_MS"; value = "15000"; }
                   { name = "PMM_INSECURE_TLS"; value = "true"; }
                   { name = "PMM_USER"; value = "admin"; }
@@ -553,7 +769,7 @@ let
   jsonList = {
     apiVersion = "v1";
     kind = "List";
-    items = objects;
+    items = objects ++ pxcWatchRbacObjects;
   };
   jsonPath = builtins.toFile "pxc-pmm-alerts-body.json" (builtins.toJSON jsonList);
   manifest = derivation {
