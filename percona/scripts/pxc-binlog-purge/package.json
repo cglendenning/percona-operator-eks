@@ -1,0 +1,19 @@
+{
+  "name": "pxc-binlog-purge",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Purge MySQL binary logs older than N minutes on every PXC pod",
+  "type": "commonjs",
+  "main": "dist/cli.js",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "start": "node dist/cli.js"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "devDependencies": {
+    "@types/node": "^20.11.30",
+    "typescript": "^5.5.4"
+  }
+}

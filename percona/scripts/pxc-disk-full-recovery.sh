@@ -858,7 +858,8 @@ sanitize_dns_label() {
 get_pod_scheduling_json() {
   local pod="$1"
   kube get pod "$pod" -n "$NAMESPACE" -o json 2>/dev/null \
-    | jq '{nodeSelector, tolerations, affinity, topologySpreadConstraints, priorityClassName, serviceAccountName} | with_entries(select(.value!=null))'
+    | jq -c '{nodeSelector, tolerations, affinity, topologySpreadConstraints, priorityClassName, serviceAccountName} | with_entries(select(.value!=null))' 2>/dev/null \
+    || echo '{}'
 }
 
 pvc_phase() {
@@ -899,6 +900,12 @@ recovery_pod_manifest_json() {
   local pvc="$2"
   local node="$3"
   local scheduling_json="${4:-{}}"
+  # Guarantee valid JSON for --argjson even if caller passed empty/garbage.
+  if ! jq -e . >/dev/null 2>&1 <<<"$scheduling_json"; then
+    scheduling_json="{}"
+  else
+    scheduling_json="$(jq -c . <<<"$scheduling_json" 2>/dev/null || echo '{}')"
+  fi
   jq -n \
     --arg name "$name" \
     --arg ns "$NAMESPACE" \
@@ -943,7 +950,7 @@ recovery_pod_manifest_json() {
 apply_recovery_pod() {
   local rpod="$1" pvc="$2" node="$3" src_pod="$4"
   local sched
-  sched="$(get_pod_scheduling_json "$src_pod" || echo '{}')"
+  sched="$(get_pod_scheduling_json "$src_pod")"
   kube get pvc "$pvc" -n "$NAMESPACE" >/dev/null 2>&1 || die "PVC $pvc not found in $NAMESPACE"
   wait_pvc_bound_and_unused "$pvc" || die "PVC $pvc not ready for attach (still in use or not Bound)"
   recovery_pod_manifest_json "$rpod" "$pvc" "$node" "$sched" | kube apply -f -
