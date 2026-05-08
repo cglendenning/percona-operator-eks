@@ -10,7 +10,7 @@ type PodList = {
 
 function usage(exitCode: number): never {
   const msg = `Usage:
-  node dist/cli.js --namespace <ns> [--cluster <name>] [--minutes <n>] [--secret <name>]
+  node dist/cli.js --namespace <ns> --secret <name> [--cluster <name>] [--minutes <n>]
 
 Requires:
   - kubectl on PATH (WSL/Linux/macOS)
@@ -19,7 +19,7 @@ Requires:
 Examples:
   export KUBECONFIG=~/.kube/config
   npm ci && npm run build
-  node dist/cli.js --namespace percona --cluster cluster1 --minutes 5
+  node dist/cli.js --namespace percona --secret cluster1-secrets --cluster cluster1 --minutes 5
 `;
   if (exitCode === 0) console.log(msg);
   else console.error(msg);
@@ -30,7 +30,7 @@ function parseArgs(argv: string[]): {
   namespace: string;
   cluster?: string;
   minutes: number;
-  secret?: string;
+  secret: string;
 } {
   const out: { namespace?: string; cluster?: string; minutes?: number; secret?: string } =
     {};
@@ -55,7 +55,12 @@ function parseArgs(argv: string[]): {
   if (!Number.isFinite(minutes) || minutes <= 0) {
     throw new Error(`Invalid --minutes: ${String(out.minutes)}`);
   }
-  return { namespace: ns, cluster: out.cluster?.trim() || undefined, minutes, secret: out.secret?.trim() || undefined };
+  const secret = out.secret?.trim();
+  if (!secret) {
+    console.error("Error: --secret is required");
+    usage(1);
+  }
+  return { namespace: ns, cluster: out.cluster?.trim() || undefined, minutes, secret };
 }
 
 function fmtBytes(bytes: number): string {
@@ -163,8 +168,7 @@ async function main(): Promise<void> {
     throw new Error("Could not determine cluster name (use --cluster)");
   }
 
-  const secretName = args.secret ?? `${discoveredCluster}-secrets`;
-  const rootPassword = await getSecretRootPassword(args.namespace, secretName);
+  const rootPassword = await getSecretRootPassword(args.namespace, args.secret);
 
   const container = "pxc";
   const datadir = "/var/lib/mysql";
@@ -174,7 +178,7 @@ async function main(): Promise<void> {
   console.log(`Cluster: ${discoveredCluster}`);
   console.log(`Pods: ${pods.join(", ")}`);
   console.log(`Minutes: ${args.minutes}`);
-  console.log(`Secret: ${secretName} (key: root)`);
+  console.log(`Secret: ${args.secret} (key: root)`);
   console.log("");
 
   const results: Array<{
