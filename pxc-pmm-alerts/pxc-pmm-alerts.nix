@@ -81,7 +81,7 @@ let
     {
       name = "PXC Disk Usage Warning";
       group = "expression";
-      expr = "(node_filesystem_avail_bytes{mountpoint=\"/var/lib/mysql\"} / node_filesystem_size_bytes{mountpoint=\"/var/lib/mysql\"}) * 100 < 30";
+      expr = "((node_filesystem_avail_bytes{mountpoint=\"/var/lib/mysql\"} / node_filesystem_size_bytes{mountpoint=\"/var/lib/mysql\"}) * 100 < 30) and on(instance, service_name) (mysql_up >= 0)";
       for = "10m";
       no_data_state = "OK";
       custom_labels = {
@@ -95,7 +95,7 @@ let
     {
       name = "PXC Disk Usage Critical";
       group = "expression";
-      expr = "(node_filesystem_avail_bytes{mountpoint=\"/var/lib/mysql\"} / node_filesystem_size_bytes{mountpoint=\"/var/lib/mysql\"}) * 100 < 20";
+      expr = "((node_filesystem_avail_bytes{mountpoint=\"/var/lib/mysql\"} / node_filesystem_size_bytes{mountpoint=\"/var/lib/mysql\"}) * 100 < 20) and on(instance, service_name) (mysql_up >= 0)";
       for = "5m";
       no_data_state = "OK";
       custom_labels = {
