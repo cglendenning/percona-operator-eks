@@ -40,10 +40,6 @@ export async function collectAndPushOnce(args: {
   const { client, exporter, namespaces, nowMs } = args;
   const log = args.log ?? logLine;
 
-  if (!namespaces.length) {
-    throw new Error("collectAndPushOnce: PXC_WATCH_NAMESPACES is empty; nothing to collect");
-  }
-
   const samples: MetricSample[] = [];
   const clustersByNamespace: Record<string, number> = {};
   let totalClusters = 0;

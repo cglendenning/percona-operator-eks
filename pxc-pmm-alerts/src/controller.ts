@@ -188,10 +188,9 @@ export async function runController(): Promise<void> {
     const collectorLoop = (async () => {
       if (watchNamespaces.length === 0) {
         logLine(
-          "collector: PXC_WATCH_NAMESPACES is empty; PerconaXtraDBCluster CR-state metrics " +
-            "(pxc_cluster_*, pxc_pod_ready, pxc_pvc_pending) will NOT be pushed. CR-level alerts will be silent."
+          "collector: PXC_WATCH_NAMESPACES is empty; no CR-state gauges (pxc_cluster_* …), but heartbeat " +
+            "and clusters_observed still push each cycle so PMM retains pxc_pmm_alerts_collector_heartbeat_seconds."
         );
-        return;
       }
       while (!stopping) {
         const cycleStart = Date.now();

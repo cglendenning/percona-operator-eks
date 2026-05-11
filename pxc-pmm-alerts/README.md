@@ -33,7 +33,7 @@ While the ConfigMap bytes are unchanged (same SHA-256 digest as the previous suc
 | `SYNC_INTERVAL_MS` | `60000` | Sleep between reconcile loops. |
 | `ALERT_RULES_CONFIGMAP` | `pxc-pmm-alert-rules` | ConfigMap name. |
 | `ALERT_RULES_KEY` | `rules.json` | Key holding a **JSON array** of rule objects. |
-| `PXC_WATCH_NAMESPACES` | (empty) | Comma-separated list of namespaces containing `PerconaXtraDBCluster` CRs. The Nix manifest emits a `Role` + `RoleBinding` (verbs `get,list,watch` on `pxc.percona.com/perconaxtradbclusters`, `pods`, `persistentvolumeclaims`) **per namespace** in this list and sets the env var to the same list. Empty disables CR-state collection (operator-view alerts will be silent: heartbeat alert will fire). |
+| `PXC_WATCH_NAMESPACES` | (empty) | Comma-separated list of namespaces containing `PerconaXtraDBCluster` CRs. The Nix manifest emits a `Role` + `RoleBinding` (verbs `get,list,watch` on `pxc.percona.com/perconaxtradbclusters`, `pods`, `persistentvolumeclaims`) **per namespace** in this list and sets the env var to the same list. Empty skips CR-state gauges (`pxc_cluster_*`, etc.) but the collector still pushes `pxc_pmm_alerts_collector_heartbeat_seconds` and `pxc_pmm_alerts_clusters_observed` each cycle so the heartbeat alert stays satisfied. Configure at least one namespace for operator-view alerts. |
 | `PXC_COLLECT_INTERVAL_MS` | `30000` | Sleep between cluster-state collect+push cycles. Independent of `SYNC_INTERVAL_MS`. |
 
 ## Tests
@@ -43,7 +43,7 @@ cd pxc-pmm-alerts
 npm test
 ```
 
-`src/alertSync.test.ts` covers rule parsing, placeholder replacement, Grafana ruler flattening, expr batch semantic equality, template digest/in-sync checks, and **`syncIncremental`** against an in-memory **`PmmClient`** fake (including ruler GET failure, per-rule expr reconcile, template duplicate recovery, and orphaned / legacy expr group cleanup). `src/clusterMetrics.test.ts` covers the pure CR/Pod/PVC -> sample mapping for every `pxc_cluster_*`, `pxc_pod_*`, `pxc_pvc_*` series and the Prometheus exposition serializer (HELP/TYPE, label sort, escaping, finite-value filtering). `src/clusterCollector.test.ts` covers the multi-namespace collect+push (label-selector scoping, missing-CRD tolerance, heartbeat-only payload when zero clusters, push error propagation, and rejection of an empty `PXC_WATCH_NAMESPACES`).
+`src/alertSync.test.ts` covers rule parsing, placeholder replacement, Grafana ruler flattening, expr batch semantic equality, template digest/in-sync checks, and **`syncIncremental`** against an in-memory **`PmmClient`** fake (including ruler GET failure, per-rule expr reconcile, template duplicate recovery, and orphaned / legacy expr group cleanup). `src/clusterMetrics.test.ts` covers the pure CR/Pod/PVC -> sample mapping for every `pxc_cluster_*`, `pxc_pod_*`, `pxc_pvc_*` series and the Prometheus exposition serializer (HELP/TYPE, label sort, escaping, finite-value filtering). `src/clusterCollector.test.ts` covers the multi-namespace collect+push (label-selector scoping, missing-CRD tolerance, heartbeat-only payload when zero clusters or empty watch list, push error propagation).
 
 ## ConfigMap rule shape
 

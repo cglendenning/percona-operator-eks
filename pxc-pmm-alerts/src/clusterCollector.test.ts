@@ -171,11 +171,15 @@ describe("collectAndPushOnce", () => {
     ).rejects.toThrow(/import 503/);
   });
 
-  it("rejects empty namespace list with a clear error", async () => {
+  it("pushes heartbeat-only when namespace list is empty (watch env unset)", async () => {
     const client = fakeClient();
     const exporter = fakeExporter();
-    await expect(
-      collectAndPushOnce({ client, exporter, namespaces: [], nowMs: NOW_MS })
-    ).rejects.toThrow(/PXC_WATCH_NAMESPACES/);
+    const result = await collectAndPushOnce({ client, exporter, namespaces: [], nowMs: NOW_MS });
+    expect(result.clustersByNamespace).toEqual({});
+    expect(client.trace).toEqual([]);
+    expect(exporter.pushed.length).toBe(1);
+    expect(exporter.pushed[0]).toContain("pxc_pmm_alerts_collector_heartbeat_seconds");
+    expect(exporter.pushed[0]).toContain("pxc_pmm_alerts_clusters_observed 0");
+    expect(exporter.pushed[0]).not.toContain("pxc_cluster_ready");
   });
 });
