@@ -27,10 +27,21 @@
 
           # Receiver wiring lives here: Nix generates the YAML so scrape targets and
           # intervals stay reviewable and parameterizable (ports, labels, TLS, etc.).
+          #
+          # Multiple receivers in Nix (mental model):
+          # - The collector binary already includes receiver implementations (Go). Nix
+          #   only declares YAML: each key under `receivers` becomes one receiver instance.
+          # - Reuse the same receiver type more than once with YAML-style names
+          #   `prometheus/<instance>` (same pattern for `otlp/<instance>`, etc.).
+          # - Either list every instance in `service.pipelines.<signal>.receivers`, or
+          #   keep a single `prometheus` receiver and add more entries to
+          #   `scrape_configs` when all jobs share identical receiver-level settings.
+          # - Processors/exporters are unchanged: the pipeline merges metrics from all
+          #   listed receivers into one fan-in.
           yamlFmt = pkgs.formats.yaml { };
           otelCollectorConfig = yamlFmt.generate "otel-collector.yaml" {
             receivers = {
-              prometheus = {
+              "prometheus/seaweed" = {
                 config = {
                   scrape_configs = [
                     {
@@ -44,6 +55,27 @@
                   ];
                 };
               };
+
+              /* Second Prometheus scrape (e.g. volume/master on another port or TLS).
+
+                 Uncomment this attribute *and* add "prometheus/extra" to
+                 `service.pipelines.metrics.receivers` below so the pipeline ingests it.
+
+                 "prometheus/extra" = {
+                   config = {
+                     scrape_configs = [
+                       {
+                         job_name = "seaweed-volume-or-other";
+                         scrape_interval = "15s";
+                         metrics_path = "/metrics";
+                         static_configs = [
+                           { targets = [ "127.0.0.1:9327" ]; }
+                         ];
+                       }
+                     ];
+                   };
+                 };
+              */
             };
             processors = {
               batch = { };
@@ -60,7 +92,10 @@
             service = {
               pipelines = {
                 metrics = {
-                  receivers = [ "prometheus" ];
+                  receivers = [
+                    "prometheus/seaweed"
+                    # "prometheus/extra"
+                  ];
                   processors = [ "batch" ];
                   exporters = [
                     "otlphttp"
