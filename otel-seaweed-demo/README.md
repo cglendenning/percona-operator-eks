@@ -24,6 +24,8 @@ nix run .
 
 You should see `[grafana-mock]` lines with byte counts when the exporter POSTs OTLP, and detailed metric dumps from the collector’s `debug` exporter. Stop with Ctrl+C; subprocesses are torn down by the wrapper script.
 
+If you see **address already in use**, something is still bound on **9333** or **4318** (often a previous demo). Run `lsof -nP -iTCP:9333 -sTCP:LISTEN` and `lsof -nP -iTCP:4318 -sTCP:LISTEN`, stop those PIDs, then run again. The wrapper now refuses to start if those ports are already listening.
+
 The flake pins **nixos-unstable** (see `flake.lock`) so the collector binary tracks current nixpkgs (`otelcol-contrib`). If you ever see `No such file or directory` for the collector path under `/nix/store`, your substitute may be incomplete; run `nix store verify --repair` or delete the broken path after removing `result/` and rebuild.
 
 First-time run downloads **OpenTelemetry Collector Contrib** (~300MB); mocks use Python’s stdlib only.

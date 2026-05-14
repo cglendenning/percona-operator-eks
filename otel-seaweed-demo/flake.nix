@@ -114,9 +114,21 @@
               pkgs.python3
               pkgs.opentelemetry-collector-contrib
               pkgs.curl
+              pkgs.lsof
             ];
             text = ''
               set -euo pipefail
+
+              require_tcp_free() {
+                local p=$1
+                if lsof -nP -iTCP:"$p" -sTCP:LISTEN >/dev/null 2>&1; then
+                  echo "Port $p is already in use (another mock or service). Free it, then retry:" >&2
+                  lsof -nP -iTCP:"$p" -sTCP:LISTEN >&2 || true
+                  exit 1
+                fi
+              }
+              require_tcp_free ${toString filerPort}
+              require_tcp_free ${toString otlpHttpPort}
 
               cleanup() {
                 local ec=$?
@@ -142,6 +154,18 @@
               filer_pid=$!
               python3 "$DEMO_PY" sink --port ${toString otlpHttpPort} &
               sink_pid=$!
+
+              sleep 0.2
+              if ! kill -0 "$filer_pid" 2>/dev/null; then
+                echo "filer mock exited on start (is port ${toString filerPort} in use?)." >&2
+                wait "$filer_pid" 2>/dev/null || true
+                exit 1
+              fi
+              if ! kill -0 "$sink_pid" 2>/dev/null; then
+                echo "sink mock exited on start (is port ${toString otlpHttpPort} in use?)." >&2
+                wait "$sink_pid" 2>/dev/null || true
+                exit 1
+              fi
 
               echo "Waiting for mock filer /metrics..."
               ok=
