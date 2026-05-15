@@ -43,4 +43,4 @@ cat result/manifest.yaml
 
 ## Rules
 
-Edit `alerts.nix` (same style as `../pmm/alerts.nix`). The default rule fires when `avail` bytes for `name="/data1"` fall below 10Gi for 5 minutes.
+Edit `alerts.nix` (same style as `../pmm/alerts.nix`). The default rules mirror **PXC Disk Usage** in `pxc-pmm-alerts/pxc-pmm-alerts.nix`: percent free is `(free / (free + used)) * 100` with **`clamp_min(..., 1)`** on the denominator, **warning below 30%** for 10m and **critical below 20%** for 5m. If your exporter does not expose `type="free"` / `type="used"`, adjust the `expr` to match your label set (for example `avail` vs `free`).
