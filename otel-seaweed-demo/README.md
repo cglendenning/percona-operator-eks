@@ -11,7 +11,7 @@ If you need behavior that no stock receiver provides, you extend the collector i
 ## Flow
 
 1. **filer-mock** — `GET http://127.0.0.1:9333/metrics` returns Prometheus exposition format (includes a `seaweed_filer_*`-style series name for illustration).
-2. **otelcontribcol** — `prometheus` receiver scrapes that target; `batch` processor; `otlphttp` exporter pushes to the sink; `debug` exporter prints human-readable metric batches to the collector’s stdout.
+2. **otelcontribcol** — `prometheus` receiver scrapes that target; `batch` (1s timeout) then mirrors each batch to **`debug`** (`verbosity: detailed`, full series on stdout) and **`otlphttp`**. Collector **log level is `debug`** (`service.telemetry.logs`) so scrape/discovery lines from the Prometheus receiver appear in the same stream.
 3. **grafana-mock** — listens on `4318` and logs each OTLP payload size (protobuf body as shipped by the exporter).
 
 ## Run
@@ -22,7 +22,7 @@ From this directory:
 nix run .
 ```
 
-You should see `[grafana-mock]` lines with byte counts when the exporter POSTs OTLP, and detailed metric dumps from the collector’s `debug` exporter. Stop with Ctrl+C; subprocesses are torn down by the wrapper script.
+You should see `[grafana-mock]` lines with byte counts when the exporter POSTs OTLP, **`[filer-mock] GET /metrics`** when the receiver scrapes, **component `debug` lines** (`ResourceMetrics`, metric names) for each flushed batch (post-receiver, post-batch), and extra **Prometheus receiver** log lines from `service.telemetry.logs.level=debug`. Stop with Ctrl+C; subprocesses are torn down by the wrapper script.
 
 If you see **address already in use**, something is still bound on **9333** or **4318** (often a previous demo). Run `lsof -nP -iTCP:9333 -sTCP:LISTEN` and `lsof -nP -iTCP:4318 -sTCP:LISTEN`, stop those PIDs, then run again. The wrapper now refuses to start if those ports are already listening.
 

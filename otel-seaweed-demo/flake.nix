@@ -78,18 +78,29 @@
               */
             };
             processors = {
-              batch = { };
+              # Short timeout so `debug` prints close to each scrape (still one pipeline, no double scrape).
+              batch = {
+                timeout = "1s";
+                send_batch_max_size = 8192;
+              };
             };
             exporters = {
               otlphttp = {
                 endpoint = "http://127.0.0.1:${toString otlpHttpPort}";
                 tls.insecure = true;
               };
+              # Everything that left the receiver and passed the pipeline hits this (verbosity=detail dumps series).
               debug = {
                 verbosity = "detailed";
               };
             };
             service = {
+              telemetry = {
+                logs = {
+                  level = "debug";
+                  encoding = "console";
+                };
+              };
               pipelines = {
                 metrics = {
                   receivers = [
@@ -97,9 +108,10 @@
                     # "prometheus/extra"
                   ];
                   processors = [ "batch" ];
+                  # debug first: same scrape batch is mirrored to all exporters after processors.
                   exporters = [
-                    "otlphttp"
                     "debug"
+                    "otlphttp"
                   ];
                 };
               };
