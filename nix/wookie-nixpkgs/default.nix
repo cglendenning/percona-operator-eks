@@ -41,7 +41,7 @@ let
   clusterAConfig = system: mkConfig system (import ./modules/profiles/multi-primary.nix);
   clusterBConfig = system: mkConfig system (import ./modules/profiles/multi-dr.nix);
   pmmConfig = system: mkConfig system (import ./modules/profiles/local-pmm.nix);
-  grafanaSeaweedAlertsConfig = system: mkConfig system (import ./modules/profiles/local-grafana-seaweed-alerts.nix);
+  grafanaConfig = system: mkConfig system (import ./modules/profiles/local-grafana.nix);
   seaweedfsTutorialConfig = system:
     let
       pkgs = import nixpkgs {
@@ -96,7 +96,7 @@ let
 in
 rec {
   # Export configurations for external use
-  inherit mkConfig wookieLocalConfig clusterAConfig clusterBConfig pmmConfig grafanaSeaweedAlertsConfig seaweedfsTutorialConfig seaweedfsReplicationSimpleConfig;
+  inherit mkConfig wookieLocalConfig clusterAConfig clusterBConfig pmmConfig grafanaConfig seaweedfsTutorialConfig seaweedfsReplicationSimpleConfig;
   
   # Export test assertions for each system
   testAssertions = forAllSystems (system:
@@ -148,10 +148,10 @@ rec {
       pmmManifests = kubelib.renderAllBundles pmmClusterConfig;
       pmmContext = pmmClusterConfig.targets.local-k3d.context or "k3d-pmm";
 
-      grafanaSeaweedCfg = grafanaSeaweedAlertsConfig system;
-      grafanaSeaweedClusterConfig = grafanaSeaweedCfg.config;
-      grafanaSeaweedManifests = kubelib.renderAllBundles grafanaSeaweedClusterConfig;
-      grafanaSeaweedContext = grafanaSeaweedClusterConfig.targets.local-k3d.context or "k3d-grafana-sw-alerts";
+      grafanaCfg = grafanaConfig system;
+      grafanaClusterConfig = grafanaCfg.config;
+      grafanaManifests = kubelib.renderAllBundles grafanaClusterConfig;
+      grafanaContext = grafanaClusterConfig.targets.local-k3d.context or "k3d-grafana";
       
       # SeaweedFS Tutorial configuration
       seaweedfsCfg = seaweedfsTutorialConfig system;
@@ -683,19 +683,8 @@ rec {
       helmfile-cluster-b = clusterConfigB.build.helmfile;
       pmm-manifests = pmmManifests;
       pmm-helmfile = pmmClusterConfig.build.helmfile;
-      grafana-seaweed-alert-manifests = grafanaSeaweedManifests;
-      grafana-seaweed-helmfile = grafanaSeaweedClusterConfig.build.helmfile;
-      grafana-seaweed-alert-smoke =
-        pkgs.runCommand "grafana-seaweed-alert-smoke"
-          {
-            nativeBuildInputs = [ pkgs.gnugrep ];
-          }
-          ''
-            set -euo pipefail
-            grep -q "kind: ConfigMap" "${grafanaSeaweedManifests}/manifest.yaml"
-            grep -q "SeaweedFS_volumeServer_resource" "${grafanaSeaweedManifests}/manifest.yaml"
-            mkdir "$out"
-          '';
+      grafana-manifests = grafanaManifests;
+      grafana-helmfile = grafanaClusterConfig.build.helmfile;
       seaweedfs-manifests = seaweedfsManifests;
       seaweedfs-helmfile = seaweedfsClusterConfig.build.helmfile;
       seaweedfs-repl-simple-manifests = seaweedfsReplSimpleManifests;
@@ -834,7 +823,7 @@ rec {
   nixosModules = {
     platform-kubernetes = import ./modules/platform/kubernetes;
     project-wookie = import ./modules/projects/wookie;
-    project-grafana-seaweed = import ./modules/projects/grafana-seaweed;
+    project-grafana = import ./modules/projects/grafana;
     target-local-k3d = import ./modules/targets/local-k3d.nix;
   };
 }
