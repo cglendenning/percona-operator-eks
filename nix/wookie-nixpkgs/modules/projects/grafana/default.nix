@@ -11,8 +11,8 @@ let
   seaweedRules =
     map (
       spec:
-      grafanaAlerting.promqlBooleanRule {
-        inherit (spec) title expr for noDataState labels;
+      grafanaAlerting.promqlPercentBelowRule {
+        inherit (spec) title percentExpr threshold for noDataState labels;
         datasourceUid = cfg.prometheusDatasourceUid;
       }
     ) seaweedSpecs;

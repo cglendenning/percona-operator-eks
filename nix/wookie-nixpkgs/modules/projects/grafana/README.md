@@ -39,4 +39,4 @@ Profile: `modules/profiles/local-grafana.nix` (`grafanaConfig`).
 
 ## SeaweedFS disk alerts
 
-Same ratio pattern as PXC disk usage in `pxc-pmm-alerts/pxc-pmm-alerts.nix`: warning when free &lt; 30% for 10m, critical when free &lt; 20% for 5m.
+Uses Seaweed’s **`avail`** (space after `minFreeSpace` reserve) over **`all`** (total disk), as `(avail / all) * 100`. Warning when below 30% for 10m, critical below 20% for 5m. Confirm the `name` label matches your volume dir (default `/data1`).

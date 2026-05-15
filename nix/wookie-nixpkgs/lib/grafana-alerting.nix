@@ -9,11 +9,54 @@ let
     in
     "sw-" + builtins.substring 0 32 h;
 
-  # Boolean PromQL (non-zero when firing) evaluated via Prometheus instant query + threshold > 0.
-  promqlBooleanRule =
+  prometheusQueryStep =
+    { datasourceUid, expr }:
+    {
+      refId = "A";
+      relativeTimeRange = {
+        from = 600;
+        to = 0;
+      };
+      datasourceUid = datasourceUid;
+      model = {
+        datasource = {
+          type = "prometheus";
+          uid = datasourceUid;
+        };
+        expr = expr;
+        refId = "A";
+        instant = false;
+        range = true;
+        intervalMs = 1000;
+        maxDataPoints = 43200;
+        editorMode = "code";
+      };
+    };
+
+  reduceLastStep = {
+    refId = "B";
+    datasourceUid = "__expr__";
+    model = {
+      type = "reduce";
+      refId = "B";
+      datasource = {
+        type = "__expr__";
+        uid = "__expr__";
+      };
+      expression = "A";
+      reducer = "last";
+      settings = {
+        mode = "dropNN";
+      };
+    };
+  };
+
+  # PromQL returns a percentage (0–100); alert when the last value is below `threshold`.
+  promqlPercentBelowRule =
     {
       title,
-      expr,
+      percentExpr,
+      threshold,
       for ? "5m",
       datasourceUid,
       noDataState ? "OK",
@@ -22,48 +65,15 @@ let
       annotations ? { },
     }:
     {
-      uid = ruleUid { inherit title expr; };
+      uid = ruleUid { title = title; expr = percentExpr + "<" + toString threshold; };
       inherit title;
       condition = "C";
       data = [
-        {
-          refId = "A";
-          relativeTimeRange = {
-            from = 600;
-            to = 0;
-          };
-          datasourceUid = datasourceUid;
-          model = {
-            datasource = {
-              type = "prometheus";
-              uid = datasourceUid;
-            };
-            expr = expr;
-            refId = "A";
-            instant = true;
-            range = false;
-            intervalMs = 1000;
-            maxDataPoints = 43200;
-            editorMode = "code";
-          };
-        }
-        {
-          refId = "B";
-          datasourceUid = "__expr__";
-          model = {
-            type = "reduce";
-            refId = "B";
-            datasource = {
-              type = "__expr__";
-              uid = "__expr__";
-            };
-            expression = "A";
-            reducer = "last";
-            settings = {
-              mode = "dropNN";
-            };
-          };
-        }
+        (prometheusQueryStep {
+          inherit datasourceUid;
+          expr = percentExpr;
+        })
+        reduceLastStep
         {
           refId = "C";
           datasourceUid = "__expr__";
@@ -78,8 +88,8 @@ let
             conditions = [
               {
                 evaluator = {
-                  type = "gt";
-                  params = [ 0 ];
+                  type = "lt";
+                  params = [ threshold ];
                 };
                 operator = {
                   type = "and";
@@ -102,5 +112,5 @@ let
 
 in
 {
-  inherit promqlBooleanRule ruleUid;
+  inherit promqlPercentBelowRule ruleUid;
 }
