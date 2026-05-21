@@ -11,12 +11,21 @@
 let
   data1 = "/data1";
 
+  # `type` differs on numerator vs denominator; PromQL needs ignoring(type) or no match.
+  percentFree =
+    mount:
+    ''
+      (
+        SeaweedFS_volumeServer_resource{name="${mount}",type="free"}
+        / ignoring(type) clamp_min(SeaweedFS_volumeServer_resource{name="${mount}",type="all"}, 1)
+      ) * 100'';
+
   percentAvail =
     mount:
     ''
       (
         SeaweedFS_volumeServer_resource{name="${mount}",type="avail"}
-        / clamp_min(SeaweedFS_volumeServer_resource{name="${mount}",type="all"}, 1)
+        / ignoring(type) clamp_min(SeaweedFS_volumeServer_resource{name="${mount}",type="all"}, 1)
       ) * 100'';
 
 in
