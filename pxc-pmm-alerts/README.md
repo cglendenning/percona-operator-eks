@@ -71,6 +71,21 @@ These rules query gauges this controller pushes from the K8s API, not series PMM
 
 The heartbeat alert is the canary: every other rule above uses `no_data_state=OK`, so if the controller dies the heartbeat alert is what pages.
 
+### Backup staleness alert (kube-state-metrics → PMM)
+
+| Rule | Condition | `for` |
+|------|-----------|-------|
+| **PXC Backup Stale Critical** | No `Succeeded` backup in **30h** (`108000s`) per `dbcluster`/`namespace`, or backup CRs exist but none `Succeeded` | **15m** |
+
+PromQL uses Percona KSM metrics **`kube_pxc_backup_status_completed`** and
+**`kube_pxc_backup_status_state{state="Succeeded"}`** (from
+[Monitor Kubernetes](https://docs.percona.com/percona-operator-for-mysql/pxc/monitor-kubernetes.html)
+via vmagent remote-write). This rule does **not** use controller-pushed `pxc_*` gauges.
+
+**Prerequisite:** enable `projects.pmm.k8sMonitoring` in Nix, or run `./scripts/pmm-local.sh --rebuild`
+(which installs the Victoria Metrics k8s stack by default). Without KSM metrics in PMM, this rule
+stays silent (`no_data_state=OK`).
+
 ### Built-in MySQL async replication alerts (`pxc-pmm-alerts.nix`)
 
 The generated `rules.json` includes four **`expr`** rules that only evaluate targets exposing **`mysql_slave_status_*`** / **`mysql_slave_status_replica_*`** (traditional async replication collected by **`mysqld_exporter`**). PXC instances without a configured replica channel normally have **no** matching series, so they do not satisfy these predicates.

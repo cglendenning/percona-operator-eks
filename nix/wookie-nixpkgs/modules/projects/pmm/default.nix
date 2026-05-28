@@ -212,6 +212,8 @@ let
 
 in
 {
+  imports = [ ./k8s-monitoring.nix ];
+
   options.projects.pmm = {
     enable = mkEnableOption "PMM server with alert provisioner";
 

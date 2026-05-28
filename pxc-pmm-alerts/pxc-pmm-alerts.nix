@@ -655,6 +655,35 @@ let
       };
       folder_uid = "__MYSQL_FOLDER_UID__";
     }
+    # Backup staleness: requires kube-state-metrics CR metrics remote-written to PMM
+    # (projects.pmm.k8sMonitoring or pmm-local.sh install_k8s_monitoring). Uses Percona KSM
+    # series kube_pxc_backup_status_completed + kube_pxc_backup_status_state{state="Succeeded"}.
+    {
+      name = "PXC Backup Stale Critical";
+      group = "expression";
+      expr = ''
+        (
+          time()
+          - max by (dbcluster, namespace) (
+            kube_pxc_backup_status_completed
+            and on (name, namespace) (kube_pxc_backup_status_state{state="Succeeded"} == 1)
+          )
+        ) > 108000
+        or (
+          count by (dbcluster, namespace) (kube_pxc_backup_status_state{state="Succeeded"} == 1) == 0
+          and count by (dbcluster, namespace) (kube_pxc_backup_status_state) > 0
+        )
+      '';
+      for = "15m";
+      no_data_state = "OK";
+      custom_labels = {
+        severity = "critical";
+        route = alertRoute;
+        env = alertEnv;
+        managed_by = "pxc-pmm-alerts-controller";
+      };
+      folder_uid = "__MYSQL_FOLDER_UID__";
+    }
   ];
 
   # Per-namespace Role granting the controller's ServiceAccount the minimum verbs to derive

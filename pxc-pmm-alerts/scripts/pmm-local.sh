@@ -7,6 +7,8 @@
 # If still unavailable, exits 0 after tests pass (skip k3d/PMM) unless PMM_LOCAL_REQUIRE_DOCKER=1 (use in CI).
 # If PMM_LOCAL_PORT (default 8443) is in use, scans up to PMM_LOCAL_PORT + PMM_LOCAL_PORT_SCAN (default 40).
 # Set PMM_LOCAL_SKIP_CONTROLLER=1 to skip docker build / nix-build / controller apply (PMM + port-forward only).
+# Set PMM_LOCAL_SKIP_K8S_MONITORING=1 to skip Victoria Metrics k8s stack (kube-state-metrics → PMM remote-write).
+# Set PMM_K8S_MONITORING_API_KEY=glsa_… to reuse an existing PMM service account token (else one is minted via Grafana API).
 # Set PMM_LOCAL_TEST_ONLY=1 to run npm test and exit (no Docker/k3d).
 # CLI:
 #   --rebuild / --build : full workflow (tests + infra reconcile + controller build/deploy + port-forward).
@@ -17,6 +19,7 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
+K8S_MONITORING_VALUES="${K8S_MONITORING_VALUES:-${ROOT}/scripts/k8s-monitoring-values.yaml}"
 
 need() { command -v "$1" >/dev/null 2>&1 || { echo "[pmm-local] missing: $1" >&2; exit 1; }; }
 
@@ -108,6 +111,12 @@ DEPLOY_ROLLOUT_MAX_SLICES="${DEPLOY_ROLLOUT_MAX_SLICES:-60}"
 API_QUICK_TIMEOUT_SEC="${API_QUICK_TIMEOUT_SEC:-5}"
 API_RECOVERY_MAX="${API_RECOVERY_MAX:-1}"
 MIN_COLIMA_MEMORY_GIB="${MIN_COLIMA_MEMORY_GIB:-6}"
+K8S_MONITORING_NS="${K8S_MONITORING_NS:-monitoring-system}"
+K8S_MONITORING_RELEASE="${K8S_MONITORING_RELEASE:-vm-k8s-stack}"
+K8S_MONITORING_CHART_VERSION="${K8S_MONITORING_CHART_VERSION:-0.30.3}"
+K8S_CLUSTER_ID="${K8S_CLUSTER_ID:-pmm-local}"
+PERCONA_K8S_MONITORING_TAG="${PERCONA_K8S_MONITORING_TAG:-v0.1.1}"
+KSM_CONFIGMAP_URL="https://raw.githubusercontent.com/Percona-Lab/k8s-monitoring/refs/tags/${PERCONA_K8S_MONITORING_TAG}/vm-operator-k8s-stack/ksm-configmap.yaml"
 MODE_REBUILD=0
 
 parse_cli_args() {
@@ -539,6 +548,150 @@ install_pmm() {
   echo ""
 }
 
+# Mint a PMM Grafana service account token (glsa_…) for vmagent remote-write. Uses a short-lived
+# port-forward to the in-cluster PMM Service (admin basic auth).
+mint_pmm_k8s_monitoring_api_key() {
+  if [[ -n "${PMM_K8S_MONITORING_API_KEY:-}" ]]; then
+    echo "${PMM_K8S_MONITORING_API_KEY}"
+    return 0
+  fi
+
+  need curl
+  local pf_port="${PMM_TOKEN_MINT_PORT:-18443}"
+  local sa_name="pmm-k8s-monitoring"
+  local base="https://127.0.0.1:${pf_port}"
+  local admin_pass="${PMM_BOOTSTRAP_PASSWORD}"
+
+  echo "[pmm-local] k8s-monitoring: minting PMM service account token (port-forward ${pf_port} → ${SVC})…" >&2
+  kubectl --context "${CTX}" port-forward -n "${PMM_NS}" --address 127.0.0.1 "svc/${SVC}" "${pf_port}:https" >/dev/null 2>&1 &
+  local pf_pid=$!
+  local i=0
+  while [[ "${i}" -lt 30 ]]; do
+    if curl -sk --connect-timeout 2 "${base}/v1/readyz" -u "admin:${admin_pass}" >/dev/null 2>&1; then
+      break
+    fi
+    sleep 1
+    i=$((i + 1))
+  done
+  if [[ "${i}" -ge 30 ]]; then
+    kill "${pf_pid}" 2>/dev/null || true
+    wait "${pf_pid}" 2>/dev/null || true
+    echo "[pmm-local] k8s-monitoring: PMM not reachable on 127.0.0.1:${pf_port} for token mint." >&2
+    return 1
+  fi
+
+  local sa_id search_resp create_resp token_resp
+  search_resp="$(curl -sk -u "admin:${admin_pass}" "${base}/graph/api/serviceaccounts/search?query=${sa_name}")"
+  sa_id="$(SA_NAME="${sa_name}" python3 -c '
+import json, os, sys
+raw = sys.stdin.read().strip()
+if not raw:
+  sys.exit(0)
+data = json.loads(raw)
+items = data if isinstance(data, list) else data.get("serviceAccounts", [])
+for item in items:
+  if item.get("name") == os.environ["SA_NAME"]:
+    print(item.get("id", ""))
+    break
+' <<<"${search_resp}")"
+  if [[ -z "${sa_id}" ]]; then
+    create_resp="$(curl -sk -u "admin:${admin_pass}" -H "Content-Type: application/json" \
+      -X POST "${base}/graph/api/serviceaccounts" \
+      -d "{\"name\":\"${sa_name}\",\"role\":\"Admin\",\"isDisabled\":false}")"
+    sa_id="$(python3 -c 'import json,sys; print(json.loads(sys.stdin.read()).get("id",""))' <<<"${create_resp}")"
+  fi
+  if [[ -z "${sa_id}" ]]; then
+    kill "${pf_pid}" 2>/dev/null || true
+    wait "${pf_pid}" 2>/dev/null || true
+    echo "[pmm-local] k8s-monitoring: could not create or find Grafana service account ${sa_name}." >&2
+    return 1
+  fi
+
+  local token
+  token_resp="$(curl -sk -u "admin:${admin_pass}" -H "Content-Type: application/json" \
+    -X POST "${base}/graph/api/serviceaccounts/${sa_id}/tokens" \
+    -d "{\"name\":\"vmagent-remote-write-$(date +%s)\"}")"
+  token="$(python3 -c 'import json,sys; print(json.loads(sys.stdin.read()).get("key",""))' <<<"${token_resp}")"
+  kill "${pf_pid}" 2>/dev/null || true
+  wait "${pf_pid}" 2>/dev/null || true
+
+  if [[ -z "${token}" ]] || [[ "${token}" != glsa_* ]]; then
+    echo "[pmm-local] k8s-monitoring: token mint failed (set PMM_K8S_MONITORING_API_KEY=glsa_… manually)." >&2
+    return 1
+  fi
+  echo "${token}"
+}
+
+install_k8s_monitoring() {
+  if [[ "${PMM_LOCAL_SKIP_K8S_MONITORING:-0}" == "1" ]] || [[ "${PMM_LOCAL_SKIP_K8S_MONITORING:-}" == "true" ]]; then
+    echo "[pmm-local] skipping k8s monitoring (PMM_LOCAL_SKIP_K8S_MONITORING=1)"
+    return 0
+  fi
+
+  need kubectl
+  need helm
+  need curl
+  if [[ ! -f "${K8S_MONITORING_VALUES}" ]]; then
+    echo "[pmm-local] k8s-monitoring: values file missing: ${K8S_MONITORING_VALUES}" >&2
+    exit 1
+  fi
+
+  local api_key pmm_write_url
+  api_key="$(mint_pmm_k8s_monitoring_api_key)" || exit 1
+  pmm_write_url="https://${SVC}.${PMM_NS}.svc.cluster.local/victoriametrics/api/v1/write"
+
+  echo "[pmm-local] k8s-monitoring: namespace ${K8S_MONITORING_NS}…"
+  kubectl --context "${CTX}" create namespace "${K8S_MONITORING_NS}" --dry-run=client -o yaml \
+    | kubectl --context "${CTX}" apply -f - --request-timeout=30s
+
+  echo "[pmm-local] k8s-monitoring: ConfigMap customresource-config-ksm…"
+  curl -fsSL "${KSM_CONFIGMAP_URL}" \
+    | sed "s|#namespace: default|namespace: ${K8S_MONITORING_NS}|" \
+    | kubectl --context "${CTX}" apply -f - --request-timeout=30s
+
+  echo "[pmm-local] k8s-monitoring: Secret pmm-token-vmoperator…"
+  kubectl --context "${CTX}" -n "${K8S_MONITORING_NS}" create secret generic pmm-token-vmoperator \
+    --from-literal=api_key="${api_key}" \
+    --dry-run=client -o yaml | kubectl --context "${CTX}" apply -f - --request-timeout=30s
+
+  echo "[pmm-local] k8s-monitoring: helm repos (vm, prometheus-community, grafana)…"
+  helm repo add vm https://victoriametrics.github.io/helm-charts/ 2>/dev/null || true
+  helm repo add prometheus-community https://prometheus-community.github.io/helm-charts 2>/dev/null || true
+  helm repo add grafana https://grafana.github.io/helm-charts 2>/dev/null || true
+  run_with_timeout 120 helm repo update
+
+  echo "[pmm-local] k8s-monitoring: helm upgrade --install ${K8S_MONITORING_RELEASE} (chart ${K8S_MONITORING_CHART_VERSION})…"
+  local _helm_tmp
+  _helm_tmp="$(mktemp -d)"
+  (
+    cd "${_helm_tmp}"
+    run_with_status_heartbeat helm upgrade --install "${K8S_MONITORING_RELEASE}" vm/victoria-metrics-k8s-stack \
+      --kube-context "${CTX}" \
+      --namespace "${K8S_MONITORING_NS}" \
+      --version "${K8S_MONITORING_CHART_VERSION}" \
+      -f "${K8S_MONITORING_VALUES}" \
+      --set "externalVM.write.url=${pmm_write_url}" \
+      --set "vmagent.spec.externalLabels.k8s_cluster_id=${K8S_CLUSTER_ID}"
+  )
+  rm -rf "${_helm_tmp}"
+
+  echo "[pmm-local] k8s-monitoring: waiting for kube-state-metrics Deployment (${ROLL_SLICE} slices, max 40)…"
+  local _slice=0
+  until kubectl --context "${CTX}" -n "${K8S_MONITORING_NS}" rollout status deployment \
+    -l "app.kubernetes.io/name=kube-state-metrics" --timeout="${ROLL_SLICE}" --request-timeout=30s 2>/dev/null; do
+    _slice=$((_slice + 1))
+    if [[ "${_slice}" -ge 40 ]]; then
+      echo "[pmm-local] k8s-monitoring: kube-state-metrics rollout not ready; check: kubectl --context ${CTX} -n ${K8S_MONITORING_NS} get pods" >&2
+      exit 1
+    fi
+    echo "[pmm-local] k8s-monitoring: rollout wait ${_slice}/40…"
+    kubectl --context "${CTX}" get pods -n "${K8S_MONITORING_NS}" -o wide --request-timeout=30s || true
+  done
+
+  echo "[pmm-local] k8s-monitoring: installed (remote-write → ${pmm_write_url}, cluster_id=${K8S_CLUSTER_ID})"
+  echo "[pmm-local] k8s-monitoring: after backups exist, Explore → kube_pxc_backup_status_completed"
+}
+
 preflight_port_forward() {
   need kubectl
 
@@ -707,6 +860,9 @@ else
 
   echo "[pmm-local] ---- step: Helm install PMM chart ----"
   install_pmm
+
+  echo "[pmm-local] ---- step: Victoria Metrics k8s stack (kube-state-metrics → PMM) ----"
+  install_k8s_monitoring
 
   echo "[pmm-local] ---- step: build + deploy pxc-pmm-alerts-controller ----"
   build_and_deploy_controller
