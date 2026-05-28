@@ -82,8 +82,8 @@ PromQL uses Percona KSM metrics **`kube_pxc_backup_status_completed`** and
 [Monitor Kubernetes](https://docs.percona.com/percona-operator-for-mysql/pxc/monitor-kubernetes.html)
 via vmagent remote-write). This rule does **not** use controller-pushed `pxc_*` gauges.
 
-**Prerequisite:** enable `projects.pmm.k8sMonitoring` in Nix (token from
-`wookie-observability/pmm-service-account-token`, key `pmmservertoken`), or run
+**Prerequisite:** enable `projects.pmm.k8sMonitoring` in Nix (deploys into
+`wookie-observability`, mounts existing `pmm-service-account-token` / `pmmservertoken`), or run
 `./scripts/pmm-local.sh --rebuild`. Without KSM metrics in PMM, this rule stays silent
 (`no_data_state=OK`).
 

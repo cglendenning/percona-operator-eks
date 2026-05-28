@@ -79,17 +79,16 @@ projects.pmm = {
 
   k8sMonitoring = {
     enable = true;
-    namespace = "monitoring-system";
+    # Default namespace: wookie-observability (same as pmm-service-account-token Secret).
     k8sClusterId = "my-k3d-cluster"; # unique per K8s cluster → PMM
     nodeExporterEnabled = false;   # true only if you need node-exporter
-    # Token defaults: wookie-observability/pmm-service-account-token.pmmservertoken
   };
 };
 ```
 
 | Bundle | Type | Contents |
 |--------|------|----------|
-| `pmm-k8s-monitoring-prereqs` | Manifests | Token sync Job (from `wookie-observability`; in-pod retries, TTL cleanup), ConfigMap `customresource-config-ksm` |
+| `pmm-k8s-monitoring-prereqs` | Manifests | ConfigMap `customresource-config-ksm` only |
 | `pmm-k8s-monitoring` | Helm | `vm/victoria-metrics-k8s-stack` @ `0.30.3` (Percona pin) |
 
 `dependsOn` `pmm-server` so PMM exists before vmagent remote-write.
@@ -103,10 +102,10 @@ projects.pmm = {
    - `kube_pxc_backup_status_completed` — completion timestamp gauge (validate parsing in Explore)
    - `kube_pxc_backup_info` — backup metadata
 
-4. Pods in `monitoring-system` (or your namespace):
+4. Pods in `wookie-observability` (default namespace):
 
 ```bash
-kubectl get pods -n monitoring-system
+kubectl get pods -n wookie-observability
 # expect kube-state-metrics, victoria-metrics-operator, vmagent (names vary by release)
 ```
 

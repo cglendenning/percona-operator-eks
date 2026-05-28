@@ -8,8 +8,8 @@
 # If PMM_LOCAL_PORT (default 8443) is in use, scans up to PMM_LOCAL_PORT + PMM_LOCAL_PORT_SCAN (default 40).
 # Set PMM_LOCAL_SKIP_CONTROLLER=1 to skip docker build / nix-build / controller apply (PMM + port-forward only).
 # Set PMM_LOCAL_SKIP_K8S_MONITORING=1 to skip Victoria Metrics k8s stack (kube-state-metrics → PMM remote-write).
-# vmagent reads PMM token from wookie-observability/pmm-service-account-token (pmmservertoken), synced into monitoring-system.
-# For local k3d only: PMM_K8S_MONITORING_API_KEY=glsa_… bootstraps that source secret if it does not exist yet.
+# Stack runs in wookie-observability and mounts existing pmm-service-account-token (pmmservertoken).
+# For local k3d only: PMM_K8S_MONITORING_API_KEY=glsa_… bootstraps that secret if missing.
 # Set PMM_LOCAL_TEST_ONLY=1 to run npm test and exit (no Docker/k3d).
 # CLI:
 #   --rebuild / --build : full workflow (tests + infra reconcile + controller build/deploy + port-forward).
@@ -112,12 +112,11 @@ DEPLOY_ROLLOUT_MAX_SLICES="${DEPLOY_ROLLOUT_MAX_SLICES:-60}"
 API_QUICK_TIMEOUT_SEC="${API_QUICK_TIMEOUT_SEC:-5}"
 API_RECOVERY_MAX="${API_RECOVERY_MAX:-1}"
 MIN_COLIMA_MEMORY_GIB="${MIN_COLIMA_MEMORY_GIB:-6}"
-K8S_MONITORING_NS="${K8S_MONITORING_NS:-monitoring-system}"
+K8S_MONITORING_NS="${K8S_MONITORING_NS:-wookie-observability}"
 K8S_MONITORING_RELEASE="${K8S_MONITORING_RELEASE:-vm-k8s-stack}"
 K8S_MONITORING_CHART_VERSION="${K8S_MONITORING_CHART_VERSION:-0.30.3}"
 K8S_CLUSTER_ID="${K8S_CLUSTER_ID:-pmm-local}"
 PERCONA_K8S_MONITORING_TAG="${PERCONA_K8S_MONITORING_TAG:-v0.1.1}"
-PMM_TOKEN_SOURCE_NS="${PMM_TOKEN_SOURCE_NS:-wookie-observability}"
 PMM_TOKEN_SECRET_NAME="${PMM_TOKEN_SECRET_NAME:-pmm-service-account-token}"
 PMM_TOKEN_SECRET_KEY="${PMM_TOKEN_SECRET_KEY:-pmmservertoken}"
 KSM_CONFIGMAP_URL="https://raw.githubusercontent.com/Percona-Lab/k8s-monitoring/refs/tags/${PERCONA_K8S_MONITORING_TAG}/vm-operator-k8s-stack/ksm-configmap.yaml"
@@ -552,37 +551,22 @@ install_pmm() {
   echo ""
 }
 
-# Local k3d bootstrap only: create wookie-observability/pmm-service-account-token when missing.
-bootstrap_pmm_token_source_secret() {
-  if kubectl --context "${CTX}" -n "${PMM_TOKEN_SOURCE_NS}" get secret "${PMM_TOKEN_SECRET_NAME}" \
+# Local k3d bootstrap only: ensure pmm-service-account-token exists in wookie-observability.
+bootstrap_pmm_token_secret() {
+  if kubectl --context "${CTX}" -n "${K8S_MONITORING_NS}" get secret "${PMM_TOKEN_SECRET_NAME}" \
     --request-timeout=30s >/dev/null 2>&1; then
     return 0
   fi
   if [[ -z "${PMM_K8S_MONITORING_API_KEY:-}" ]]; then
-    echo "[pmm-local] k8s-monitoring: missing Secret ${PMM_TOKEN_SOURCE_NS}/${PMM_TOKEN_SECRET_NAME}." >&2
-    echo "[pmm-local] Create it in the cluster (key ${PMM_TOKEN_SECRET_KEY}) or set PMM_K8S_MONITORING_API_KEY for local bootstrap." >&2
+    echo "[pmm-local] k8s-monitoring: missing Secret ${K8S_MONITORING_NS}/${PMM_TOKEN_SECRET_NAME}." >&2
+    echo "[pmm-local] Create it (key ${PMM_TOKEN_SECRET_KEY}) or set PMM_K8S_MONITORING_API_KEY for local bootstrap." >&2
     return 1
   fi
-  echo "[pmm-local] k8s-monitoring: bootstrapping ${PMM_TOKEN_SOURCE_NS}/${PMM_TOKEN_SECRET_NAME} from PMM_K8S_MONITORING_API_KEY…"
-  kubectl --context "${CTX}" create namespace "${PMM_TOKEN_SOURCE_NS}" --dry-run=client -o yaml \
+  echo "[pmm-local] k8s-monitoring: bootstrapping ${K8S_MONITORING_NS}/${PMM_TOKEN_SECRET_NAME} from PMM_K8S_MONITORING_API_KEY…"
+  kubectl --context "${CTX}" create namespace "${K8S_MONITORING_NS}" --dry-run=client -o yaml \
     | kubectl --context "${CTX}" apply -f - --request-timeout=30s
-  kubectl --context "${CTX}" -n "${PMM_TOKEN_SOURCE_NS}" create secret generic "${PMM_TOKEN_SECRET_NAME}" \
-    --from-literal="${PMM_TOKEN_SECRET_KEY}=${PMM_K8S_MONITORING_API_KEY}" \
-    --dry-run=client -o yaml | kubectl --context "${CTX}" apply -f - --request-timeout=30s
-}
-
-# Copy pmmservertoken from wookie-observability into the vm-k8s-stack namespace (vmagent mount).
-sync_pmm_token_to_monitoring_ns() {
-  local token
-  token="$(kubectl --context "${CTX}" -n "${PMM_TOKEN_SOURCE_NS}" get secret "${PMM_TOKEN_SECRET_NAME}" \
-    -o "jsonpath={.data.${PMM_TOKEN_SECRET_KEY}}" --request-timeout=30s | base64 -d)"
-  if [[ -z "${token}" ]]; then
-    echo "[pmm-local] k8s-monitoring: empty ${PMM_TOKEN_SECRET_KEY} in ${PMM_TOKEN_SOURCE_NS}/${PMM_TOKEN_SECRET_NAME}" >&2
-    return 1
-  fi
-  echo "[pmm-local] k8s-monitoring: syncing token → ${K8S_MONITORING_NS}/${PMM_TOKEN_SECRET_NAME}…"
   kubectl --context "${CTX}" -n "${K8S_MONITORING_NS}" create secret generic "${PMM_TOKEN_SECRET_NAME}" \
-    --from-literal="${PMM_TOKEN_SECRET_KEY}=${token}" \
+    --from-literal="${PMM_TOKEN_SECRET_KEY}=${PMM_K8S_MONITORING_API_KEY}" \
     --dry-run=client -o yaml | kubectl --context "${CTX}" apply -f - --request-timeout=30s
 }
 
@@ -603,13 +587,11 @@ install_k8s_monitoring() {
   local pmm_write_url
   pmm_write_url="https://${SVC}.${PMM_NS}.svc.cluster.local/victoriametrics/api/v1/write"
 
-  bootstrap_pmm_token_source_secret || exit 1
-
   echo "[pmm-local] k8s-monitoring: namespace ${K8S_MONITORING_NS}…"
   kubectl --context "${CTX}" create namespace "${K8S_MONITORING_NS}" --dry-run=client -o yaml \
     | kubectl --context "${CTX}" apply -f - --request-timeout=30s
 
-  sync_pmm_token_to_monitoring_ns || exit 1
+  bootstrap_pmm_token_secret || exit 1
 
   echo "[pmm-local] k8s-monitoring: ConfigMap customresource-config-ksm…"
   curl -fsSL "${KSM_CONFIGMAP_URL}" \

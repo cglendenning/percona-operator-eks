@@ -21,7 +21,6 @@
       # Requires wookie-observability/pmm-service-account-token (pmmservertoken) to exist first.
       # k8sMonitoring = {
       #   enable = true;
-      #   namespace = "monitoring-system";
       #   k8sClusterId = "pmm";
       # };
     };
