@@ -1,7 +1,7 @@
 # Helm values for vm/victoria-metrics-k8s-stack aligned with Percona Operator docs:
 # https://docs.percona.com/percona-operator-for-mysql/pxc/monitor-kubernetes.html
 # Chart pin matches Percona-Lab/k8s-monitoring tag v0.1.1 (HELM_CHART_VERSION=0.30.3).
-{ pmmWriteUrl, k8sClusterId, nodeExporterEnabled }:
+{ pmmWriteUrl, k8sClusterId, nodeExporterEnabled, tokenSecretName, tokenSecretKey }:
 
 {
   externalVM = {
@@ -9,8 +9,8 @@
     write = {
       url = pmmWriteUrl;
       bearerTokenSecret = {
-        name = "pmm-token-vmoperator";
-        key = "api_key";
+        name = tokenSecretName;
+        key = tokenSecretKey;
       };
     };
   };

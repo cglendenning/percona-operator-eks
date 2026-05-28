@@ -8,7 +8,8 @@
 # If PMM_LOCAL_PORT (default 8443) is in use, scans up to PMM_LOCAL_PORT + PMM_LOCAL_PORT_SCAN (default 40).
 # Set PMM_LOCAL_SKIP_CONTROLLER=1 to skip docker build / nix-build / controller apply (PMM + port-forward only).
 # Set PMM_LOCAL_SKIP_K8S_MONITORING=1 to skip Victoria Metrics k8s stack (kube-state-metrics → PMM remote-write).
-# Set PMM_K8S_MONITORING_API_KEY=glsa_… to reuse an existing PMM service account token (else one is minted via Grafana API).
+# vmagent reads PMM token from wookie-observability/pmm-service-account-token (pmmservertoken), synced into monitoring-system.
+# For local k3d only: PMM_K8S_MONITORING_API_KEY=glsa_… bootstraps that source secret if it does not exist yet.
 # Set PMM_LOCAL_TEST_ONLY=1 to run npm test and exit (no Docker/k3d).
 # CLI:
 #   --rebuild / --build : full workflow (tests + infra reconcile + controller build/deploy + port-forward).
@@ -116,6 +117,9 @@ K8S_MONITORING_RELEASE="${K8S_MONITORING_RELEASE:-vm-k8s-stack}"
 K8S_MONITORING_CHART_VERSION="${K8S_MONITORING_CHART_VERSION:-0.30.3}"
 K8S_CLUSTER_ID="${K8S_CLUSTER_ID:-pmm-local}"
 PERCONA_K8S_MONITORING_TAG="${PERCONA_K8S_MONITORING_TAG:-v0.1.1}"
+PMM_TOKEN_SOURCE_NS="${PMM_TOKEN_SOURCE_NS:-wookie-observability}"
+PMM_TOKEN_SECRET_NAME="${PMM_TOKEN_SECRET_NAME:-pmm-service-account-token}"
+PMM_TOKEN_SECRET_KEY="${PMM_TOKEN_SECRET_KEY:-pmmservertoken}"
 KSM_CONFIGMAP_URL="https://raw.githubusercontent.com/Percona-Lab/k8s-monitoring/refs/tags/${PERCONA_K8S_MONITORING_TAG}/vm-operator-k8s-stack/ksm-configmap.yaml"
 MODE_REBUILD=0
 
@@ -548,78 +552,38 @@ install_pmm() {
   echo ""
 }
 
-# Mint a PMM Grafana service account token (glsa_…) for vmagent remote-write. Uses a short-lived
-# port-forward to the in-cluster PMM Service (admin basic auth).
-mint_pmm_k8s_monitoring_api_key() {
-  if [[ -n "${PMM_K8S_MONITORING_API_KEY:-}" ]]; then
-    echo "${PMM_K8S_MONITORING_API_KEY}"
+# Local k3d bootstrap only: create wookie-observability/pmm-service-account-token when missing.
+bootstrap_pmm_token_source_secret() {
+  if kubectl --context "${CTX}" -n "${PMM_TOKEN_SOURCE_NS}" get secret "${PMM_TOKEN_SECRET_NAME}" \
+    --request-timeout=30s >/dev/null 2>&1; then
     return 0
   fi
-
-  need curl
-  local pf_port="${PMM_TOKEN_MINT_PORT:-18443}"
-  local sa_name="pmm-k8s-monitoring"
-  local base="https://127.0.0.1:${pf_port}"
-  local admin_pass="${PMM_BOOTSTRAP_PASSWORD}"
-
-  echo "[pmm-local] k8s-monitoring: minting PMM service account token (port-forward ${pf_port} → ${SVC})…" >&2
-  kubectl --context "${CTX}" port-forward -n "${PMM_NS}" --address 127.0.0.1 "svc/${SVC}" "${pf_port}:https" >/dev/null 2>&1 &
-  local pf_pid=$!
-  local i=0
-  while [[ "${i}" -lt 30 ]]; do
-    if curl -sk --connect-timeout 2 "${base}/v1/readyz" -u "admin:${admin_pass}" >/dev/null 2>&1; then
-      break
-    fi
-    sleep 1
-    i=$((i + 1))
-  done
-  if [[ "${i}" -ge 30 ]]; then
-    kill "${pf_pid}" 2>/dev/null || true
-    wait "${pf_pid}" 2>/dev/null || true
-    echo "[pmm-local] k8s-monitoring: PMM not reachable on 127.0.0.1:${pf_port} for token mint." >&2
+  if [[ -z "${PMM_K8S_MONITORING_API_KEY:-}" ]]; then
+    echo "[pmm-local] k8s-monitoring: missing Secret ${PMM_TOKEN_SOURCE_NS}/${PMM_TOKEN_SECRET_NAME}." >&2
+    echo "[pmm-local] Create it in the cluster (key ${PMM_TOKEN_SECRET_KEY}) or set PMM_K8S_MONITORING_API_KEY for local bootstrap." >&2
     return 1
   fi
+  echo "[pmm-local] k8s-monitoring: bootstrapping ${PMM_TOKEN_SOURCE_NS}/${PMM_TOKEN_SECRET_NAME} from PMM_K8S_MONITORING_API_KEY…"
+  kubectl --context "${CTX}" create namespace "${PMM_TOKEN_SOURCE_NS}" --dry-run=client -o yaml \
+    | kubectl --context "${CTX}" apply -f - --request-timeout=30s
+  kubectl --context "${CTX}" -n "${PMM_TOKEN_SOURCE_NS}" create secret generic "${PMM_TOKEN_SECRET_NAME}" \
+    --from-literal="${PMM_TOKEN_SECRET_KEY}=${PMM_K8S_MONITORING_API_KEY}" \
+    --dry-run=client -o yaml | kubectl --context "${CTX}" apply -f - --request-timeout=30s
+}
 
-  local sa_id search_resp create_resp token_resp
-  search_resp="$(curl -sk -u "admin:${admin_pass}" "${base}/graph/api/serviceaccounts/search?query=${sa_name}")"
-  sa_id="$(SA_NAME="${sa_name}" python3 -c '
-import json, os, sys
-raw = sys.stdin.read().strip()
-if not raw:
-  sys.exit(0)
-data = json.loads(raw)
-items = data if isinstance(data, list) else data.get("serviceAccounts", [])
-for item in items:
-  if item.get("name") == os.environ["SA_NAME"]:
-    print(item.get("id", ""))
-    break
-' <<<"${search_resp}")"
-  if [[ -z "${sa_id}" ]]; then
-    create_resp="$(curl -sk -u "admin:${admin_pass}" -H "Content-Type: application/json" \
-      -X POST "${base}/graph/api/serviceaccounts" \
-      -d "{\"name\":\"${sa_name}\",\"role\":\"Admin\",\"isDisabled\":false}")"
-    sa_id="$(python3 -c 'import json,sys; print(json.loads(sys.stdin.read()).get("id",""))' <<<"${create_resp}")"
-  fi
-  if [[ -z "${sa_id}" ]]; then
-    kill "${pf_pid}" 2>/dev/null || true
-    wait "${pf_pid}" 2>/dev/null || true
-    echo "[pmm-local] k8s-monitoring: could not create or find Grafana service account ${sa_name}." >&2
-    return 1
-  fi
-
+# Copy pmmservertoken from wookie-observability into the vm-k8s-stack namespace (vmagent mount).
+sync_pmm_token_to_monitoring_ns() {
   local token
-  token_resp="$(curl -sk -u "admin:${admin_pass}" -H "Content-Type: application/json" \
-    -X POST "${base}/graph/api/serviceaccounts/${sa_id}/tokens" \
-    -d "{\"name\":\"vmagent-remote-write-$(date +%s)\"}")"
-  token="$(python3 -c 'import json,sys; print(json.loads(sys.stdin.read()).get("key",""))' <<<"${token_resp}")"
-  kill "${pf_pid}" 2>/dev/null || true
-  wait "${pf_pid}" 2>/dev/null || true
-
-  if [[ -z "${token}" ]] || [[ "${token}" != glsa_* ]]; then
-    echo "[pmm-local] k8s-monitoring: token mint failed (set PMM_K8S_MONITORING_API_KEY=glsa_… manually)." >&2
+  token="$(kubectl --context "${CTX}" -n "${PMM_TOKEN_SOURCE_NS}" get secret "${PMM_TOKEN_SECRET_NAME}" \
+    -o "jsonpath={.data.${PMM_TOKEN_SECRET_KEY}}" --request-timeout=30s | base64 -d)"
+  if [[ -z "${token}" ]]; then
+    echo "[pmm-local] k8s-monitoring: empty ${PMM_TOKEN_SECRET_KEY} in ${PMM_TOKEN_SOURCE_NS}/${PMM_TOKEN_SECRET_NAME}" >&2
     return 1
   fi
-  echo "${token}"
+  echo "[pmm-local] k8s-monitoring: syncing token → ${K8S_MONITORING_NS}/${PMM_TOKEN_SECRET_NAME}…"
+  kubectl --context "${CTX}" -n "${K8S_MONITORING_NS}" create secret generic "${PMM_TOKEN_SECRET_NAME}" \
+    --from-literal="${PMM_TOKEN_SECRET_KEY}=${token}" \
+    --dry-run=client -o yaml | kubectl --context "${CTX}" apply -f - --request-timeout=30s
 }
 
 install_k8s_monitoring() {
@@ -636,23 +600,21 @@ install_k8s_monitoring() {
     exit 1
   fi
 
-  local api_key pmm_write_url
-  api_key="$(mint_pmm_k8s_monitoring_api_key)" || exit 1
+  local pmm_write_url
   pmm_write_url="https://${SVC}.${PMM_NS}.svc.cluster.local/victoriametrics/api/v1/write"
+
+  bootstrap_pmm_token_source_secret || exit 1
 
   echo "[pmm-local] k8s-monitoring: namespace ${K8S_MONITORING_NS}…"
   kubectl --context "${CTX}" create namespace "${K8S_MONITORING_NS}" --dry-run=client -o yaml \
     | kubectl --context "${CTX}" apply -f - --request-timeout=30s
 
+  sync_pmm_token_to_monitoring_ns || exit 1
+
   echo "[pmm-local] k8s-monitoring: ConfigMap customresource-config-ksm…"
   curl -fsSL "${KSM_CONFIGMAP_URL}" \
     | sed "s|#namespace: default|namespace: ${K8S_MONITORING_NS}|" \
     | kubectl --context "${CTX}" apply -f - --request-timeout=30s
-
-  echo "[pmm-local] k8s-monitoring: Secret pmm-token-vmoperator…"
-  kubectl --context "${CTX}" -n "${K8S_MONITORING_NS}" create secret generic pmm-token-vmoperator \
-    --from-literal=api_key="${api_key}" \
-    --dry-run=client -o yaml | kubectl --context "${CTX}" apply -f - --request-timeout=30s
 
   echo "[pmm-local] k8s-monitoring: helm repos (vm, prometheus-community, grafana)…"
   helm repo add vm https://victoriametrics.github.io/helm-charts/ 2>/dev/null || true

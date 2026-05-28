@@ -9,8 +9,8 @@ externalVM:
   write:
     url: "" # set by helm --set externalVM.write.url=...
     bearerTokenSecret:
-      name: pmm-token-vmoperator
-      key: api_key
+      name: pmm-service-account-token
+      key: pmmservertoken
 
 vmsingle:
   enabled: false

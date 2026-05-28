@@ -80,16 +80,16 @@ projects.pmm = {
   k8sMonitoring = {
     enable = true;
     namespace = "monitoring-system";
-    pmmApiKey = "glsa_...";       # PMM 3 service account token (Admin)
     k8sClusterId = "my-k3d-cluster"; # unique per K8s cluster → PMM
     nodeExporterEnabled = false;   # true only if you need node-exporter
+    # Token defaults: wookie-observability/pmm-service-account-token.pmmservertoken
   };
 };
 ```
 
 | Bundle | Type | Contents |
 |--------|------|----------|
-| `pmm-k8s-monitoring-prereqs` | Manifests | Secret `pmm-token-vmoperator`, ConfigMap `customresource-config-ksm` |
+| `pmm-k8s-monitoring-prereqs` | Manifests | Token sync Job (from `wookie-observability`; in-pod retries, TTL cleanup), ConfigMap `customresource-config-ksm` |
 | `pmm-k8s-monitoring` | Helm | `vm/victoria-metrics-k8s-stack` @ `0.30.3` (Percona pin) |
 
 `dependsOn` `pmm-server` so PMM exists before vmagent remote-write.

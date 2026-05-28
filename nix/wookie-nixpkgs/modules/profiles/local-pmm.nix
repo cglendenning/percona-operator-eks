@@ -18,12 +18,11 @@
       chartVersion = "3.0.0";
       chartHash = "sha256-PLACEHOLDER"; # required: nix-prefetch-url https://percona.github.io/percona-helm-charts/pmm-3.0.0.tgz
 
-      # Enable after PMM is up and you have a service account token (glsa_…):
+      # Requires wookie-observability/pmm-service-account-token (pmmservertoken) to exist first.
       # k8sMonitoring = {
       #   enable = true;
       #   namespace = "monitoring-system";
       #   k8sClusterId = "pmm";
-      #   pmmApiKey = "glsa_...";
       # };
     };
   }

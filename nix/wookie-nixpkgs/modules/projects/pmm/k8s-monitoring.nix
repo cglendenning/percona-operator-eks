@@ -20,28 +20,196 @@ let
     inherit pmmWriteUrl;
     k8sClusterId = kmCfg.k8sClusterId;
     nodeExporterEnabled = kmCfg.nodeExporterEnabled;
+    tokenSecretName = kmCfg.tokenSecretName;
+    tokenSecretKey = kmCfg.tokenSecretKey;
   };
 
-  pmmTokenSecret = {
-    apiVersion = "v1";
-    kind = "Secret";
+  # vmagent mounts secrets in the release namespace; copy pmmservertoken from wookie-observability.
+  tokenSyncJob = {
+    apiVersion = "batch/v1";
+    kind = "Job";
     metadata = {
-      name = "pmm-token-vmoperator";
+      name = "pmm-k8s-monitoring-token-sync";
       namespace = kmCfg.namespace;
+      labels = { "app.kubernetes.io/name" = "pmm-k8s-monitoring-token-sync"; };
     };
-    type = "Opaque";
-    stringData = {
-      api_key = kmCfg.pmmApiKey;
+    spec = {
+      # Retries happen inside the container; avoid extra Failed pods from Job-level backoff.
+      backoffLimit = 0;
+      completions = 1;
+      parallelism = 1;
+      # Remove Job + pods shortly after success or failure so kubectl stays clean.
+      ttlSecondsAfterFinished = 120;
+      activeDeadlineSeconds = 660;
+      template = {
+        metadata.labels."app.kubernetes.io/name" = "pmm-k8s-monitoring-token-sync";
+        spec = {
+          serviceAccountName = "pmm-k8s-monitoring-token-sync";
+          restartPolicy = "Never";
+          containers = [{
+            name = "sync";
+            image = "bitnami/kubectl:1.31";
+            imagePullPolicy = "IfNotPresent";
+            env = [
+              { name = "SOURCE_NS"; value = kmCfg.tokenSecretNamespace; }
+              { name = "SOURCE_SECRET"; value = kmCfg.tokenSecretName; }
+              { name = "SOURCE_KEY"; value = kmCfg.tokenSecretKey; }
+              { name = "TARGET_NS"; value = kmCfg.namespace; }
+              { name = "TARGET_SECRET"; value = kmCfg.tokenSecretName; }
+              { name = "TARGET_KEY"; value = kmCfg.tokenSecretKey; }
+              { name = "READ_MAX_ATTEMPTS"; value = "36"; }
+              { name = "READ_SLEEP_SEC"; value = "10"; }
+              { name = "APPLY_MAX_ATTEMPTS"; value = "6"; }
+              { name = "APPLY_SLEEP_SEC"; value = "5"; }
+            ];
+            command = [ "bash" "-ec" ];
+            args = [ ''
+              set -euo pipefail
+
+              read_token() {
+                kubectl get secret "$SOURCE_SECRET" -n "$SOURCE_NS" \
+                  -o "jsonpath={.data.$SOURCE_KEY}" 2>/dev/null | base64 -d || true
+              }
+
+              retry() {
+                local label="$1" max="$2" sleep_sec="$3"
+                shift 3
+                local attempt=1
+                while [ "$attempt" -le "$max" ]; do
+                  echo "[token-sync] $label (attempt $attempt/$max)..."
+                  if "$@"; then
+                    return 0
+                  fi
+                  if [ "$attempt" -eq "$max" ]; then
+                    echo "[token-sync] $label failed after $max attempts" >&2
+                    return 1
+                  fi
+                  sleep "$sleep_sec"
+                  attempt=$((attempt + 1))
+                done
+              }
+
+              wait_for_token() {
+                local token
+                token="$(read_token)"
+                [ -n "$token" ]
+              }
+
+              apply_target_secret() {
+                local token="$1"
+                kubectl create secret generic "$TARGET_SECRET" -n "$TARGET_NS" \
+                  --from-literal="$TARGET_KEY=$token" \
+                  --dry-run=client -o yaml | kubectl apply -f -
+              }
+
+              echo "[token-sync] source ${kmCfg.tokenSecretNamespace}/${kmCfg.tokenSecretName} (${kmCfg.tokenSecretKey})"
+              echo "[token-sync] target $TARGET_NS/$TARGET_SECRET ($TARGET_KEY)"
+
+              token=""
+              retry "waiting for source secret" "$READ_MAX_ATTEMPTS" "$READ_SLEEP_SEC" wait_for_token
+              token="$(read_token)"
+              if [ -z "$token" ]; then
+                echo "[token-sync] ERROR: empty token after wait" >&2
+                exit 1
+              fi
+
+              retry "upserting target secret" "$APPLY_MAX_ATTEMPTS" "$APPLY_SLEEP_SEC" \
+                apply_target_secret "$token"
+
+              echo "[token-sync] done."
+            '' ];
+          }];
+        };
+      };
     };
   };
+
+  tokenSyncRbac = [
+    {
+      apiVersion = "v1";
+      kind = "ServiceAccount";
+      metadata = {
+        name = "pmm-k8s-monitoring-token-sync";
+        namespace = kmCfg.namespace;
+      };
+    }
+    {
+      apiVersion = "rbac.authorization.k8s.io/v1";
+      kind = "Role";
+      metadata = {
+        name = "pmm-k8s-monitoring-token-sync";
+        namespace = kmCfg.namespace;
+      };
+      rules = [{
+        apiGroups = [ "" ];
+        resources = [ "secrets" ];
+        verbs = [ "get" "create" "patch" "update" ];
+      }];
+    }
+    {
+      apiVersion = "rbac.authorization.k8s.io/v1";
+      kind = "Role";
+      metadata = {
+        name = "pmm-k8s-monitoring-token-read";
+        namespace = kmCfg.tokenSecretNamespace;
+      };
+      rules = [{
+        apiGroups = [ "" ];
+        resources = [ "secrets" ];
+        resourceNames = [ kmCfg.tokenSecretName ];
+        verbs = [ "get" ];
+      }];
+    }
+    {
+      apiVersion = "rbac.authorization.k8s.io/v1";
+      kind = "RoleBinding";
+      metadata = {
+        name = "pmm-k8s-monitoring-token-sync";
+        namespace = kmCfg.namespace;
+      };
+      subjects = [{
+        kind = "ServiceAccount";
+        name = "pmm-k8s-monitoring-token-sync";
+        namespace = kmCfg.namespace;
+      }];
+      roleRef = {
+        apiGroup = "rbac.authorization.k8s.io";
+        kind = "Role";
+        name = "pmm-k8s-monitoring-token-sync";
+      };
+    }
+    {
+      apiVersion = "rbac.authorization.k8s.io/v1";
+      kind = "RoleBinding";
+      metadata = {
+        name = "pmm-k8s-monitoring-token-sync-read";
+        namespace = kmCfg.tokenSecretNamespace;
+      };
+      subjects = [{
+        kind = "ServiceAccount";
+        name = "pmm-k8s-monitoring-token-sync";
+        namespace = kmCfg.namespace;
+      }];
+      roleRef = {
+        apiGroup = "rbac.authorization.k8s.io";
+        kind = "Role";
+        name = "pmm-k8s-monitoring-token-read";
+      };
+    }
+  ];
+
+  rbacYamlFiles = lib.imap0 (
+    i: obj:
+    yaml.generate "token-sync-rbac-${toString i}.yaml" obj
+  ) tokenSyncRbac;
 
   prereqManifests = pkgs.runCommand "pmm-k8s-monitoring-prereqs" { } ''
     mkdir -p $out
     {
+      ${lib.concatMapStringsSep "\n      echo \"---\"\n      cat " (f: "${f}") rbacYamlFiles}
       echo "---"
-      cat ${yaml.generate "pmm-token-secret.yaml" pmmTokenSecret}
+      cat ${yaml.generate "token-sync-job.yaml" tokenSyncJob}
       echo "---"
-      # Percona-Lab KSM CR config (ConfigMap name must be customresource-config-ksm).
       sed 's|#namespace: default|namespace: ${kmCfg.namespace}|' ${perconaKsmConfigMap}
     } > $out/manifest.yaml
   '';
@@ -79,14 +247,24 @@ in
       '';
     };
 
-    pmmApiKey = mkOption {
+    tokenSecretNamespace = mkOption {
       type = types.str;
+      default = "wookie-observability";
       description = ''
-        PMM 3 Grafana service account token (glsa_…) with Admin role.
-        Create in PMM: Administration → Users → Service accounts.
-        Stored in Secret pmm-token-vmoperator / api_key.
-        Required when enable = true (empty string breaks remote-write).
+        Namespace of the PMM service account token Secret (source of truth for remote-write).
       '';
+    };
+
+    tokenSecretName = mkOption {
+      type = types.str;
+      default = "pmm-service-account-token";
+      description = "Secret name for the PMM service account token (source and vmagent mount).";
+    };
+
+    tokenSecretKey = mkOption {
+      type = types.str;
+      default = "pmmservertoken";
+      description = "Secret data key holding the PMM glsa_… token.";
     };
 
     k8sClusterId = mkOption {
