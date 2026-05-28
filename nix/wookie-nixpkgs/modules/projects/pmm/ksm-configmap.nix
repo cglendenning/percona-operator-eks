@@ -895,12 +895,7 @@ let
     };
   };
 
-  mkPrereqManifests = namespace:
-    pkgs.runCommand "pmm-k8s-monitoring-prereqs" { } ''
-      mkdir -p $out
-      cp ${yaml.generate "manifest.yaml" (mkKsmConfigMap namespace)} $out/manifest.yaml
-    '';
 in
 {
-  inherit customResourceStateMetrics mkKsmConfigMap mkPrereqManifests;
+  inherit customResourceStateMetrics mkKsmConfigMap;
 }

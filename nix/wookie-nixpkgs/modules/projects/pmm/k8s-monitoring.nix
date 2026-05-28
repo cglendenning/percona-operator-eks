@@ -8,6 +8,7 @@ let
   kmCfg = cfg.k8sMonitoring;
 
   ksm = import ./ksm-configmap.nix { inherit lib pkgs; };
+  yaml = pkgs.formats.yaml {};
 
   pmmWriteUrl =
     "https://${cfg.serviceName}.${cfg.namespace}.svc.cluster.local/victoriametrics/api/v1/write";
@@ -20,7 +21,10 @@ let
     tokenSecretKey = kmCfg.tokenSecretKey;
   };
 
-  prereqManifests = ksm.mkPrereqManifests kmCfg.namespace;
+  prereqManifests = pkgs.runCommand "pmm-k8s-monitoring-prereqs" { } ''
+    mkdir -p $out
+    cp ${yaml.generate "manifest.yaml" (ksm.mkKsmConfigMap kmCfg.namespace)} $out/manifest.yaml
+  '';
 
   vmK8sStackChart = pkgs.fetchurl {
     url = "https://github.com/VictoriaMetrics/helm-charts/releases/download/victoria-metrics-k8s-stack-${kmCfg.chartVersion}/victoria-metrics-k8s-stack-${kmCfg.chartVersion}.tgz";

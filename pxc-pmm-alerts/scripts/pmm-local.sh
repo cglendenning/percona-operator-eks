@@ -599,12 +599,17 @@ install_k8s_monitoring() {
   echo "[pmm-local] k8s-monitoring: ConfigMap customresource-config-ksm (nix-build)…"
   local _ksm_dir _ksm_nix_dir
   _ksm_nix_dir="$(cd "$(dirname "${KSM_CONFIGMAP_NIX}")" && pwd)"
-  _ksm_dir="$(cd "${_ksm_nix_dir}" && run_with_status_heartbeat nix-build -E "
+  _ksm_dir="$(cd "${_ksm_nix_dir}" && run_with_status_heartbeat nix-build -E '
     let
       pkgs = import <nixpkgs> {};
+      yaml = pkgs.formats.yaml {};
       ksm = import ./ksm-configmap.nix { inherit (pkgs) lib pkgs; };
-    in ksm.mkPrereqManifests \"${K8S_MONITORING_NS}\"
-  " --no-out-link)"
+      namespace = "'"${K8S_MONITORING_NS}"'";
+    in pkgs.runCommand "pmm-k8s-monitoring-prereqs" { } ''
+      mkdir -p $out
+      cp ${yaml.generate "manifest.yaml" (ksm.mkKsmConfigMap namespace)} $out/manifest.yaml
+    ''
+  ' --no-out-link)"
   kubectl --context "${CTX}" apply -f "${_ksm_dir}/manifest.yaml" --request-timeout=30s
 
   echo "[pmm-local] k8s-monitoring: helm repos (vm, prometheus-community, grafana)…"
