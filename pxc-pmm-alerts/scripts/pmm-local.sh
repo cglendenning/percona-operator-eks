@@ -116,10 +116,9 @@ K8S_MONITORING_NS="${K8S_MONITORING_NS:-wookie-observability}"
 K8S_MONITORING_RELEASE="${K8S_MONITORING_RELEASE:-vm-k8s-stack}"
 K8S_MONITORING_CHART_VERSION="${K8S_MONITORING_CHART_VERSION:-0.30.3}"
 K8S_CLUSTER_ID="${K8S_CLUSTER_ID:-pmm-local}"
-PERCONA_K8S_MONITORING_TAG="${PERCONA_K8S_MONITORING_TAG:-v0.1.1}"
 PMM_TOKEN_SECRET_NAME="${PMM_TOKEN_SECRET_NAME:-pmm-service-account-token}"
 PMM_TOKEN_SECRET_KEY="${PMM_TOKEN_SECRET_KEY:-pmmservertoken}"
-KSM_CONFIGMAP_URL="https://raw.githubusercontent.com/Percona-Lab/k8s-monitoring/refs/tags/${PERCONA_K8S_MONITORING_TAG}/vm-operator-k8s-stack/ksm-configmap.yaml"
+KSM_CONFIGMAP="${KSM_CONFIGMAP:-${ROOT}/../nix/wookie-nixpkgs/modules/projects/pmm/ksm-configmap.yaml}"
 MODE_REBUILD=0
 
 parse_cli_args() {
@@ -578,9 +577,12 @@ install_k8s_monitoring() {
 
   need kubectl
   need helm
-  need curl
   if [[ ! -f "${K8S_MONITORING_VALUES}" ]]; then
     echo "[pmm-local] k8s-monitoring: values file missing: ${K8S_MONITORING_VALUES}" >&2
+    exit 1
+  fi
+  if [[ ! -f "${KSM_CONFIGMAP}" ]]; then
+    echo "[pmm-local] k8s-monitoring: KSM ConfigMap missing: ${KSM_CONFIGMAP}" >&2
     exit 1
   fi
 
@@ -594,8 +596,7 @@ install_k8s_monitoring() {
   bootstrap_pmm_token_secret || exit 1
 
   echo "[pmm-local] k8s-monitoring: ConfigMap customresource-config-ksm…"
-  curl -fsSL "${KSM_CONFIGMAP_URL}" \
-    | sed "s|#namespace: default|namespace: ${K8S_MONITORING_NS}|" \
+  sed "s|#namespace: default|namespace: ${K8S_MONITORING_NS}|" "${KSM_CONFIGMAP}" \
     | kubectl --context "${CTX}" apply -f - --request-timeout=30s
 
   echo "[pmm-local] k8s-monitoring: helm repos (vm, prometheus-community, grafana)…"

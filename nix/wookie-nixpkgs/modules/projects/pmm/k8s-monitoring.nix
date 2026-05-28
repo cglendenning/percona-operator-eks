@@ -6,12 +6,8 @@ with lib;
 let
   cfg = config.projects.pmm;
   kmCfg = cfg.k8sMonitoring;
-  yaml = pkgs.formats.yaml { };
 
-  perconaKsmConfigMap = pkgs.fetchurl {
-    url = "https://raw.githubusercontent.com/Percona-Lab/k8s-monitoring/refs/tags/v0.1.1/vm-operator-k8s-stack/ksm-configmap.yaml";
-    sha256 = "sha256-aNVbYIZ9YyV1n8A6hT0OTj/C9QjtFhu9e2NNDFRhoW8=";
-  };
+  ksmConfigMap = ./ksm-configmap.yaml;
 
   pmmWriteUrl =
     "https://${cfg.serviceName}.${cfg.namespace}.svc.cluster.local/victoriametrics/api/v1/write";
@@ -26,7 +22,7 @@ let
 
   prereqManifests = pkgs.runCommand "pmm-k8s-monitoring-prereqs" { } ''
     mkdir -p $out
-    sed 's|#namespace: default|namespace: ${kmCfg.namespace}|' ${perconaKsmConfigMap} \
+    sed 's|#namespace: default|namespace: ${kmCfg.namespace}|' ${ksmConfigMap} \
       > $out/manifest.yaml
   '';
 

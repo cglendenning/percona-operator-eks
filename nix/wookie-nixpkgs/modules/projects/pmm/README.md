@@ -88,7 +88,7 @@ projects.pmm = {
 
 | Bundle | Type | Contents |
 |--------|------|----------|
-| `pmm-k8s-monitoring-prereqs` | Manifests | ConfigMap `customresource-config-ksm` only |
+| `pmm-k8s-monitoring-prereqs` | Manifests | ConfigMap `customresource-config-ksm` from `ksm-configmap.yaml` (vendored Percona k8s-monitoring v0.1.1) |
 | `pmm-k8s-monitoring` | Helm | `vm/victoria-metrics-k8s-stack` @ `0.30.3` (Percona pin) |
 
 `dependsOn` `pmm-server` so PMM exists before vmagent remote-write.
