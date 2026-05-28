@@ -118,7 +118,7 @@ K8S_MONITORING_CHART_VERSION="${K8S_MONITORING_CHART_VERSION:-0.30.3}"
 K8S_CLUSTER_ID="${K8S_CLUSTER_ID:-pmm-local}"
 PMM_TOKEN_SECRET_NAME="${PMM_TOKEN_SECRET_NAME:-pmm-service-account-token}"
 PMM_TOKEN_SECRET_KEY="${PMM_TOKEN_SECRET_KEY:-pmmservertoken}"
-KSM_CONFIGMAP="${KSM_CONFIGMAP:-${ROOT}/../nix/wookie-nixpkgs/modules/projects/pmm/ksm-configmap.yaml}"
+KSM_CONFIGMAP_NIX="${KSM_CONFIGMAP_NIX:-${ROOT}/../nix/wookie-nixpkgs/modules/projects/pmm/ksm-configmap.nix}"
 MODE_REBUILD=0
 
 parse_cli_args() {
@@ -577,12 +577,13 @@ install_k8s_monitoring() {
 
   need kubectl
   need helm
+  need nix-build
   if [[ ! -f "${K8S_MONITORING_VALUES}" ]]; then
     echo "[pmm-local] k8s-monitoring: values file missing: ${K8S_MONITORING_VALUES}" >&2
     exit 1
   fi
-  if [[ ! -f "${KSM_CONFIGMAP}" ]]; then
-    echo "[pmm-local] k8s-monitoring: KSM ConfigMap missing: ${KSM_CONFIGMAP}" >&2
+  if [[ ! -f "${KSM_CONFIGMAP_NIX}" ]]; then
+    echo "[pmm-local] k8s-monitoring: KSM ConfigMap Nix module missing: ${KSM_CONFIGMAP_NIX}" >&2
     exit 1
   fi
 
@@ -595,9 +596,16 @@ install_k8s_monitoring() {
 
   bootstrap_pmm_token_secret || exit 1
 
-  echo "[pmm-local] k8s-monitoring: ConfigMap customresource-config-ksm…"
-  sed "s|#namespace: default|namespace: ${K8S_MONITORING_NS}|" "${KSM_CONFIGMAP}" \
-    | kubectl --context "${CTX}" apply -f - --request-timeout=30s
+  echo "[pmm-local] k8s-monitoring: ConfigMap customresource-config-ksm (nix-build)…"
+  local _ksm_dir _ksm_nix_dir
+  _ksm_nix_dir="$(cd "$(dirname "${KSM_CONFIGMAP_NIX}")" && pwd)"
+  _ksm_dir="$(cd "${_ksm_nix_dir}" && run_with_status_heartbeat nix-build -E "
+    let
+      pkgs = import <nixpkgs> {};
+      ksm = import ./ksm-configmap.nix { inherit (pkgs) lib pkgs; };
+    in ksm.mkPrereqManifests \"${K8S_MONITORING_NS}\"
+  " --no-out-link)"
+  kubectl --context "${CTX}" apply -f "${_ksm_dir}/manifest.yaml" --request-timeout=30s
 
   echo "[pmm-local] k8s-monitoring: helm repos (vm, prometheus-community, grafana)…"
   helm repo add vm https://victoriametrics.github.io/helm-charts/ 2>/dev/null || true
