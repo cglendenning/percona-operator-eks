@@ -94,6 +94,33 @@ Helm values (copy elsewhere): `k8s-monitoring-helm-values.nix` → `mkValuesYaml
 
 `dependsOn` `pmm-server` so PMM exists before vmagent remote-write.
 
+### Deployment order (helmfile and fleet)
+
+Platform batches (lowest `priority` first):
+
+| Batch | Priority | PMM k8s monitoring contents |
+|-------|----------|----------------------------|
+| `namespaces` | 100 | observability namespace (if declared) |
+| **`crds`** | **200** | **`vm-operator-crds`** — 16 Victoria Metrics Operator CRDs (`vm-operator-crds.nix`) |
+| `operators` | 300 | (none for PMM k8s stack; operator ships inside the services chart) |
+| `services` | 600 | `pmm-server`, `pmm-k8s-monitoring` (Helm: operator + vmagent + KSM) |
+
+In this repo, **`crds` is the pre-operator batch**. CRDs are cluster-scoped manifests,
+not Helm releases. `deploy-helmfile` applies `batches.crds` with `kubectl create`
+**before** `helmfile sync`, then waits for CRDs to become `Established`.
+
+**Do not run `helmfile sync` alone** on a fresh cluster — that skips the CRD batch.
+Use `deploy-*-helmfile` (e.g. `nix run .#pmm-up` → `pmm-deploy`) or apply the CRD
+batch yourself first.
+
+**Fleet:** deploy the `crds` batch GitRepo/wave before `services`. Do not use a single
+`renderAllBundles` apply for everything — CRDs must be accepted by the API before
+`VMAgent` / `VMServiceScrape` objects. Use per-batch manifests (`kubelib.renderBatchManifests`)
+or equivalent wave ordering.
+
+`pmm-k8s-monitoring` `dependsOn` includes `vm-operator-crds` for bundle ordering metadata;
+helmfile intentionally excludes the `crds` batch from release `needs` (see `helmfile.nix`).
+
 ### Victoria Metrics Operator CRDs (Helm, WSL)
 
 `helm template` does **not** include CRDs unless you pass `--include-crds`. Apply

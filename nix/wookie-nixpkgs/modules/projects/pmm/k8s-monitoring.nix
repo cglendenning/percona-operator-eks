@@ -8,6 +8,7 @@ let
   kmCfg = cfg.k8sMonitoring;
 
   ksm = import ./ksm-configmap.nix { inherit lib pkgs; };
+  vmCrds = import ./vm-operator-crds.nix { inherit lib pkgs; };
 
   pmmWriteUrl =
     "https://${cfg.serviceName}.${cfg.namespace}.svc.cluster.local/victoriametrics/api/v1/write";
@@ -86,9 +87,16 @@ in
   };
 
   config = mkIf (cfg.enable && kmCfg.enable) {
+    # Cluster-scoped CRDs — deploy via batches.crds (priority 200), before operators/services.
+    # deploy-helmfile applies this batch with kubectl before helmfile sync.
+    platform.kubernetes.cluster.batches.crds.bundles.vm-operator-crds = {
+      namespace = kmCfg.namespace;
+      manifests = [ vmCrds.mkCrdsManifest ];
+    };
+
     platform.kubernetes.cluster.batches.services.bundles.pmm-k8s-monitoring = {
       namespace = kmCfg.namespace;
-      dependsOn = [ "pmm-server" ];
+      dependsOn = [ "pmm-server" "vm-operator-crds" ];
       chart = {
         name = "victoria-metrics-k8s-stack";
         version = builtins.replaceStrings [ "." ] [ "_" ] kmCfg.chartVersion;

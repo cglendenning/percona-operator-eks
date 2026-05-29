@@ -225,6 +225,14 @@ in
             # Ignore "already exists" errors to make this idempotent
             kubectl create --validate=false --context "$CONTEXT" -f ${crd}/manifest.yaml 2>&1 | grep -v "already exists" || true
           '') renderedBundles}
+          # Victoria Metrics Operator CRDs must be Established before VMAgent / VMServiceScrape apply.
+          if kubectl get crd vmagents.operator.victoriametrics.com --context "$CONTEXT" >/dev/null 2>&1; then
+            echo "Waiting for Victoria Metrics Operator CRDs to become Established..."
+            kubectl wait --for=condition=Established --context "$CONTEXT" --timeout=120s \
+              crd/vmagents.operator.victoriametrics.com \
+              crd/vmservicescrapes.operator.victoriametrics.com \
+              crd/vmrules.operator.victoriametrics.com || true
+          fi
           echo ""
           
           # Apply helmfile (operators, services)
