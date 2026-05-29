@@ -93,6 +93,43 @@ projects.pmm = {
 
 `dependsOn` `pmm-server` so PMM exists before vmagent remote-write.
 
+### Victoria Metrics Operator CRDs (Helm, WSL)
+
+`helm template` does **not** include CRDs unless you pass `--include-crds`. Apply
+CRDs **before** `VMAgent`, `VMServiceScrape`, or any other
+`*.operator.victoriametrics.com` resource.
+
+Chart pin: `victoria-metrics-k8s-stack` **0.30.3** → operator **0.39.0** (16 CRDs).
+
+Run in WSL (bash). Set `KUBECONFIG` if your context is not the default:
+
+```bash
+export KUBECONFIG="${KUBECONFIG:-$HOME/.kube/config}"
+
+helm repo add vm https://victoriametrics.github.io/helm-charts/
+helm repo update vm
+
+# Render CRDs only and apply (multi-doc YAML split on "---")
+helm template vm-operator-crds vm/victoria-metrics-operator \
+  --version 0.39.0 \
+  --include-crds \
+  | awk 'BEGIN{RS="---"; ORS="---\n"} /kind: CustomResourceDefinition/' \
+  | kubectl --kubeconfig="$KUBECONFIG" apply -f -
+
+# Wait until the API accepts VM CRs (required before the rest of the stack)
+kubectl --kubeconfig="$KUBECONFIG" wait --for=condition=Established \
+  crd/vmagents.operator.victoriametrics.com --timeout=120s
+kubectl --kubeconfig="$KUBECONFIG" wait --for=condition=Established \
+  crd/vmservicescrapes.operator.victoriametrics.com --timeout=120s
+
+# Sanity check
+kubectl --kubeconfig="$KUBECONFIG" get crd \
+  | grep operator.victoriametrics.com
+```
+
+Then deploy the operator + vmagent + kube-state-metrics manifests (fleet, helm
+install, etc.). Nix alternative: `vm-operator-crds.nix` → `mkCrdsManifest`.
+
 ### Verify metrics in PMM (after `helmfile sync`)
 
 1. Port-forward PMM: `kubectl port-forward -n pmm svc/monitoring-service 8443:https`
