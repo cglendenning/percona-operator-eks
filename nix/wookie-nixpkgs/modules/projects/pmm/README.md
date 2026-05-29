@@ -170,6 +170,48 @@ kubectl --kubeconfig="$KUBECONFIG" apply -f "$OUT/manifest.yaml"
 kubectl --kubeconfig="$KUBECONFIG" delete pod -n "$NS" -l app.kubernetes.io/name=kube-state-metrics
 ```
 
+### Troubleshooting: VMAgent `remoteWrite cannot be empty array`
+
+With `vmsingle.enabled: false` and `vmcluster.enabled: false`, the chart sets VMAgent
+`spec.remoteWrite` **only** from `externalVM.write.url`. If that URL is empty or missing
+from your values, Helm renders `remoteWrite: []` and the operator admission webhook
+rejects the CR on upgrade.
+
+**Diagnose rendered values:**
+
+```bash
+helm get values vm-operator-wookie -n wookie-observability -a | grep -A6 'write:'
+# or before apply:
+helm template ... -f your-values.yaml | grep -A15 'kind: VMAgent'
+```
+
+You must see a non-empty `remoteWrite[0].url`.
+
+**Fix — set PMM remote-write URL** (adjust service/namespace to match your PMM install):
+
+```yaml
+externalVM:
+  write:
+    url: "https://monitoring-service.pmm.svc.cluster.local/victoriametrics/api/v1/write"
+    bearerTokenSecret:
+      name: pmm-service-account-token
+      key: pmmservertoken
+```
+
+Nix (`k8s-monitoring-helm-values.nix`):
+
+```nix
+render.mkValuesYaml {
+  pmmWriteUrl = "https://monitoring-service.pmm.svc.cluster.local/victoriametrics/api/v1/write";
+  k8sClusterId = "pmm-local";
+}
+```
+
+The token Secret must exist in the **same namespace as vmagent** (default
+`wookie-observability`), key `pmmservertoken` with a PMM glsa_… token.
+
+`k8s-monitoring-values.nix` now throws at eval time if `pmmWriteUrl` is empty.
+
 ### Verify metrics in PMM (after `helmfile sync`)
 
 1. Port-forward PMM: `kubectl port-forward -n pmm svc/monitoring-service 8443:https`
