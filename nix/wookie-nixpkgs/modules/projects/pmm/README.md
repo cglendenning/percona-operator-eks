@@ -70,7 +70,7 @@ Helm deletes the previous Job before creating a new one
 
 ## Kubernetes monitoring (kube-state-metrics → PMM)
 
-Percona’s [Monitor Kubernetes](https://docs.percona.com/percona-operator-for-mysql/pxc/monitor-kubernetes.html) flow: Victoria Metrics k8s stack + `customresource-config-ksm` (PXC backup CR metrics) remote-writing to PMM.
+Percona’s [Monitor Kubernetes](https://docs.percona.com/percona-operator-for-mysql/pxc/monitor-kubernetes.html) flow: Victoria Metrics k8s stack with KSM `customResourceState` config (PXC backup CR metrics) remote-writing to PMM.
 
 ```nix
 projects.pmm = {
@@ -88,8 +88,9 @@ projects.pmm = {
 
 | Bundle | Type | Contents |
 |--------|------|----------|
-| `pmm-k8s-monitoring-prereqs` | Manifests | ConfigMap `customresource-config-ksm` from `ksm-configmap.nix` (Percona k8s-monitoring v0.1.1) |
-| `pmm-k8s-monitoring` | Helm | `vm/victoria-metrics-k8s-stack` @ `0.30.3` (Percona pin) |
+| `pmm-k8s-monitoring` | Helm | `vm/victoria-metrics-k8s-stack` @ `0.30.3` (Percona pin); KSM CR config embedded via `customResourceState` in chart values |
+
+Helm values (copy elsewhere): `k8s-monitoring-helm-values.nix` → `mkValuesYaml`.
 
 `dependsOn` `pmm-server` so PMM exists before vmagent remote-write.
 
@@ -128,7 +129,46 @@ kubectl --kubeconfig="$KUBECONFIG" get crd \
 ```
 
 Then deploy the operator + vmagent + kube-state-metrics manifests (fleet, helm
-install, etc.). Nix alternative: `vm-operator-crds.nix` → `mkCrdsManifest`.
+install, etc.). Nix alternative: `k8s-monitoring-helm-values.nix` → `mkValuesYaml`
+(includes KSM config; no separate ConfigMap manifest).
+
+### Troubleshooting: `configmap "customresource-config-ksm" not found`
+
+The failing pod is **kube-state-metrics** (volume `cr-config`), not the Victoria
+Metrics operator. Helm values that reference an external ConfigMap by name require
+you to apply that ConfigMap in the **same namespace** as the release **before**
+the KSM pod starts.
+
+**Diagnose:**
+
+```bash
+export KUBECONFIG="${KUBECONFIG:-$HOME/.kube/config}"
+NS=wookie-observability   # your observability namespace
+
+kubectl --kubeconfig="$KUBECONFIG" get pods -n "$NS" | grep -E 'kube-state|operator'
+kubectl --kubeconfig="$KUBECONFIG" describe pod -n "$NS" -l app.kubernetes.io/name=kube-state-metrics
+kubectl --kubeconfig="$KUBECONFIG" get configmap customresource-config-ksm -n "$NS"
+```
+
+If the ConfigMap is missing: either apply it, or (recommended) embed KSM config in
+Helm values via `kube-state-metrics.customResourceState.enabled: true` and
+`customResourceState.config` from `ksm-configmap.nix` (see `k8s-monitoring-values.nix`).
+
+**Quick fix (legacy external ConfigMap):**
+
+```bash
+cd nix/wookie-nixpkgs/modules/projects/pmm
+OUT=$(nix-build -E '
+  let pkgs = import <nixpkgs> {}; lib = pkgs.lib; yaml = pkgs.formats.yaml {};
+      ksm = import ./ksm-configmap.nix { inherit lib pkgs; };
+  in pkgs.runCommand "ksm-cm" {} ''
+    mkdir -p $out
+    cp ${yaml.generate "manifest.yaml" (ksm.mkKsmConfigMap "'"${NS}"'")} $out/manifest.yaml
+  ''
+' --no-out-link)
+kubectl --kubeconfig="$KUBECONFIG" apply -f "$OUT/manifest.yaml"
+kubectl --kubeconfig="$KUBECONFIG" delete pod -n "$NS" -l app.kubernetes.io/name=kube-state-metrics
+```
 
 ### Verify metrics in PMM (after `helmfile sync`)
 

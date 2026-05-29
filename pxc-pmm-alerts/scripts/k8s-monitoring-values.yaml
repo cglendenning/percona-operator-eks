@@ -1,5 +1,12 @@
-# Victoria Metrics k8s stack values for local PMM (pmm-local.sh).
-# Production: nix/wookie-nixpkgs/modules/projects/pmm/k8s-monitoring-values.nix
+# DEPRECATED: use nix-rendered values from k8s-monitoring-helm-values.nix (includes KSM
+# customResourceState config). Kept as a structural reference only.
+#
+#   nix-build -E '
+#     let pkgs = import <nixpkgs> {}; lib = pkgs.lib;
+#         render = import ./k8s-monitoring-helm-values.nix { inherit (pkgs) lib pkgs; };
+#     in render.mkValuesYaml { pmmWriteUrl = "..."; k8sClusterId = "..."; }
+#   ' --no-out-link
+#
 # Percona pin: k8s-monitoring v0.1.1 / chart 0.30.3
 # https://docs.percona.com/percona-operator-for-mysql/pxc/monitor-kubernetes.html
 
@@ -7,7 +14,7 @@ externalVM:
   read:
     url: ""
   write:
-    url: "" # set by helm --set externalVM.write.url=...
+    url: ""
     bearerTokenSecret:
       name: pmm-service-account-token
       key: pmmservertoken
@@ -25,21 +32,13 @@ vmagent:
   enabled: true
   spec:
     externalLabels:
-      k8s_cluster_id: "" # set by helm --set vmagent.spec.externalLabels.k8s_cluster_id=...
+      k8s_cluster_id: ""
 
 kube-state-metrics:
   enabled: true
-  metricLabelsAllowlist:
-    - pods=[app.kubernetes.io/component,app.kubernetes.io/instance,app.kubernetes.io/managed-by,app.kubernetes.io/name,app.kubernetes.io/part-of],persistentvolumeclaims=[app.kubernetes.io/component,app.kubernetes.io/instance,app.kubernetes.io/managed-by,app.kubernetes.io/name,app.kubernetes.io/part-of],jobs=[app.kubernetes.io/component,app.kubernetes.io/instance,app.kubernetes.io/managed-by,app.kubernetes.io/name,app.kubernetes.io/part-of]
-  extraArgs:
-    - --custom-resource-state-config-file=/go/src/k8s.io/kube-state-metrics/config
-  volumeMounts:
-    - mountPath: /go/src/k8s.io/kube-state-metrics/
-      name: cr-config
-  volumes:
-    - name: cr-config
-      configMap:
-        name: customresource-config-ksm
+  customResourceState:
+    enabled: true
+    config: {} # must be populated from ksm-configmap.nix — use k8s-monitoring-helm-values.nix
   rbac:
     extraRules:
       - apiGroups: ["apiextensions.k8s.io"]

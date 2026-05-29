@@ -20,7 +20,6 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
-K8S_MONITORING_VALUES="${K8S_MONITORING_VALUES:-${ROOT}/scripts/k8s-monitoring-values.yaml}"
 
 need() { command -v "$1" >/dev/null 2>&1 || { echo "[pmm-local] missing: $1" >&2; exit 1; }; }
 
@@ -118,7 +117,9 @@ K8S_MONITORING_CHART_VERSION="${K8S_MONITORING_CHART_VERSION:-0.30.3}"
 K8S_CLUSTER_ID="${K8S_CLUSTER_ID:-pmm-local}"
 PMM_TOKEN_SECRET_NAME="${PMM_TOKEN_SECRET_NAME:-pmm-service-account-token}"
 PMM_TOKEN_SECRET_KEY="${PMM_TOKEN_SECRET_KEY:-pmmservertoken}"
-KSM_CONFIGMAP_NIX="${KSM_CONFIGMAP_NIX:-${ROOT}/../nix/wookie-nixpkgs/modules/projects/pmm/ksm-configmap.nix}"
+K8S_MONITORING_NIX_DIR="${K8S_MONITORING_NIX_DIR:-${ROOT}/../nix/wookie-nixpkgs/modules/projects/pmm}"
+# Optional override; default is nix-rendered values (includes KSM customResourceState config).
+K8S_MONITORING_VALUES="${K8S_MONITORING_VALUES:-}"
 MODE_REBUILD=0
 
 parse_cli_args() {
@@ -550,7 +551,6 @@ install_pmm() {
   echo ""
 }
 
-# Local k3d bootstrap only: ensure pmm-service-account-token exists in wookie-observability.
 bootstrap_pmm_token_secret() {
   if kubectl --context "${CTX}" -n "${K8S_MONITORING_NS}" get secret "${PMM_TOKEN_SECRET_NAME}" \
     --request-timeout=30s >/dev/null 2>&1; then
@@ -569,6 +569,23 @@ bootstrap_pmm_token_secret() {
     --dry-run=client -o yaml | kubectl --context "${CTX}" apply -f - --request-timeout=30s
 }
 
+render_k8s_monitoring_values() {
+  local pmm_write_url="$1"
+  local _nix_dir
+  _nix_dir="$(cd "${K8S_MONITORING_NIX_DIR}" && pwd)"
+  cd "${_nix_dir}" && run_with_status_heartbeat nix-build -E '
+    let
+      pkgs = import <nixpkgs> {};
+      lib = pkgs.lib;
+      render = import ./k8s-monitoring-helm-values.nix { inherit (pkgs) lib pkgs; };
+    in render.mkValuesYaml {
+      pmmWriteUrl = "'"${pmm_write_url}"'";
+      k8sClusterId = "'"${K8S_CLUSTER_ID}"'";
+      nodeExporterEnabled = false;
+    }
+  ' --no-out-link
+}
+
 install_k8s_monitoring() {
   if [[ "${PMM_LOCAL_SKIP_K8S_MONITORING:-0}" == "1" ]] || [[ "${PMM_LOCAL_SKIP_K8S_MONITORING:-}" == "true" ]]; then
     echo "[pmm-local] skipping k8s monitoring (PMM_LOCAL_SKIP_K8S_MONITORING=1)"
@@ -578,39 +595,28 @@ install_k8s_monitoring() {
   need kubectl
   need helm
   need nix-build
-  if [[ ! -f "${K8S_MONITORING_VALUES}" ]]; then
-    echo "[pmm-local] k8s-monitoring: values file missing: ${K8S_MONITORING_VALUES}" >&2
-    exit 1
-  fi
-  if [[ ! -f "${KSM_CONFIGMAP_NIX}" ]]; then
-    echo "[pmm-local] k8s-monitoring: KSM ConfigMap Nix module missing: ${KSM_CONFIGMAP_NIX}" >&2
+  if [[ ! -d "${K8S_MONITORING_NIX_DIR}" ]]; then
+    echo "[pmm-local] k8s-monitoring: Nix module dir missing: ${K8S_MONITORING_NIX_DIR}" >&2
     exit 1
   fi
 
-  local pmm_write_url
+  local pmm_write_url _values_file _values_dir
   pmm_write_url="https://${SVC}.${PMM_NS}.svc.cluster.local/victoriametrics/api/v1/write"
+
+  if [[ -n "${K8S_MONITORING_VALUES}" ]] && [[ -f "${K8S_MONITORING_VALUES}" ]]; then
+    _values_file="${K8S_MONITORING_VALUES}"
+    echo "[pmm-local] k8s-monitoring: using values file ${K8S_MONITORING_VALUES}"
+  else
+    echo "[pmm-local] k8s-monitoring: rendering Helm values (nix-build, includes KSM customResourceState)…"
+    _values_dir="$(render_k8s_monitoring_values "${pmm_write_url}")"
+    _values_file="${_values_dir}/k8s-monitoring-values.yaml"
+  fi
 
   echo "[pmm-local] k8s-monitoring: namespace ${K8S_MONITORING_NS}…"
   kubectl --context "${CTX}" create namespace "${K8S_MONITORING_NS}" --dry-run=client -o yaml \
     | kubectl --context "${CTX}" apply -f - --request-timeout=30s
 
   bootstrap_pmm_token_secret || exit 1
-
-  echo "[pmm-local] k8s-monitoring: ConfigMap customresource-config-ksm (nix-build)…"
-  local _ksm_dir _ksm_nix_dir
-  _ksm_nix_dir="$(cd "$(dirname "${KSM_CONFIGMAP_NIX}")" && pwd)"
-  _ksm_dir="$(cd "${_ksm_nix_dir}" && run_with_status_heartbeat nix-build -E '
-    let
-      pkgs = import <nixpkgs> {};
-      yaml = pkgs.formats.yaml {};
-      ksm = import ./ksm-configmap.nix { inherit (pkgs) lib pkgs; };
-      namespace = "'"${K8S_MONITORING_NS}"'";
-    in pkgs.runCommand "pmm-k8s-monitoring-prereqs" { } ''
-      mkdir -p $out
-      cp ${yaml.generate "manifest.yaml" (ksm.mkKsmConfigMap namespace)} $out/manifest.yaml
-    ''
-  ' --no-out-link)"
-  kubectl --context "${CTX}" apply -f "${_ksm_dir}/manifest.yaml" --request-timeout=30s
 
   echo "[pmm-local] k8s-monitoring: helm repos (vm, prometheus-community, grafana)…"
   helm repo add vm https://victoriametrics.github.io/helm-charts/ 2>/dev/null || true
@@ -627,7 +633,7 @@ install_k8s_monitoring() {
       --kube-context "${CTX}" \
       --namespace "${K8S_MONITORING_NS}" \
       --version "${K8S_MONITORING_CHART_VERSION}" \
-      -f "${K8S_MONITORING_VALUES}" \
+      -f "${_values_file}" \
       --set "externalVM.write.url=${pmm_write_url}" \
       --set "vmagent.spec.externalLabels.k8s_cluster_id=${K8S_CLUSTER_ID}"
   )
