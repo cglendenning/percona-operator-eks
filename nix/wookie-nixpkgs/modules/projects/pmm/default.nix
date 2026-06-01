@@ -237,10 +237,11 @@ in
       type = types.str;
     };
 
-    # Kubernetes service name created by the Helm chart (defaults to release name)
+    # Kubernetes service name created by the Helm chart.
+    # The PMM Helm chart hardcodes this as "monitoring-service" regardless of release name.
     serviceName = mkOption {
       type    = types.str;
-      default = "pmm";
+      default = "monitoring-service";
     };
 
     storageClass = mkOption {

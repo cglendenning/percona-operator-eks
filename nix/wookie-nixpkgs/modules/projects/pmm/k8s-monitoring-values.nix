@@ -19,6 +19,7 @@ else
         name = tokenSecretName;
         key = tokenSecretKey;
       };
+      tlsConfig.insecureSkipVerify = true;
     };
   };
 
