@@ -1,0 +1,73 @@
+%%{init: {"theme": "base", "themeVariables": {"lineColor": "#555", "edgeLabelBackground": "#fff"}}}%%
+block-beta
+  columns 2
+
+  block:STD["STANDARD"]:1
+    columns 1
+    P1["Percona (PXC)"]
+    SW1["SeaweedFS"]
+    PMM1["PMM · S1"]
+    CTRL1["pxc-backups-bucket controller"]
+    ALERTS["⚡ Alerts"]
+  end
+
+  block:DR_STD["DR STANDARD"]:1
+    columns 1
+    P2["Percona (PXC)"]
+    SW2["SeaweedFS"]
+    PMM2["PMM · SA"]
+    CTRL2["pxc-backups-bucket controller"]
+  end
+
+  block:SEC["SECURE"]:1
+    columns 1
+    P3["Percona (PXC)"]
+    SW3["SeaweedFS"]
+    PMM3["PMM · SA'"]
+    CTRL3["pxc-backups-bucket controller"]
+  end
+
+  block:DR_SEC["DR SECURE"]:1
+    columns 1
+    P4["Percona (PXC)"]
+    SW4["SeaweedFS"]
+    PMM4["PMM · SA"]
+    CTRL4["pxc-backups-bucket controller"]
+  end
+
+  ALERTS --> PMM1
+  CTRL1 -- "create bucket via AWS CLI" --> SW1
+  P1 -- "backup" --> SW1
+  CTRL2 -- "create bucket via AWS CLI" --> SW2
+  P2 -- "backup" --> SW2
+  CTRL3 -- "create bucket via AWS CLI" --> SW3
+  P3 -- "backup" --> SW3
+  CTRL4 -- "create bucket via AWS CLI" --> SW4
+  P4 -- "backup" --> SW4
+
+  P1 -- "PXC ASYNC  |  port 3306" --> P2
+  P2 --> P1
+  SW1 -- "Seaweed SYNC  |  ports 8888, 18888 gRPC" --> SW2
+  SW2 --> SW1
+
+  P3 -- "PXC ASYNC  |  port 3306" --> P4
+  P4 --> P3
+  SW3 -- "Seaweed SYNC  |  ports 8888, 18888 gRPC" --> SW4
+  SW4 --> SW3
+
+  classDef percona fill:#1565C0,stroke:#0D47A1,color:#fff,rx:8,ry:8
+  classDef seaweed fill:#2E7D32,stroke:#1B5E20,color:#fff,rx:8,ry:8
+  classDef pmm fill:#E65100,stroke:#BF360C,color:#fff,rx:8,ry:8
+  classDef controller fill:#6A1B9A,stroke:#4A148C,color:#fff,rx:8,ry:8
+  classDef alerts fill:#B71C1C,stroke:#7F0000,color:#fff,rx:8,ry:8
+
+  class P1,P2,P3,P4 percona
+  class SW1,SW2,SW3,SW4 seaweed
+  class PMM1,PMM2,PMM3,PMM4 pmm
+  class CTRL1,CTRL2,CTRL3,CTRL4 controller
+  class ALERTS alerts
+
+  style STD fill:#E3F2FD,stroke:#1565C0,stroke-width:2px,rx:12,ry:12
+  style DR_STD fill:#E8EAF6,stroke:#3949AB,stroke-width:2px,rx:12,ry:12
+  style SEC fill:#FCE4EC,stroke:#C62828,stroke-width:2px,rx:12,ry:12
+  style DR_SEC fill:#F3E5F5,stroke:#6A1B9A,stroke-width:2px,rx:12,ry:12
