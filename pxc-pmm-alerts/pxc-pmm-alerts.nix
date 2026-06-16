@@ -428,11 +428,20 @@ let
       };
       folder_uid = "__MYSQL_FOLDER_UID__";
     }
-    # Async / traditional replication (targets with mysql_slave_status_* / replica_* only; PXC primaries without a replica channel do not match).
+    # Async / traditional replication (targets with mysql_slave_status_replica_* only; PXC primaries without a
+    # replica channel do not match). All four PXC clusters share cluster="db"; the channel label differentiates
+    # the two replication streams: "wookie-dr" and "wookie-sec-dr". Source clusters never expose replica_* metrics
+    # for these channels so there is no cross-stream mixing.
+    #
+    # Down alerts grouped by (cluster, channel). Fires unless EXACTLY one node has both IO=1 and SQL=1 and every
+    # other node in the cluster has both threads at 0. Two healthy nodes, one partial node, or zero healthy nodes
+    # all fire. Logic: encode each condition as != bool (0=satisfied, 1=violated) and sum; any violation > 0.
+    #   Condition 1: sum(IO+SQL)==2  — total thread count across the cluster is exactly 2
+    #   Condition 2: sum(IO*SQL)==1  — exactly one node has both threads simultaneously
     {
       name = "MySQL Async Replication Down Warning";
       group = "expression";
-      expr = "max by (service_name, channel) ( (mysql_slave_status_slave_io_running == bool 0) or (mysql_slave_status_slave_sql_running == bool 0) or (mysql_slave_status_replica_io_running == bool 0) or (mysql_slave_status_replica_sql_running == bool 0) ) > 0";
+      expr = "( (sum by (cluster, channel) ( mysql_slave_status_replica_io_running + mysql_slave_status_replica_sql_running ) != bool 2) + (sum by (cluster, channel) ( mysql_slave_status_replica_io_running * mysql_slave_status_replica_sql_running ) != bool 1) ) > 0";
       for = "5m";
       no_data_state = "OK";
       custom_labels = {
@@ -446,7 +455,7 @@ let
     {
       name = "MySQL Async Replication Down Critical";
       group = "expression";
-      expr = "max by (service_name, channel) ( (mysql_slave_status_slave_io_running == bool 0) or (mysql_slave_status_slave_sql_running == bool 0) or (mysql_slave_status_replica_io_running == bool 0) or (mysql_slave_status_replica_sql_running == bool 0) ) > 0";
+      expr = "( (sum by (cluster, channel) ( mysql_slave_status_replica_io_running + mysql_slave_status_replica_sql_running ) != bool 2) + (sum by (cluster, channel) ( mysql_slave_status_replica_io_running * mysql_slave_status_replica_sql_running ) != bool 1) ) > 0";
       for = "15m";
       no_data_state = "OK";
       custom_labels = {
@@ -460,7 +469,7 @@ let
     {
       name = "MySQL Async Replication Lag Warning";
       group = "expression";
-      expr = "( max by (service_name, channel) ( mysql_slave_status_seconds_behind_master or mysql_slave_status_seconds_behind_source ) > 60 ) and on (service_name, channel) ( (max by (service_name, channel) (mysql_slave_status_slave_io_running or mysql_slave_status_replica_io_running)) == 1 ) and on (service_name, channel) ( (max by (service_name, channel) (mysql_slave_status_slave_sql_running or mysql_slave_status_replica_sql_running)) == 1 )";
+      expr = "( max by (service_name, channel) ( mysql_slave_status_seconds_behind_source ) > 60 ) and on (service_name, channel) ( (max by (service_name, channel) (mysql_slave_status_replica_io_running)) == 1 ) and on (service_name, channel) ( (max by (service_name, channel) (mysql_slave_status_replica_sql_running)) == 1 )";
       for = "1m";
       no_data_state = "OK";
       custom_labels = {
@@ -474,7 +483,7 @@ let
     {
       name = "MySQL Async Replication Lag Critical";
       group = "expression";
-      expr = "( max by (service_name, channel) ( mysql_slave_status_seconds_behind_master or mysql_slave_status_seconds_behind_source ) > 300 ) and on (service_name, channel) ( (max by (service_name, channel) (mysql_slave_status_slave_io_running or mysql_slave_status_replica_io_running)) == 1 ) and on (service_name, channel) ( (max by (service_name, channel) (mysql_slave_status_slave_sql_running or mysql_slave_status_replica_sql_running)) == 1 )";
+      expr = "( max by (service_name, channel) ( mysql_slave_status_seconds_behind_source ) > 300 ) and on (service_name, channel) ( (max by (service_name, channel) (mysql_slave_status_replica_io_running)) == 1 ) and on (service_name, channel) ( (max by (service_name, channel) (mysql_slave_status_replica_sql_running)) == 1 )";
       for = "1m";
       no_data_state = "OK";
       custom_labels = {
