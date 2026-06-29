@@ -10,7 +10,7 @@
 
 The platform stores PXC backups and PITR binlogs in SeaweedFS, which exposes an S3-compatible endpoint for writes. The `pxc-restore` tooling uses the SeaweedFS Filer HTTP API (port 8888, `GET /buckets/<bucket>/binlogs/<cluster>/`) to discover and list binlog files for point-in-time recovery. This means the filer metadata service sits in the critical path for PITR — its loss is a hard failure for binlog discovery, not merely a navigation inconvenience.
 
-Current DR configuration: one filer pod with an embedded key-value store (leveldb/rocksdb) backed by a PVC, replicated asynchronously to the DR site via `filer.sync`.
+Current DR configuration: one filer pod with an embedded leveldb store backed by a PVC, replicated asynchronously to the DR site via `filer.sync`.
 
 An alternative — using a three-node PXC cluster as an external filer store — was evaluated and prototyped. This document records the risk analysis and the rationale for not adopting it.
 
@@ -119,7 +119,7 @@ The filer metadata problem is SeaweedFS-specific because SeaweedFS deliberately 
 
 | System | Metadata Architecture | Separate Metadata Failure Domain | Cross-DC Metadata HA | Operational Complexity | POSIX Filer Semantics |
 |---|---|---|---|---|---|
-| **SeaweedFS** | Embedded KV store per filer pod (leveldb/rocksdb), optionally external RDBMS | Yes — filer pod is a distinct SPOF | Via filer.sync (async) or external store replication | Low | Yes — purpose-built filer API |
+| **SeaweedFS** | Embedded leveldb store per filer pod (default), optionally external RDBMS | Yes — filer pod is a distinct SPOF | Via filer.sync (async) or external store replication | Low | Yes — purpose-built filer API |
 | **MinIO** | Inline with objects as `xl.meta` files in erasure-coded data | No — metadata loss = object loss | Via site replication (active-active) | Low | No — S3 only |
 | **GarageFS** | Distributed LMDB per node, Raft-based consensus across nodes | No — metadata is part of storage nodes | Native zone-aware by design | Low-Medium | No — S3 only |
 | **Ceph (RadosGW)** | Stored in dedicated RADOS pools, replicated across OSDs | No — metadata loss = OSD failure (same as data) | Bucket replication (async) or stretch cluster (complex) | Very High | Via CephFS + MDS (separate subsystem) |
