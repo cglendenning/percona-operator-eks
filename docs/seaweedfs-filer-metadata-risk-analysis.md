@@ -88,13 +88,13 @@ The correct resolution for cross-DC Galera is a `garbd` (Galera Arbitrator Daemo
 
 ### When to Revisit
 
-Implement an external filer store when the filer metadata pod becomes a performance bottleneck. The concrete signals are:
+Implement an external filer store when the single filer pod's leveldb becomes a performance bottleneck. The concrete signals are:
 
 - Filer metadata operation latency climbs under load (observable in SeaweedFS metrics: `weed_filer_request_seconds`)
-- A single filer pod's embedded store cannot handle the write throughput of the backup namespace
-- There is a genuine requirement for multiple concurrently active filer replicas
+- A single filer pod's leveldb cannot handle the write throughput of the backup namespace
+- There is a genuine requirement to run multiple filer replicas in concert
 
-At that point, the external store provides real value: multiple filer pods can write simultaneously to the same shared database, the embedded store bottleneck is eliminated, and the operational cost of running the PXC cluster is justified. For the current backup workload, none of these conditions are met.
+At that point the external store is the correct solution. It is the prerequisite for running `filer.replicas > 1` — without it, each filer pod maintains its own isolated leveldb and the instances immediately diverge. With the external store in place, all filer replicas share a single consistent metadata state, and filer.sync continues to work from any of them to the DR filer. The operational cost of the PXC cluster is justified once the throughput requirement makes multiple replicas necessary. For the current single-writer backup workload, that threshold has not been reached.
 
 ---
 
