@@ -50,17 +50,29 @@ For a low write frequency workload — binlogs uploaded every 60 seconds, full b
 
 ### Why It Is Not Worth It Now
 
-**filer.sync is incompatible with an external store.** The current DR mechanism for filer metadata is `filer.sync`. Moving to an external store means the DR strategy for metadata becomes entirely dependent on the PXC cluster's own replication. This is a fundamental change in the DR model, not a configuration tweak.
+**An external store is compatible with filer.sync — but multiple active filer replicas are not.** This distinction matters. A single primary filer backed by PXC, replicating to a DR filer via filer.sync, is a valid topology:
 
-**Cross-datacenter Galera quorum design is non-trivial.** With three PXC nodes spanning two data centers, two topologies are possible:
+```
+Primary filer → PXC external store (HA metadata)
+      ↓
+   filer.sync
+      ↓
+DR filer → embedded store
+```
 
-- *2 primary + 1 DR*: If the DC link drops, primary maintains quorum (2/3) and keeps writing. DR node goes non-primary correctly. If the entire primary DC goes down, the DR node is non-primary and the cluster is down. The DR filer cannot write metadata — you must bootstrap the DR node as a new Galera primary, which is operationally equivalent to activating a DR filer today but with more steps.
+The incompatibility arises only when multiple filer replicas all write to the same external store simultaneously. In that configuration, changes made on one filer are immediately visible to all others via the shared store, and filer.sync replaying those same changes to a DR filer causes conflicts and duplication. For a single primary filer, filer.sync continues to work as before.
 
-- *1 primary + 2 DR*: Write latency on every metadata operation is 2x the round-trip time to the DR site. Galera's certification protocol requires a quorum acknowledgment before committing. For 60-second binlog uploads this is acceptable; for interactive filer operations it is noticeable. DR also becomes the quorum holder, which is inconsistent with an active-passive model.
+**What the external store actually provides in the single-filer topology** is filer pod resilience: if the filer pod crashes and its PVC is lost, the metadata survives in PXC and the pod can restart against the same store with no data loss. This is a real improvement over the embedded store — but only matters if the PVC itself is at risk. If the filer PVC is on a reliable network-attached storage class, this scenario is already low probability.
 
-The correct resolution for cross-DC Galera is a `garbd` (Galera Arbitrator Daemon) at a third site, or an asymmetric 2+1+arbitrator topology. Neither of these is available in the current two-site setup.
+**Cross-datacenter Galera quorum design is non-trivial.** If the PXC external store is placed in the primary DC only (the simpler topology), a full primary DC loss takes down the metadata store along with everything else — no improvement over the embedded store for that failure. To make the PXC store survive a DC loss, it must span both DCs, which reintroduces the quorum problem:
 
-**The failure scenario it actually solves — storage layer loss — is the same scenario where DR activation is already required.** filer.sync on a healthy PVC is sufficient for all other failure modes, which are self-healing. Adding a PXC cluster to solve the one scenario that already has a DR path is not a net improvement in resilience; it is a net increase in operational surface area.
+- *2 primary + 1 DR*: Primary DC maintains quorum on DC link loss. If the entire primary DC goes down, the DR node is non-primary, the cluster is down, and the DR filer cannot write metadata. Bootstrapping the DR node as a new Galera primary is operationally equivalent to activating a DR filer today, but with more steps.
+
+- *1 primary + 2 DR*: Every metadata write incurs 2x the round-trip time to the DR site. DR becomes the quorum holder, which is inconsistent with an active-passive model.
+
+The correct resolution for cross-DC Galera is a `garbd` (Galera Arbitrator Daemon) at a third site, or an asymmetric 2+1+arbitrator topology. Neither is available in the current two-site setup.
+
+**The failure scenario the external store actually solves — filer pod PVC loss — is low probability when PVC storage is network-attached, and is already mitigated by filer.sync for the DC-loss scenario.** The marginal resilience improvement does not justify the operational costs below.
 
 **Additional operational costs of the external filer store:**
 
