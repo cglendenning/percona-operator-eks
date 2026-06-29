@@ -8,7 +8,9 @@
 
 ## Background
 
-The platform stores PXC backups and PITR binlogs in SeaweedFS, which exposes an S3-compatible endpoint for writes. The `pxc-restore` tooling uses the SeaweedFS Filer HTTP API (port 8888, `GET /buckets/<bucket>/binlogs/<cluster>/`) to discover and list binlog files for point-in-time recovery. This means the filer metadata service sits in the critical path for PITR — its loss is a hard failure for binlog discovery, not merely a navigation inconvenience.
+The platform stores PXC backups and PITR binlogs in SeaweedFS using the S3-compatible gateway (port 8333). The `pxc-restore` tooling additionally uses the SeaweedFS Filer HTTP API (port 8888, `GET /buckets/<bucket>/binlogs/<cluster>/`) to discover and list binlog files for point-in-time recovery.
+
+A critical architectural point: the SeaweedFS S3 gateway is not an independent path to the volume servers. It is implemented on top of the filer. S3 buckets are directories in the filer namespace at `/buckets/<bucket-name>/`; S3 objects are files in that namespace. Every S3 operation — PUT, GET, DELETE, HEAD, and LIST — reads and writes filer metadata. The filer is therefore in the critical path for all S3 activity, not only the Filer HTTP API calls made by `pxc-restore`.
 
 Current DR configuration: one filer pod with an embedded leveldb store backed by a PVC, replicated asynchronously to the DR site via `filer.sync`.
 
@@ -18,9 +20,9 @@ An alternative — using a three-node PXC cluster as an external filer store —
 
 ## The Actual Failure Mode
 
-SeaweedFS stores object data on volume servers and stores the namespace (file paths, bucket structure, timestamps) in the filer's embedded database. When filer metadata is lost, the volume data is almost certainly intact on the volume servers — it simply becomes unreachable via the filer namespace.
+SeaweedFS stores object data on volume servers and stores the namespace (file paths, bucket structure, timestamps, and the mapping from S3 key to volume server and needle ID) in the filer's embedded database. When filer metadata is lost, the volume data is almost certainly intact on the volume servers — it simply becomes unreachable because nothing can map an S3 key or file path to a physical needle.
 
-For the backup workload, the consequence is: `pxc-restore` fails at binlog listing, PITR breaks loudly. The raw backup objects remain on volume servers and are recoverable with effort, but the tooling chain is broken until filer metadata is restored.
+For the backup workload, the consequence is total S3 failure: PUT operations cannot record where objects were written, GET operations cannot locate objects to read, and LIST operations cannot traverse the bucket namespace. Backup writes stop. Binlog uploads stop. `pxc-restore` cannot list or retrieve binlogs. The raw data remains on volume servers and is recoverable with significant manual effort, but the entire S3-facing interface is broken until filer metadata is restored. The Filer HTTP API failure in `pxc-restore` is one symptom of this — not the root failure itself.
 
 ---
 
@@ -106,8 +108,8 @@ Document the steps to activate the DR filer and to resync state back to the prim
 **2. Verify PVC storage class for the filer pod.**
 Confirm the filer PVC uses a network-attached storage class (NFS, RBD, or equivalent) so the pod can reschedule to a different node after a node failure without manual PVC migration. This eliminates the Medium risk row in the table above.
 
-**3. Eliminate the SeaweedFS Filer API dependency in pxc-restore.**
-The binlog listing in `pxc-restore` uses the Filer HTTP API because it provides a fast single-request directory listing with timestamps and sizes. Replacing `seaweedfs_filer_list()` with an S3 `ListObjectsV2` call against the existing MinIO endpoint — which already has cross-DC site replication configured — removes SeaweedFS from the PITR critical path entirely. This eliminates the filer metadata risk for PITR without adding any new infrastructure.
+**3. Move backup and binlog storage to MinIO and update pxc-restore accordingly.**
+Because the SeaweedFS S3 gateway runs on top of the filer, replacing the Filer HTTP API calls in `pxc-restore` with S3 `ListObjectsV2` calls against SeaweedFS's own S3 endpoint provides no resilience benefit — those calls also go through the filer metadata. The only way to eliminate the filer metadata risk from the PITR critical path is to store binlogs and backups in MinIO instead of SeaweedFS. MinIO already runs with cross-DC site replication configured and has no filer layer — its metadata is embedded inline with the objects. Once data is in MinIO, `seaweedfs_filer_list()` in `pxc-restore` is replaced with an S3 `ListObjectsV2` call against the MinIO endpoint. No new infrastructure is required.
 
 ---
 
@@ -138,7 +140,7 @@ The filer metadata problem is SeaweedFS-specific because SeaweedFS deliberately 
 - *Filer is a distinct failure domain.* Because metadata and data are separate processes, you can lose the filer without losing volume data — and vice versa. This adds an additional component to your availability model that S3-native systems do not have.
 - *External store required for HA writes.* You cannot run multiple active filer replicas against a single embedded store. Horizontal write scaling requires the operational complexity of an external database, unlike MinIO (which scales by adding nodes to the erasure set) or Garage (which scales by adding zone members).
 - *filer.sync is async and one-directional per configuration.* Unlike MinIO site replication (active-active, bidirectional by default) or Galera (synchronous), filer.sync introduces eventual consistency and requires operational procedures for failover and failback that S3-native solutions handle automatically.
-- *POSIX semantics are a liability when not needed.* For pure object workloads (which PXC backups are), the filer layer adds complexity and a failure domain with no benefit. An S3 ListObjects call against MinIO returns equivalent information to the Filer HTTP API directory listing.
+- *POSIX semantics are a liability when not needed.* For pure object workloads (which PXC backups are), the filer layer adds complexity and a failure domain with no benefit. When using only the S3 gateway, the filer is still fully in the critical path — S3 operations are translated into filer operations internally. A system like MinIO, whose metadata is embedded inline with objects and has no filer layer, provides the same S3 interface with a simpler and more resilient failure model for this workload.
 
 ---
 
