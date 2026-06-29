@@ -129,7 +129,7 @@ The filer metadata problem is SeaweedFS-specific because SeaweedFS deliberately 
 **Advantages**
 
 - *Flexibility.* The filer store is pluggable: embedded KV for simplicity, MySQL/PostgreSQL/Redis/Cassandra for scale. You can start simple and migrate the metadata store independently of your data layer.
-- *POSIX semantics without a full filesystem.* The filer provides a real directory hierarchy, renames, and metadata queries (timestamps, sizes, directory listings) that S3-only systems cannot. The `pxc-restore` binlog discovery relied on this.
+- *POSIX semantics without a full filesystem.* The filer provides a real directory hierarchy, renames, and metadata queries (timestamps, sizes, directory listings) that S3-only systems cannot. The `pxc-restore` binlog discovery currently relies on this.
 - *Lightweight default.* The embedded store requires no external dependencies for a single-filer deployment. Operational simplicity is high at small scale.
 - *Separation enables independent scaling.* You can scale volume servers without touching the filer, and vice versa.
 
