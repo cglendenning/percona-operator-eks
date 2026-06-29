@@ -50,7 +50,9 @@ For a low write frequency workload — binlogs uploaded every 60 seconds, full b
 
 ### Why It Is Not Worth It Now
 
-**An external store is compatible with filer.sync — but multiple active filer replicas are not.** This distinction matters. A single primary filer backed by PXC, replicating to a DR filer via filer.sync, is a valid topology:
+**An external store is compatible with filer.sync and is in fact the prerequisite for running multiple filer replicas at all.** The constraint is not about filer.sync — it is about the internal leveldb store. When `filer.replicas` is set to more than one and each pod uses its own internal leveldb, each pod maintains an isolated, independent copy of the metadata. Writes to one filer pod are invisible to the others. The filer instances immediately diverge and the metadata is inconsistent across replicas.
+
+An external store solves this: all filer pods point at the same database and share a single consistent metadata state. Once the external store is in place, filer.sync works correctly from any filer replica to a DR filer, since they all see the same data. A single primary filer backed by PXC and replicating to a DR filer via filer.sync is a valid topology:
 
 ```
 Primary filer → PXC external store (HA metadata)
@@ -59,8 +61,6 @@ Primary filer → PXC external store (HA metadata)
       ↓
 DR filer → embedded store
 ```
-
-The incompatibility arises only when multiple filer replicas all write to the same external store simultaneously. In that configuration, changes made on one filer are immediately visible to all others via the shared store, and filer.sync replaying those same changes to a DR filer causes conflicts and duplication. For a single primary filer, filer.sync continues to work as before.
 
 **What the external store actually provides in the single-filer topology** is filer pod resilience: if the filer pod crashes and its PVC is lost, the metadata survives in PXC and the pod can restart against the same store with no data loss. This is a real improvement over the embedded store — but only matters if the PVC itself is at risk. If the filer PVC is on a reliable network-attached storage class, this scenario is already low probability.
 
